@@ -4,37 +4,48 @@ import { Platform } from "react-native";
 import { ApiError, ErrorCode } from "./errors";
 
 /**
- * Resolve the backend base URL with zero daily configuration.
+ * Resolve the backend base URL.
  *
- * In __DEV__ (Expo Go / dev build):
- *   Constants.expoConfig.hostUri is the Metro dev-server address, e.g.
- *   "192.168.1.50:8081". The backend always runs on the same machine on
- *   port 8000. We strip the port and substitute 8000 — works automatically
- *   on physical devices regardless of which IP the router assigns today.
- *
- * In production builds:
- *   Falls back to EXPO_PUBLIC_API_URL (set in mobile/.env before `eas build`).
+ * Priority order:
+ *  1. EXPO_PUBLIC_API_URL env var — explicit override, always wins.
+ *     Set in mobile/.env for dev or EAS build secrets for prod.
+ *  2. Auto-detect from Metro's host (dev only) — strips the bundler port
+ *     and substitutes 8000, so physical devices find the backend automatically
+ *     when Metro and the backend run on the same machine.
+ *     Uses expoGoConfig.debuggerHost (SDK 50+ preferred) with fallback to
+ *     expoConfig.hostUri. Tunnel addresses are skipped (they won't reach a
+ *     local backend).
+ *  3. Hard fallback: Android emulator 10.0.2.2, iOS simulator localhost.
  */
 function resolveBaseUrl(): string {
-  if (__DEV__) {
-    const hostUri: string | undefined = Constants.expoConfig?.hostUri;
-    if (hostUri) {
-      // hostUri is "host:port" — take only the host part
-      const host = hostUri.split(":")[0];
-      if (host) return `http://${host}:8000/api`;
-    }
-  }
-  // Production / fallback
+  // 1. Explicit env var always wins — useful when IP changes or for CI/staging.
   if (process.env.EXPO_PUBLIC_API_URL) {
     return process.env.EXPO_PUBLIC_API_URL;
   }
+
+  if (__DEV__) {
+    // SDK 50+ exposes the Metro address more reliably via expoGoConfig.
+    const metroHost: string | undefined =
+      (Constants as any).expoGoConfig?.debuggerHost ??
+      Constants.expoConfig?.hostUri;
+
+    if (metroHost) {
+      const host = metroHost.split(":")[0];
+      // Tunnel addresses (*.exp.direct) route to Expo's relay, not the local machine.
+      if (host && !host.endsWith(".exp.direct")) {
+        return `http://${host}:8000/api`;
+      }
+    }
+  }
+
+  // 3. Hard fallback — Android emulator uses 10.0.2.2; iOS simulator uses localhost.
   return Platform.OS === "android"
     ? "http://10.0.2.2:8000/api"
     : "http://localhost:8000/api";
 }
 
 const BASE_URL = resolveBaseUrl();
-// console.log(`API Base URL: ${BASE_URL}`);
+console.log(`API Base URL: ${BASE_URL}`);
 
 /** Build a URL for a file stored on the backend's public disk.
  *  Uses the same host/port as the API so physical devices can reach it. */

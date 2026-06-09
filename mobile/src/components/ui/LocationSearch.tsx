@@ -1,213 +1,298 @@
 import { Ionicons } from '@expo/vector-icons';
-import * as Location from 'expo-location';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  FlatList,
+  ScrollView,
   StyleSheet,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { Text, TextInput } from 'react-native-paper';
+import { locationApi, PlaceCandidate } from '../../api/location';
+import { useHighAccuracyLocation } from '../../hooks/useHighAccuracyLocation';
 import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { SkeletonBlock } from './SkeletonBlock';
 
-interface NominatimResult {
-  place_id: number;
-  display_name: string;
-  lat: string;
-  lon: string;
+// ── Public types ─────────────────────────────────────────────────────────────
+
+/** Shape produced by every selection in this component — label only shown in
+ *  UI; lat/lng travel internally to PostGIS and are never rendered as numbers. */
+export interface SelectedLocation {
+  label:  string;
+  lat:    number;
+  lng:    number;
+  region: string | null;
+  source: 'DEVICE' | 'SEARCH';
 }
 
 interface Props {
-  lat: string;
-  lng: string;
-  locationLabel: string;
-  onLocationChange: (lat: string, lng: string, label: string) => void;
-  latError?: string | null;
+  /** Currently selected location (pass null / undefined when nothing is chosen). */
+  value?:   SelectedLocation | null;
+  /** Called whenever the selection changes. Receives null on clear. */
+  onChange: (loc: SelectedLocation | null) => void;
+  /** Server-side validation error to show below the input. */
+  error?:   string | null;
 }
 
-export function LocationSearch({ lat, lng, locationLabel, onLocationChange, latError }: Props) {
-  const [query, setQuery] = useState('');
-  const [suggestions, setSuggestions] = useState<NominatimResult[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [locating, setLocating] = useState(false);
-  const [selected, setSelected] = useState(false);
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Landmark-first location picker for Zambian users.
+ *
+ * Search path: typed query → backend /location/search proxy → Nominatim
+ * (countrycodes=zm, POI/establishment ranked first by the server-side layer).
+ *
+ * GPS path: useHighAccuracyLocation hook → Highest-accuracy fused fix with a
+ * mandatory precision buffer → backend /location/reverse → human label.
+ *
+ * Coordinates are never shown to the user. The resolved SelectedLocation
+ * carries lat/lng internally for the booking/PostGIS pipeline.
+ */
+export function LocationSearch({ value, onChange, error }: Props) {
+  const [query,       setQuery]       = useState(value?.label ?? '');
+  const [suggestions, setSuggestions] = useState<PlaceCandidate[]>([]);
+  const [searching,   setSearching]   = useState(false);
+  const [confirmed,   setConfirmed]   = useState(!!value);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    if (locationLabel) setQuery(locationLabel);
-  }, [locationLabel]);
+  const { loading: locating, error: gpsError, capture } = useHighAccuracyLocation();
 
-  const search = (text: string) => {
+  // Sync display text if the parent updates value externally (e.g. deep-link pre-fill)
+  useEffect(() => {
+    if (value?.label !== undefined && value.label !== query) {
+      setQuery(value.label);
+      setConfirmed(true);
+    } else if (!value) {
+      setQuery('');
+      setConfirmed(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value?.label]);
+
+  const handleQueryChange = (text: string) => {
     setQuery(text);
-    setSelected(false);
+    setConfirmed(false);
     setSuggestions([]);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (text.trim().length < 3) return;
+    if (text.trim().length < 2) return;
+
     debounceRef.current = setTimeout(async () => {
       setSearching(true);
       try {
-        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(text)}&format=json&limit=5&addressdetails=0`;
-        const res = await fetch(url, { headers: { 'User-Agent': 'SebenzaApp/1.0' } });
-        const data: NominatimResult[] = await res.json();
-        setSuggestions(data);
+        setSuggestions(await locationApi.search(text.trim()));
       } catch {
         setSuggestions([]);
       } finally {
         setSearching(false);
       }
-    }, 500);
+    }, 450);
   };
 
-  const pick = (item: NominatimResult) => {
-    const label = item.display_name.split(',').slice(0, 3).join(',').trim();
-    setQuery(label);
+  const pick = (item: PlaceCandidate) => {
+    setQuery(item.label);
     setSuggestions([]);
-    setSelected(true);
-    onLocationChange(item.lat, item.lon, label);
+    setConfirmed(true);
+    onChange({
+      label:  item.label,
+      lat:    item.lat,
+      lng:    item.lng,
+      region: item.region,
+      source: 'SEARCH',
+    });
   };
 
-  const useGPS = async () => {
-    setLocating(true);
-    try {
-      const perm = await Location.requestForegroundPermissionsAsync();
-      if (!perm.granted) return;
-      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      const { latitude, longitude } = pos.coords;
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`,
-        { headers: { 'User-Agent': 'SebenzaApp/1.0' } },
-      );
-      const data = await res.json();
-      const label = data.display_name?.split(',').slice(0, 3).join(',').trim()
-        ?? `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
-      setQuery(label);
-      setSuggestions([]);
-      setSelected(true);
-      onLocationChange(String(latitude), String(longitude), label);
-    } catch {
-      // silently fail
-    } finally {
-      setLocating(false);
+  const handleGPS = async () => {
+    const candidate = await capture();
+    if (candidate) {
+      setQuery(candidate.label);
+      setConfirmed(true);
+      onChange({
+        label:  candidate.label,
+        lat:    candidate.lat,
+        lng:    candidate.lng,
+        region: candidate.region,
+        source: 'DEVICE',
+      });
     }
   };
 
   const clear = () => {
     setQuery('');
     setSuggestions([]);
-    setSelected(false);
-    onLocationChange('', '', '');
+    setConfirmed(false);
+    onChange(null);
   };
 
   return (
     <View>
       <View style={styles.inputRow}>
-        <View style={styles.inputWrap}>
-          <Ionicons name="location-outline" size={18} color={palette.textSecondary} style={styles.inputIcon} />
-          <TextInput
-            mode="flat"
-            placeholder="Search place or address..."
-            value={query}
-            onChangeText={search}
-            style={styles.textInput}
-            underlineStyle={{ display: 'none' } as any}
-            dense
+        {/* While the precision buffer is running, replace the input with a
+            skeleton so the user knows something is happening without seeing
+            a flash of stale text. */}
+        {locating ? (
+          <View style={styles.skeletonWrap}>
+            <SkeletonBlock width="100%" height={48} radius={r.lg} />
+          </View>
+        ) : (
+          <View style={styles.inputWrap}>
+            <Ionicons
+              name="location-outline"
+              size={18}
+              color={palette.textSecondary}
+              style={styles.inputIcon}
+            />
+            <TextInput
+              mode="flat"
+              placeholder="Search a place or landmark…"
+              value={query}
+              onChangeText={handleQueryChange}
+              style={styles.textInput}
+              underlineStyle={{ display: 'none' } as any}
+              dense
+            />
+            {searching && (
+              <ActivityIndicator
+                size={14}
+                color={palette.primary}
+                style={styles.inputRight}
+              />
+            )}
+            {confirmed && !searching && (
+              <Ionicons
+                name="checkmark-circle"
+                size={18}
+                color={palette.success}
+                style={styles.inputRight}
+              />
+            )}
+            {query.length > 0 && !searching && !confirmed && (
+              <TouchableOpacity onPress={clear} style={styles.inputRight}>
+                <Ionicons name="close-circle" size={18} color={palette.textDisabled} />
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        <TouchableOpacity
+          onPress={handleGPS}
+          style={[styles.gpsBtn, locating && styles.gpsBtnDisabled]}
+          disabled={locating}
+        >
+          <Ionicons
+            name="navigate"
+            size={18}
+            color={locating ? palette.textDisabled : palette.primary}
           />
-          {searching && <ActivityIndicator size={14} color={palette.primary} style={styles.inputRight} />}
-          {selected && !searching && (
-            <Ionicons name="checkmark-circle" size={18} color={palette.success} style={styles.inputRight} />
-          )}
-          {query.length > 0 && !searching && !selected && (
-            <TouchableOpacity onPress={clear} style={styles.inputRight}>
-              <Ionicons name="close-circle" size={18} color={palette.textDisabled} />
-            </TouchableOpacity>
-          )}
-        </View>
-        <TouchableOpacity onPress={useGPS} style={styles.gpsBtn} disabled={locating}>
-          {locating
-            ? <ActivityIndicator size={16} color={palette.primary} />
-            : <Ionicons name="navigate" size={18} color={palette.primary} />
-          }
         </TouchableOpacity>
       </View>
 
       {suggestions.length > 0 && (
         <View style={styles.dropdown}>
-          <FlatList
-            data={suggestions}
-            keyExtractor={(s) => String(s.place_id)}
-            scrollEnabled={false}
-            renderItem={({ item }) => (
-              <TouchableOpacity style={styles.suggestion} onPress={() => pick(item)}>
-                <Ionicons name="location-outline" size={14} color={palette.textSecondary} />
-                <Text style={styles.suggestionText} numberOfLines={2}>
-                  {item.display_name}
-                </Text>
-              </TouchableOpacity>
-            )}
-            ItemSeparatorComponent={() => <View style={styles.sep} />}
-          />
+          {/* ScrollView avoids the VirtualizedList-inside-ScrollView warning that
+              FlatList would trigger when LocationSearch is used inside a ScrollView
+              screen (BookingSheet, ProviderSetupScreen). maxHeight caps growth so
+              the list never pushes past the visible area above the keyboard. */}
+          <ScrollView
+            style={styles.dropdownList}
+            keyboardShouldPersistTaps="handled"
+            nestedScrollEnabled
+            showsVerticalScrollIndicator={suggestions.length > 3}
+          >
+            {suggestions.map((item, idx) => (
+              <React.Fragment key={`${item.label}-${idx}`}>
+                <TouchableOpacity style={styles.suggestion} onPress={() => pick(item)}>
+                  <Ionicons name="location-outline" size={14} color={palette.textSecondary} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.suggestionLabel} numberOfLines={1}>
+                      {item.label}
+                    </Text>
+                    {!!item.region && (
+                      <Text style={styles.suggestionRegion} numberOfLines={1}>
+                        {item.region}
+                      </Text>
+                    )}
+                  </View>
+                </TouchableOpacity>
+                {idx < suggestions.length - 1 && <View style={styles.sep} />}
+              </React.Fragment>
+            ))}
+          </ScrollView>
         </View>
       )}
 
-      {!!lat && !!lng && selected && (
-        <Text style={styles.coords}>
-          {parseFloat(lat).toFixed(5)}, {parseFloat(lng).toFixed(5)}
-        </Text>
-      )}
-      {latError ? <Text style={styles.errorText}>{latError}</Text> : null}
+      {!!gpsError && <Text style={styles.errorText}>{gpsError}</Text>}
+      {!!error    && <Text style={styles.errorText}>{error}</Text>}
     </View>
   );
 }
 
+// ── Styles ────────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  inputRow: { flexDirection: 'row', gap: spacing.xs, alignItems: 'center' },
-  inputWrap: {
-    flex: 1,
+  inputRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: palette.background,
-    borderRadius: r.lg,
-    borderWidth: 1,
-    borderColor: palette.border,
-    paddingHorizontal: spacing.sm,
+    gap:           spacing.xs,
+    alignItems:    'center',
+  },
+  skeletonWrap: {
+    flex:   1,
     height: 48,
   },
-  inputIcon: { marginRight: 6 },
+  inputWrap: {
+    flex:            1,
+    flexDirection:   'row',
+    alignItems:      'center',
+    backgroundColor: palette.background,
+    borderRadius:    r.lg,
+    borderWidth:     1,
+    borderColor:     palette.border,
+    paddingHorizontal: spacing.sm,
+    height:          48,
+  },
+  inputIcon:  { marginRight: 6 },
   textInput: {
-    flex: 1,
+    flex:            1,
     backgroundColor: 'transparent',
-    fontSize: 14,
+    fontSize:        14,
     paddingHorizontal: 0,
-    height: 48,
+    height:          48,
   },
   inputRight: { marginLeft: 6 },
+
   gpsBtn: {
-    width: 46,
-    height: 46,
-    borderRadius: r.lg,
+    width:           46,
+    height:          46,
+    borderRadius:    r.lg,
     backgroundColor: palette.primaryLight,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems:      'center',
+    justifyContent:  'center',
   },
+  gpsBtnDisabled: {
+    backgroundColor: palette.border,
+  },
+
   dropdown: {
-    marginTop: spacing.xs,
+    marginTop:       spacing.xs,
     backgroundColor: palette.surface,
-    borderRadius: r.lg,
-    borderWidth: 1,
-    borderColor: palette.border,
-    overflow: 'hidden',
+    borderRadius:    r.lg,
+    borderWidth:     1,
+    borderColor:     palette.border,
+    overflow:        'hidden',
     ...shadow.card,
   },
+  dropdownList: {
+    maxHeight: 216,
+  },
   suggestion: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: spacing.xs,
+    flexDirection:  'row',
+    alignItems:     'flex-start',
+    gap:            spacing.xs,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
-  suggestionText: { ...typography.bodySmall, color: palette.textPrimary, flex: 1 },
-  sep: { height: 1, backgroundColor: palette.border },
-  coords: { ...typography.bodySmall, color: palette.textDisabled, marginTop: 4 },
+  suggestionLabel:  { ...typography.bodySmall, color: palette.textPrimary, flex: 1 },
+  suggestionRegion: { ...typography.bodySmall, color: palette.textSecondary, flex: 1, marginTop: 1 },
+  sep:              { height: 1, backgroundColor: palette.border },
+
   errorText: { ...typography.bodySmall, color: palette.danger, marginTop: 4 },
 });

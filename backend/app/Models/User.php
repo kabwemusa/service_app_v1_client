@@ -47,6 +47,11 @@ class User extends Authenticatable implements JWTSubject
         'risk_score',
         'disputes_raised_30d',
         'last_active_at',
+        'primary_location_lat',
+        'primary_location_lng',
+        'primary_location_label',
+        'primary_location_region',
+        'primary_location_source',
     ];
 
     protected $hidden = [
@@ -60,6 +65,8 @@ class User extends Authenticatable implements JWTSubject
             'r_raw'                => 'float',
             'completion_rate'      => 'float',
             'risk_score'           => 'float',
+            'primary_location_lat' => 'float',
+            'primary_location_lng' => 'float',
             'last_active_at'       => 'datetime',
             'email_verified_at'    => 'datetime',
             'phone_verified_at'    => 'datetime',
@@ -140,6 +147,17 @@ class User extends Authenticatable implements JWTSubject
     public function referrals()
     {
         return $this->hasMany(User::class, 'referred_by');
+    }
+
+    public function savedLocations()
+    {
+        return $this->hasMany(SavedLocation::class, 'user_id');
+    }
+
+    /** v3.1 §4.1 — every user must set a primary location before they can search/be discovered. */
+    public function hasPrimaryLocation(): bool
+    {
+        return $this->primary_location_lat !== null && $this->primary_location_lng !== null;
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────

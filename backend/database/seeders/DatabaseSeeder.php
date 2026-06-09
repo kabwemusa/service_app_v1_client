@@ -19,6 +19,7 @@ class DatabaseSeeder extends Seeder
             CategorySeeder::class,
             ProviderSeeder::class,
             ServiceSeeder::class,
+            HomeBannerSeeder::class,
         ]);
     }
 }

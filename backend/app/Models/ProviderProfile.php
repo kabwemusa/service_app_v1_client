@@ -31,6 +31,7 @@ class ProviderProfile extends Model
         // Location
         'base_location_lat',
         'base_location_lng',
+        'base_location_label',
         'max_radius_km',
         'service_radius_km',
         // Schedule
@@ -40,8 +41,12 @@ class ProviderProfile extends Model
         'response_rate_7d',
         // Media
         'cover_image_url',
+        // Public profile photo (distinct from the private KYC selfie — never expose KYC image here)
+        'avatar_url',
         'portfolio_images',
         'certifications',
+        // Highlights (v3.1 §5.4) — provider-curated "what shows first"
+        'highlights',
         // Counters
         'profile_completeness',
         'cancellation_rate_30d',
@@ -54,6 +59,7 @@ class ProviderProfile extends Model
             'availability_matrix'   => 'array',
             'portfolio_images'      => 'array',
             'certifications'        => 'array',
+            'highlights'            => 'array',
             'languages'             => 'array',
             'base_location_lat'     => 'float',
             'base_location_lng'     => 'float',
@@ -89,5 +95,10 @@ class ProviderProfile extends Model
     public function promotedSlots()
     {
         return $this->hasMany(PromotedSlot::class, 'provider_id', 'user_id');
+    }
+
+    public function services()
+    {
+        return $this->hasMany(Service::class, 'provider_id', 'user_id');
     }
 }

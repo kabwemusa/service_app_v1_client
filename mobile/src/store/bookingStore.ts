@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { ApiError } from '../api/errors';
-import { Booking, CreateBookingParams, OpenDisputeParams, PaginatedBookings, bookingsApi } from '../api/bookings';
+import { Booking, CreateBookingParams, IncomingRequests, OpenDisputeParams, PaginatedBookings, bookingsApi } from '../api/bookings';
 
 function toApiError(e: unknown): ApiError {
   if (e instanceof ApiError) return e;
@@ -15,6 +15,14 @@ interface BookingState {
   loading:     boolean;
   submitting:  boolean;
   error:       ApiError | null;
+
+  // §6.8 — provider incoming requests (separate slice; own loading flag so it
+  // doesn't fight with the buyer-side bookings list above)
+  incomingRequests: IncomingRequests | null;
+  incomingLoading:  boolean;
+  incomingError:    ApiError | null;
+  fetchIncomingRequests: () => Promise<void>;
+  clearIncomingError:    () => void;
 
   // Actions
   fetchBookings:  (reset?: boolean) => Promise<void>;
@@ -38,6 +46,10 @@ const initialState = {
   loading:    false,
   submitting: false,
   error:      null,
+
+  incomingRequests: null,
+  incomingLoading:  false,
+  incomingError:    null,
 };
 
 /** Replace or insert a booking in the list by id. */
@@ -55,8 +67,21 @@ export const useBookingStore = create<BookingState>((set, get) => ({
   ...initialState,
 
   clearError: () => set({ error: null }),
+  clearIncomingError: () => set({ incomingError: null }),
 
   reset: () => set(initialState),
+
+  fetchIncomingRequests: async () => {
+    set({ incomingLoading: true, incomingError: null });
+    try {
+      const incomingRequests = await bookingsApi.incomingRequests();
+      set({ incomingRequests });
+    } catch (e) {
+      set({ incomingError: toApiError(e) });
+    } finally {
+      set({ incomingLoading: false });
+    }
+  },
 
   fetchBookings: async (reset = true) => {
     const page = reset ? 1 : get().page;

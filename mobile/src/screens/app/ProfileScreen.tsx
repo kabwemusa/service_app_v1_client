@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import React from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
-import { Divider, Text, TouchableRipple } from 'react-native-paper';
+import { Divider, SegmentedButtons, Text, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../store/authStore';
 import { palette, radius as r, shadow, spacing, typography } from '../../theme';
@@ -27,10 +27,14 @@ function MenuItem({ icon, label, onPress, danger }: MenuItemProps) {
 }
 
 export default function ProfileScreen({ navigation }: any) {
-  const { logout, user } = useAuthStore();
+  const { logout, user, activeRole, setActiveRole } = useAuthStore();
   const insets = useSafeAreaInsets();
 
-  const isProvider = user?.role === 'PROVIDER';
+  // v3 §2.1 — `role: 'PROVIDER'` accounts can both buy and sell on the same
+  // account; `activeRole` is purely a UI-mode toggle (brief §3) that decides
+  // which 5-tab layout renders. `role` itself never changes here.
+  const canSwitchRoles = user?.role === 'PROVIDER';
+  const isProviderMode = canSwitchRoles && activeRole === 'PROVIDER';
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -48,31 +52,30 @@ export default function ProfileScreen({ navigation }: any) {
             <Ionicons name="person-outline" size={36} color="#FFFFFF" />
           </View>
           <Text style={styles.nameText}>Your Account</Text>
-          <Text style={styles.roleText}>{isProvider ? 'Provider' : 'Customer'}</Text>
+          <Text style={styles.roleText}>
+            {canSwitchRoles ? `Customer & Provider · ${isProviderMode ? 'Provider mode' : 'Customer mode'}` : 'Customer'}
+          </Text>
           {!!user?.email && <Text style={styles.emailText}>{user.email}</Text>}
         </LinearGradient>
 
-        {isProvider && (
+        {/* Brief §3 — role switch lives in the account menu; tab bar swaps to match. */}
+        {canSwitchRoles && (
           <View style={styles.section}>
-            <Text style={styles.sectionLabel}>Provider Tools</Text>
-            <View style={styles.card}>
-              <MenuItem
-                icon="construct-outline"
-                label="My Services"
-                onPress={() => navigation.navigate('MyServices')}
+            <Text style={styles.sectionLabel}>Browsing as</Text>
+            <View style={[styles.card, styles.switchCard]}>
+              <SegmentedButtons
+                value={activeRole}
+                onValueChange={(value) => setActiveRole(value as 'CUSTOMER' | 'PROVIDER')}
+                buttons={[
+                  { value: 'CUSTOMER', label: 'Customer', icon: 'account-outline' },
+                  { value: 'PROVIDER', label: 'Provider',  icon: 'briefcase-outline' },
+                ]}
               />
-              <Divider />
-              <MenuItem
-                icon="person-circle-outline"
-                label="Provider Profile"
-                onPress={() => navigation.navigate('ProviderSetup')}
-              />
-              <Divider />
-              <MenuItem
-                icon="shield-checkmark-outline"
-                label="Identity Verification"
-                onPress={() => navigation.navigate('Kyc')}
-              />
+              <Text style={styles.switchHint}>
+                {isProviderMode
+                  ? 'Showing your business tools — Hub, requests, services, and earnings.'
+                  : 'Showing the customer experience — browse, book, and manage your bookings.'}
+              </Text>
             </View>
           </View>
         )}
@@ -80,6 +83,22 @@ export default function ProfileScreen({ navigation }: any) {
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>Account</Text>
           <View style={styles.card}>
+            <MenuItem
+              icon="location-outline"
+              label="Saved Places"
+              onPress={() => navigation.navigate('SavedLocations')}
+            />
+            {canSwitchRoles && (
+              <>
+                <Divider />
+                <MenuItem
+                  icon="shield-checkmark-outline"
+                  label="Identity Verification"
+                  onPress={() => navigation.navigate('Kyc')}
+                />
+              </>
+            )}
+            <Divider />
             <MenuItem
               icon="notifications-outline"
               label="Notifications"
@@ -159,6 +178,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     ...shadow.card,
   },
+  switchCard: { padding: spacing.md, gap: spacing.sm },
+  switchHint: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12.5, lineHeight: 17 },
   menuItem: {},
   menuItemInner: {
     flexDirection: 'row',

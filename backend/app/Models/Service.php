@@ -25,16 +25,31 @@ class Service extends Model
         'category_id',
         'title',
         'description',
+        'pricing_model',
         'base_price',
-        'is_active',
+        'duration_estimate_mins',
+        'status',
+        'is_pinned',
     ];
 
     protected function casts(): array
     {
         return [
             'base_price' => 'float',
-            'is_active'  => 'boolean',
+            'is_pinned'  => 'boolean',
         ];
+    }
+
+    /** v3.1 §5.1 — `status` (DRAFT/ACTIVE/PAUSED/HIDDEN) supersedes the old `is_active` flag. */
+    public function isActive(): bool
+    {
+        return $this->status === 'ACTIVE';
+    }
+
+    /** §5.5 — a `QUOTE` service hides its base price and routes through the quote step. */
+    public function isQuoted(): bool
+    {
+        return $this->pricing_model === 'QUOTE';
     }
 
     public function provider()
@@ -55,5 +70,15 @@ class Service extends Model
     public function photos()
     {
         return $this->hasMany(ServicePhoto::class)->orderBy('display_order');
+    }
+
+    public function inclusions()
+    {
+        return $this->hasMany(ServiceInclusion::class)->orderBy('position');
+    }
+
+    public function addons()
+    {
+        return $this->hasMany(ServiceAddon::class)->orderBy('position');
     }
 }

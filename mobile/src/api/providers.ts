@@ -1,13 +1,14 @@
 import { api } from './client';
 
 export interface PublicService {
-  id:          string;
-  title:       string;
-  description: string | null;
-  base_price:  number;
-  category:    { id: number; name: string };
-  latitude:    number | null;
-  longitude:   number | null;
+  id:            string;
+  title:         string;
+  description:   string | null;
+  pricing_model: 'FIXED' | 'HOURLY' | 'QUOTE';
+  base_price:    number | null;
+  category:      { id: number; name: string };
+  latitude:      number | null;
+  longitude:     number | null;
 }
 
 export interface PublicReview {
@@ -19,13 +20,17 @@ export interface PublicReview {
 }
 
 export interface PublicProviderProfile {
-  id:              string;
-  display_name:    string | null;
-  bio:             string | null;
-  r_raw:           number;
-  v_reviews:       number;
-  completion_rate: number;
-  last_active_at:  string | null;
+  id:                   string;
+  display_name:         string | null;
+  bio:                  string | null;
+  // Public profile photo (v3.1 schema note) — distinct from KYC selfie.
+  avatar_url:           string | null;
+  cover_image_url:      string | null;
+  base_location_label:  string | null;
+  r_raw:                number;
+  v_reviews:            number;
+  completion_rate:      number;
+  last_active_at:       string | null;
   profile: {
     kyc_status:           string;
     max_radius_km:        number;

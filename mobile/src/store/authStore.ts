@@ -2,14 +2,27 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { authApi, AuthUser, LoginPayload, RegisterPayload } from '../api/auth';
 import { ApiError } from '../api/errors';
+import { useLocationStore } from './locationStore';
 import { useProfileStore } from './profileStore';
 import { useServiceStore } from './serviceStore';
 
 type AuthStep = 'idle' | 'awaiting_otp' | 'authenticated';
 
+// v3 §2.1 — a `PROVIDER`-role account "Can Buy AND Can Sell" on the same
+// account; `activeRole` is a pure UI-mode toggle (brief §3) that picks which
+// tab-bar layout shows. It never changes the backend `role` field.
+export type ActiveRole = 'CUSTOMER' | 'PROVIDER';
+const ACTIVE_ROLE_KEY = 'active_role';
+
+function resolveActiveRole(user: AuthUser | null, saved: string | null): ActiveRole {
+  if (user?.role !== 'PROVIDER') return 'CUSTOMER';
+  return saved === 'CUSTOMER' ? 'CUSTOMER' : 'PROVIDER';
+}
+
 interface AuthState {
   step:           AuthStep;
   user:           AuthUser | null;
+  activeRole:     ActiveRole;
   pendingUserId:       string | null;
   pendingIdentifier:   string | null;  // email or phone used at registration
   loading:        boolean;
@@ -20,6 +33,7 @@ interface AuthState {
   resendOtp: () => Promise<void>;
   logout:    () => Promise<void>;
   hydrate:   () => Promise<void>;
+  setActiveRole: (role: ActiveRole) => Promise<void>;
   clearError: () => void;
 }
 
@@ -62,6 +76,7 @@ function userFromToken(token: string): AuthUser | null {
 export const useAuthStore = create<AuthState>((set, get) => ({
   step:               'idle',
   user:               null,
+  activeRole:         'CUSTOMER',
   pendingUserId:      null,
   pendingIdentifier:  null,
   loading:            false,
@@ -84,7 +99,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (!user) {
       user = userFromToken(token);
     }
-    set({ step: 'authenticated', user });
+    const savedRole = await AsyncStorage.getItem(ACTIVE_ROLE_KEY);
+    set({ step: 'authenticated', user, activeRole: resolveActiveRole(user, savedRole) });
+  },
+
+  /** Brief §3 — pure UI-mode toggle; swaps which tab-bar layout renders. Persisted per device. */
+  setActiveRole: async (role) => {
+    const { user } = get();
+    if (user?.role !== 'PROVIDER') return;
+    await AsyncStorage.setItem(ACTIVE_ROLE_KEY, role);
+    set({ activeRole: role });
   },
 
   register: async (payload) => {
@@ -107,7 +131,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const res = await authApi.verifyOtp({ user_id: pendingUserId, otp });
       useProfileStore.getState().reset();
       useServiceStore.getState().reset();
-      set({ step: 'authenticated', user: res.user, pendingUserId: null, pendingIdentifier: null });
+      useLocationStore.getState().reset();
+      const savedRole = await AsyncStorage.getItem(ACTIVE_ROLE_KEY);
+      set({
+        step: 'authenticated',
+        user: res.user,
+        activeRole: resolveActiveRole(res.user, savedRole),
+        pendingUserId: null,
+        pendingIdentifier: null,
+      });
     } catch (e) {
       set({ error: toApiError(e) });
     } finally {
@@ -121,7 +153,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const res = await authApi.login(payload);
       useProfileStore.getState().reset();
       useServiceStore.getState().reset();
-      set({ step: 'authenticated', user: res.user });
+      useLocationStore.getState().reset();
+      const savedRole = await AsyncStorage.getItem(ACTIVE_ROLE_KEY);
+      set({ step: 'authenticated', user: res.user, activeRole: resolveActiveRole(res.user, savedRole) });
     } catch (e) {
       set({ error: toApiError(e) });
     } finally {
@@ -147,9 +181,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } finally {
       useProfileStore.getState().reset();
       useServiceStore.getState().reset();
+      useLocationStore.getState().reset();
       set({
         step: 'idle',
         user: null,
+        activeRole: 'CUSTOMER',
         loading: false,
         pendingUserId: null,
         pendingIdentifier: null,

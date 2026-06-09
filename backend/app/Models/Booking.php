@@ -34,6 +34,9 @@ class Booking extends Model
         'completed_at',
         'disbursed_at',
         'dispute_reason',
+        'delivery_location_label',
+        'delivery_location_region',
+        'delivery_location_source',
     ];
 
     protected function casts(): array

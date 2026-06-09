@@ -28,10 +28,20 @@
         "ACCESS_FINE_LOCATION"
       ],
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "softwareKeyboardLayoutMode": "resize"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow Sebenza to use your location to find trusted providers nearby."
+        }
+      ]
+    ]
   }
 }

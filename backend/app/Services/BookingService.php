@@ -8,6 +8,7 @@ use App\Exceptions\Api\NotFoundException;
 use App\Enums\ErrorCode;
 use App\Enums\TrustTier;
 use App\Models\Booking;
+use App\Models\Commission;
 use App\Models\Dispute;
 use App\Models\ProviderProfile;
 use App\Models\Service;
@@ -40,7 +41,7 @@ class BookingService
     public function create(User $buyer, array $data): Booking
     {
         $service = Service::find($data['service_id']);
-        if (! $service || ! $service->is_active) {
+        if (! $service || ! $service->isActive()) {
             throw new NotFoundException('Service');
         }
 
@@ -97,12 +98,15 @@ class BookingService
                 (id, buyer_id, provider_id, service_id,
                  amount, buyer_protection_fee,
                  status, scheduled_start, scheduled_end,
-                 delivery_location, created_at, updated_at)
+                 delivery_location,
+                 delivery_location_label, delivery_location_region, delivery_location_source,
+                 created_at, updated_at)
             VALUES
                 (gen_random_uuid(), ?, ?, ?,
                  ?, ?,
                  'PENDING_PAYMENT', ?::timestamptz, ?::timestamptz,
                  ST_GeogFromText('POINT(' || ? || ' ' || ? || ')'),
+                 ?, ?, ?,
                  NOW(), NOW())
             RETURNING id
         ", [
@@ -115,6 +119,9 @@ class BookingService
             $data['scheduled_end'],
             $data['delivery_lng'],
             $data['delivery_lat'],
+            $data['delivery_location_label'] ?? null,
+            $data['delivery_location_region'] ?? null,
+            $data['delivery_location_source'] ?? null,
         ])->id;
 
         return $this->findOrFail($bookingId, $buyer);
@@ -136,6 +143,130 @@ class BookingService
             ")
             ->latest()
             ->paginate(20);
+    }
+
+    /**
+     * §6.8 — incoming requests grouped into "New" (escrow funded, not yet
+     * started) and "Scheduled" (in progress), each with a derived buyer
+     * trust hint (§8 — qualitative only, never the raw risk score) and a
+     * live "you keep {net} of {gross}" commission preview (§8.2).
+     */
+    public function incomingRequests(User $provider): array
+    {
+        $profile = ProviderProfile::where('user_id', $provider->id)->first();
+        $tier    = TrustTier::from($profile?->trust_tier ?? 0);
+
+        $bookings = Booking::with(['service.category', 'buyer'])
+            ->where('provider_id', $provider->id)
+            ->whereIn('status', ['FUNDS_HELD', 'IN_PROGRESS'])
+            ->selectRaw("
+                bookings.*,
+                ST_Y(delivery_location::geometry) AS delivery_lat,
+                ST_X(delivery_location::geometry) AS delivery_lng
+            ")
+            ->orderBy('scheduled_start')
+            ->get();
+
+        $entries = $bookings->map(function (Booking $booking) use ($provider, $profile, $tier) {
+            $gross   = (float) $booking->amount;
+            $preview = $this->commission->calculate(
+                gross:      $gross,
+                categoryId: (int) ($booking->service->category_id ?? 0),
+                tier:       $tier->value,
+                providerId: $provider->id,
+            );
+
+            return [
+                'booking_id'      => $booking->id,
+                'status'          => $booking->status,
+                'service_title'   => $booking->service?->title,
+                'pricing_model'   => $booking->service?->pricing_model,
+                'scheduled_start' => $booking->scheduled_start?->toIso8601String(),
+                'scheduled_end'   => $booking->scheduled_end?->toIso8601String(),
+                'delivery_label'  => $booking->delivery_location_label,
+                'delivery_region' => $booking->delivery_location_region,
+                'distance_km'     => $this->distanceKm($profile, $booking->delivery_lat, $booking->delivery_lng),
+                'gross_zmw'       => round($gross, 2),
+                'net_zmw'         => round($preview['net_to_provider'], 2),
+                'commission_rate' => $preview['effective_rate'],
+                'escrow_label'    => $booking->status === 'FUNDS_HELD'
+                    ? 'Funds held in escrow — released when the job is marked complete'
+                    : 'In progress — escrow releases on completion',
+                'buyer_label'     => $this->buyerLabel($booking->buyer),
+                'trust_hint'      => $this->trustHint($booking->buyer, $provider->id),
+                'created_at'      => $booking->created_at?->toIso8601String(),
+            ];
+        });
+
+        $thisWeekNet = (float) Commission::where('provider_id', $provider->id)
+            ->where('calculated_at', '>=', now()->subDays(7))
+            ->sum('net_to_provider');
+
+        return [
+            'weekly' => [
+                'this_week_zmw'  => round($thisWeekNet, 2),
+                'weekly_cap_zmw' => $tier->weeklyCapZmw(),
+            ],
+            'response_nudge' => [
+                'response_rate_7d' => $profile?->response_rate_7d !== null ? (float) $profile->response_rate_7d : null,
+                'show'             => ($profile?->response_rate_7d ?? 1.0) < 0.8,
+            ],
+            'new'       => $entries->where('status', 'FUNDS_HELD')->values()->all(),
+            'scheduled' => $entries->where('status', 'IN_PROGRESS')->values()->all(),
+        ];
+    }
+
+    /** §8 — qualitative buyer trust hint; never expose the raw risk score. */
+    private function trustHint(?User $buyer, string $providerId): string
+    {
+        if (! $buyer) {
+            return 'NEW';
+        }
+
+        $isRepeatClient = Booking::where('buyer_id', $buyer->id)
+            ->where('provider_id', $providerId)
+            ->where('status', 'COMPLETED')
+            ->exists();
+
+        if ($isRepeatClient) {
+            return 'REPEAT_CLIENT';
+        }
+
+        if ($buyer->risk_score !== null && (float) $buyer->risk_score <= 0.3) {
+            return 'TRUSTED';
+        }
+
+        return 'NEW';
+    }
+
+    /** A short, non-PII label for the request card — first part of the email/phone on file. */
+    private function buyerLabel(?User $buyer): string
+    {
+        if (! $buyer) {
+            return 'Customer';
+        }
+
+        if ($buyer->email) {
+            return ucfirst(explode('@', $buyer->email)[0]);
+        }
+
+        return $buyer->phone ?? 'Customer';
+    }
+
+    private function distanceKm(?ProviderProfile $profile, ?float $lat, ?float $lng): ?float
+    {
+        if (! $profile || $profile->base_location_lat === null || $profile->base_location_lng === null
+            || $lat === null || $lng === null) {
+            return null;
+        }
+
+        $earthRadiusKm = 6371.0;
+        $dLat = deg2rad($lat - $profile->base_location_lat);
+        $dLng = deg2rad($lng - $profile->base_location_lng);
+        $a    = sin($dLat / 2) ** 2
+            + cos(deg2rad($profile->base_location_lat)) * cos(deg2rad($lat)) * sin($dLng / 2) ** 2;
+
+        return round($earthRadiusKm * 2 * atan2(sqrt($a), sqrt(1 - $a)), 1);
     }
 
     public function findOrFail(string $id, User $user): Booking

@@ -5,8 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Exceptions\Api\ForbiddenException;
 use App\Exceptions\Api\NotFoundException;
 use App\Http\Controllers\Controller;
-use App\Http\Resources\SearchResultResource;
-use App\Http\Resources\ServiceResource;
+
 use App\Models\User;
 use App\Support\ApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -42,6 +41,7 @@ class PublicProviderController extends Controller
                 s.id,
                 s.title,
                 s.description,
+                s.pricing_model,
                 s.base_price,
                 s.category_id,
                 cat.name AS category_name,
@@ -50,7 +50,7 @@ class PublicProviderController extends Controller
             FROM services s
             JOIN categories cat ON cat.id = s.category_id
             WHERE s.provider_id = ?
-              AND s.is_active    = true
+              AND s.status       = 'ACTIVE'
               AND cat.is_active  = true
             ORDER BY s.created_at DESC
         ", [$userId]);
@@ -63,7 +63,7 @@ class PublicProviderController extends Controller
                 r.comment,
                 r.created_at,
                 u.id   AS reviewer_id,
-                u.name AS reviewer_name
+                u.legal_name AS reviewer_name
             FROM reviews r
             JOIN users u ON u.id = r.reviewer_id
             WHERE r.reviewee_id = ?
@@ -72,27 +72,32 @@ class PublicProviderController extends Controller
         ", [$userId]);
 
         return ApiResponse::success([
-            'id'              => $user->id,
-            'display_name'    => $profile->display_name,
-            'bio'             => $profile->bio,
-            'r_raw'           => round((float) $user->r_raw, 2),
-            'v_reviews'       => (int) $user->v_reviews,
-            'completion_rate' => round((float) $user->completion_rate, 2),
-            'last_active_at'  => $user->last_active_at?->toISOString(),
-            'profile'         => [
+            'id'                  => $user->id,
+            'display_name'        => $profile->display_name,
+            'bio'                 => $profile->bio,
+            // Public profile photo (v3.1 schema note) — distinct from the KYC selfie.
+            'avatar_url'          => $profile->avatar_url,
+            'cover_image_url'     => $profile->cover_image_url,
+            'base_location_label' => $profile->base_location_label,
+            'r_raw'               => round((float) $user->r_raw, 2),
+            'v_reviews'           => (int) $user->v_reviews,
+            'completion_rate'     => round((float) $user->completion_rate, 2),
+            'last_active_at'      => $user->last_active_at?->toISOString(),
+            'profile'             => [
                 'kyc_status'           => $profile->kyc_status,
                 'max_radius_km'        => $profile->max_radius_km,
                 'availability_matrix'  => $profile->availability_matrix,
                 'profile_completeness' => $profile->profile_completeness,
             ],
             'services' => array_map(fn ($s) => [
-                'id'           => $s->id,
-                'title'        => $s->title,
-                'description'  => $s->description,
-                'base_price'   => (float) $s->base_price,
-                'category'     => ['id' => $s->category_id, 'name' => $s->category_name],
-                'latitude'     => $s->latitude  !== null ? (float) $s->latitude  : null,
-                'longitude'    => $s->longitude !== null ? (float) $s->longitude : null,
+                'id'            => $s->id,
+                'title'         => $s->title,
+                'description'   => $s->description,
+                'pricing_model' => $s->pricing_model,
+                'base_price'    => $s->base_price !== null ? (float) $s->base_price : null,
+                'category'      => ['id' => $s->category_id, 'name' => $s->category_name],
+                'latitude'      => $s->latitude  !== null ? (float) $s->latitude  : null,
+                'longitude'     => $s->longitude !== null ? (float) $s->longitude : null,
             ], $services),
             'reviews' => array_map(fn ($rev) => [
                 'id'         => $rev->id,

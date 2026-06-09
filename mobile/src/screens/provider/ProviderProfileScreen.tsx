@@ -151,7 +151,11 @@ export default function ProviderProfileScreen({ route, navigation }: any) {
                       </Chip>
                     </View>
                     <View style={styles.svcRight}>
-                      <Text style={styles.svcPrice}>ZMW {svc.base_price.toFixed(0)}</Text>
+                      <Text style={styles.svcPrice}>
+                        {svc.pricing_model === 'QUOTE' || svc.base_price == null
+                          ? 'By quote'
+                          : `ZMW ${svc.base_price.toFixed(0)}`}
+                      </Text>
                       <MaterialCommunityIcons name="chevron-right" size={18} color={palette.textDisabled} />
                     </View>
                   </View>

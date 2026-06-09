@@ -1,6 +1,12 @@
 import { create } from 'zustand';
 import { ApiError } from '../api/errors';
-import { PaginatedSearchResults, SearchParams, SearchResult, searchApi } from '../api/search';
+import {
+  PaginatedSearchResults,
+  ResolvedCategory,
+  SearchParams,
+  SearchResult,
+  searchApi,
+} from '../api/search';
 
 function toApiError(e: unknown): ApiError {
   if (e instanceof ApiError) return e;
@@ -8,30 +14,30 @@ function toApiError(e: unknown): ApiError {
 }
 
 interface SearchState {
-  results:     SearchResult[];
-  page:        number;
-  lastPage:    number;
-  total:       number;
-  loading:     boolean;
-  error:       ApiError | null;
+  results:           SearchResult[];
+  page:              number;
+  lastPage:          number;
+  total:             number;
+  loading:           boolean;
+  error:             ApiError | null;
+  resolvedCategory:  ResolvedCategory | null;
+  lastParams:        SearchParams | null;
 
-  // Last params used — lets the screen re-run with next page without re-specifying everything
-  lastParams:  SearchParams | null;
-
-  search:      (params: SearchParams, reset?: boolean) => Promise<void>;
-  loadMore:    () => Promise<void>;
-  clearError:  () => void;
-  reset:       () => void;
+  search:     (params: SearchParams, reset?: boolean) => Promise<void>;
+  loadMore:   () => Promise<void>;
+  clearError: () => void;
+  reset:      () => void;
 }
 
 const initialState = {
-  results:    [],
-  page:       1,
-  lastPage:   1,
-  total:      0,
-  loading:    false,
-  error:      null,
-  lastParams: null,
+  results:          [],
+  page:             1,
+  lastPage:         1,
+  total:            0,
+  loading:          false,
+  error:            null,
+  resolvedCategory: null,
+  lastParams:       null,
 };
 
 export const useSearchStore = create<SearchState>((set, get) => ({
@@ -49,10 +55,11 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     try {
       const result: PaginatedSearchResults = await searchApi.search(params);
       set((s) => ({
-        results:  reset ? result.data : [...s.results, ...result.data],
-        page:     result.current_page,
-        lastPage: result.last_page,
-        total:    result.total,
+        results:          reset ? result.data : [...s.results, ...result.data],
+        page:             result.current_page,
+        lastPage:         result.last_page,
+        total:            result.total,
+        resolvedCategory: reset ? (result.resolved_category ?? null) : s.resolvedCategory,
       }));
     } catch (e) {
       set({ error: toApiError(e) });

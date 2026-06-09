@@ -1,449 +1,663 @@
-import { FlashList } from '@shopify/flash-list';
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import * as Location from 'expo-location';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import {
-  ActivityIndicator,
-  Keyboard,
+  AccessibilityInfo,
+  FlatList,
   StyleSheet,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Chip, Text, TouchableRipple } from 'react-native-paper';
+import { Text, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { CardSkeleton } from '../../components/ui/SkeletonBlock';
-import { useSnackbar } from '../../providers/SnackbarProvider';
+import { LocationPickerSheet } from '../../components/location/LocationPickerSheet';
+import { Suggestion, SuggestResult, searchApi } from '../../api/search';
 import { useCategoryStore } from '../../store/categoryStore';
-import { useSearchStore } from '../../store/searchStore';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { useLocationStore } from '../../store/locationStore';
+import { useRecentSearchStore } from '../../store/recentSearchStore';
+import { palette, radius as r, spacing } from '../../theme';
+import { fontFamily } from '../../theme/typography';
 
-const RADIUS_OPTIONS = [2, 5, 10] as const;
+// ── Highlight matched substring ───────────────────────────────────────────────
 
-export default function SearchScreen({ navigation }: any) {
-  const insets = useSafeAreaInsets();
-
-  const [query, setQuery]         = useState('');
-  const [radiusKm, setRadiusKm]   = useState<number>(5);
-  const [categoryId, setCategoryId] = useState<number | undefined>(undefined);
-  const [locationReady, setLocationReady] = useState(false);
-  const [locLoading, setLocLoading]       = useState(true);
-
-  const latRef = useRef<number | null>(null);
-  const lngRef = useRef<number | null>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const { categories, fetchCategories } = useCategoryStore();
-  const { results, loading, error, total, search, loadMore, clearError, reset } = useSearchStore();
-  const { showError } = useSnackbar();
-
-  // ── Location ───────────────────────────────────────────────────────────────
-  useEffect(() => {
-    fetchCategories();
-
-    (async () => {
-      setLocLoading(true);
-      const { status } = await Location.requestForegroundPermissionsAsync();
-
-      if (status !== 'granted') {
-        showError('Location permission denied. Using default location.');
-        // Lusaka CBD fallback
-        latRef.current = -15.4166;
-        lngRef.current =  28.2833;
-        setLocationReady(true);
-        setLocLoading(false);
-        return;
-      }
-
-      const loc = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-      latRef.current = loc.coords.latitude;
-      lngRef.current = loc.coords.longitude;
-      setLocationReady(true);
-      setLocLoading(false);
-    })();
-
-    return () => {
-      reset();
-    };
-  }, []);
-
-  // ── Run search whenever location, radius, or category changes ─────────────
-  useEffect(() => {
-    if (!locationReady) return;
-    runSearch(query);
-  }, [locationReady, radiusKm, categoryId]);
-
-  // ── Debounced keyword search ───────────────────────────────────────────────
-  const handleQueryChange = (text: string) => {
-    setQuery(text);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      if (locationReady) runSearch(text);
-    }, 400);
-  };
-
-  const runSearch = useCallback(
-    (q: string) => {
-      if (latRef.current === null || lngRef.current === null) return;
-      search({
-        query:       q.trim() || undefined,
-        lat:         latRef.current,
-        lng:         lngRef.current,
-        radius_km:   radiusKm,
-        category_id: categoryId,
-        page:        1,
-      });
-    },
-    [radiusKm, categoryId, search],
+function HighlightedLabel({
+  label,
+  span,
+  style,
+  highlightStyle,
+}: {
+  label:          string;
+  span?:          [number, number] | null;
+  style:          object;
+  highlightStyle: object;
+}) {
+  if (!span) return <Text style={style}>{label}</Text>;
+  const [start, end] = span;
+  return (
+    <Text style={style}>
+      {label.slice(0, start)}
+      <Text style={highlightStyle}>{label.slice(start, end)}</Text>
+      {label.slice(end)}
+    </Text>
   );
+}
 
-  // ── Error handling ─────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (error) {
-      showError(error.message);
-      clearError();
-    }
-  }, [error]);
+// ── Suggestion row ────────────────────────────────────────────────────────────
 
-  // ── Render helpers ─────────────────────────────────────────────────────────
-  const renderSkeleton = () => (
-    <View style={styles.skeletons}>
-      {[1, 2, 3, 4, 5].map((k) => <CardSkeleton key={k} />)}
-    </View>
-  );
-
-  const renderEmpty = () => (
-    <View style={styles.empty}>
-      <MaterialCommunityIcons name="map-search-outline" size={52} color={palette.textDisabled} />
-      <Text style={styles.emptyTitle}>No services found</Text>
-      <Text style={styles.emptyText}>
-        Try a different keyword, category, or expand the radius.
-      </Text>
-    </View>
-  );
-
-  const renderFooter = () => {
-    if (!loading || results.length === 0) return null;
-    return (
-      <View style={styles.footer}>
-        <ActivityIndicator color={palette.primary} size="small" />
-      </View>
-    );
-  };
+function SuggestionRow({
+  item,
+  onPress,
+}: {
+  item:    Suggestion;
+  onPress: () => void;
+}) {
+  const isProvider = item.type === 'provider';
+  const isCategory = item.type === 'category';
 
   return (
-    <SafeAreaView style={styles.safe}>
-      {/* Search bar */}
-      <View style={styles.searchBar}>
-        <MaterialCommunityIcons
-          name="magnify"
-          size={20}
-          color={palette.textSecondary}
-          style={styles.searchIcon}
-        />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search services…"
-          placeholderTextColor={palette.textDisabled}
-          value={query}
-          onChangeText={handleQueryChange}
-          returnKeyType="search"
-          onSubmitEditing={() => {
-            Keyboard.dismiss();
-            if (locationReady) runSearch(query);
-          }}
-          autoCorrect={false}
-          autoCapitalize="none"
-        />
-        {query.length > 0 && (
-          <TouchableOpacity
-            onPress={() => {
-              setQuery('');
-              if (locationReady) runSearch('');
-            }}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <MaterialCommunityIcons name="close-circle" size={18} color={palette.textDisabled} />
-          </TouchableOpacity>
+    <TouchableRipple
+      onPress={onPress}
+      style={styles.suggRow}
+      accessibilityRole="button"
+      accessibilityLabel={`${item.label}, ${item.subtitle}`}
+    >
+      <View style={styles.suggInner}>
+        {/* Icon / avatar */}
+        {isProvider ? (
+          <View style={styles.avatarCircle}>
+            <Text style={styles.avatarTxt}>{item.initials ?? '?'}</Text>
+          </View>
+        ) : (
+          <View style={[styles.iconCircle, isCategory && styles.iconCircleCategory]}>
+            <Ionicons
+              name={(item.icon as any) ?? (isCategory ? 'grid-outline' : 'search-outline')}
+              size={16}
+              color={isCategory ? palette.primary : palette.textSecondary}
+            />
+          </View>
         )}
-        {locLoading && (
-          <ActivityIndicator
-            size="small"
-            color={palette.primary}
-            style={{ marginLeft: spacing.xs }}
+
+        {/* Text */}
+        <View style={styles.suggText}>
+          <HighlightedLabel
+            label={item.label}
+            span={item.match_span}
+            style={styles.suggLabel}
+            highlightStyle={styles.suggLabelBold}
           />
-        )}
+          <Text style={styles.suggSub} numberOfLines={1}>{item.subtitle}</Text>
+        </View>
+
+        <Ionicons name="arrow-forward-outline" size={14} color={palette.textDisabled} />
       </View>
+    </TouchableRipple>
+  );
+}
 
-      {/* Radius chips */}
-      <View style={styles.filterRow}>
-        <Text style={styles.filterLabel}>Radius</Text>
-        {RADIUS_OPTIONS.map((km) => (
-          <Chip
-            key={km}
-            selected={radiusKm === km}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setRadiusKm(km);
-            }}
-            style={[styles.chip, radiusKm === km && styles.chipSelected]}
-            textStyle={[styles.chipText, radiusKm === km && styles.chipTextSelected]}
-            showSelectedCheck={false}
-          >
-            {km} km
-          </Chip>
-        ))}
-      </View>
+// ── Screen ────────────────────────────────────────────────────────────────────
 
-      {/* Category chips */}
-      <FlashList
-        data={[{ id: undefined as number | undefined, name: 'All' }, ...categories]}
-        keyExtractor={(item) => String(item.id ?? 'all')}
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.catChips}
-        renderItem={({ item }) => (
-          <Chip
-            selected={categoryId === item.id}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setCategoryId(item.id);
-            }}
-            style={[styles.chip, categoryId === item.id && styles.chipSelected]}
-            textStyle={[styles.chipText, categoryId === item.id && styles.chipTextSelected]}
-            showSelectedCheck={false}
-          >
-            {item.name}
-          </Chip>
-        )}
-      />
+export default function SearchScreen({ navigation }: any) {
+  const insets  = useSafeAreaInsets();
+  const inputRef = useRef<TextInput>(null);
 
-      {/* Results count */}
-      {!loading && results.length > 0 && (
-        <Text style={styles.resultCount}>{total} result{total !== 1 ? 's' : ''} nearby</Text>
-      )}
+  const [query,          setQuery]          = useState('');
+  const [result,         setResult]         = useState<SuggestResult | null>(null);
+  const [loading,        setLoading]        = useState(false);
+  const [pickerVisible,  setPickerVisible]  = useState(false);
+  const [activeIndex,    setActiveIndex]    = useState(-1);  // keyboard nav
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortRef    = useRef<AbortController | null>(null);
 
-      {/* Main list */}
-      {loading && results.length === 0 ? (
-        renderSkeleton()
-      ) : (
-        <FlashList
-          data={results}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={{ paddingBottom: insets.bottom + 110, paddingHorizontal: spacing.lg }}
-          showsVerticalScrollIndicator={false}
-          onEndReached={loadMore}
-          onEndReachedThreshold={0.3}
-          onRefresh={() => locationReady && runSearch(query)}
-          refreshing={loading && results.length === 0}
-          ListEmptyComponent={renderEmpty}
-          ListFooterComponent={renderFooter}
-          renderItem={({ item }) => (
-            <TouchableRipple
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                navigation.navigate('ServiceDetail', { serviceId: item.id });
-              }}
-              borderless
-              style={styles.card}
+  const { categories, fetchCategories } = useCategoryStore();
+  const { activeDelivery, setActiveDelivery } = useLocationStore();
+  const { recents, hydrated, hydrate, push: pushRecent, remove: removeRecent } = useRecentSearchStore();
+
+  useEffect(() => {
+    fetchCategories();
+    hydrate();
+    // Focus the input after mount
+    const t = setTimeout(() => inputRef.current?.focus(), 100);
+    return () => clearTimeout(t);
+  }, []);
+
+  // ── Debounced suggest call ───────────────────────────────────────────────
+
+  const runSuggest = useCallback(
+    (q: string) => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (q.trim().length < 1) {
+        setResult(null);
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      debounceRef.current = setTimeout(async () => {
+        abortRef.current?.abort();
+        abortRef.current = new AbortController();
+        try {
+          const data = await searchApi.suggest(
+            q,
+            activeDelivery?.lat,
+            activeDelivery?.lng,
+          );
+          setResult(data);
+          setActiveIndex(-1);
+          // Announce count for screen readers
+          AccessibilityInfo.announceForAccessibility(
+            `${data.suggestions.length} suggestion${data.suggestions.length !== 1 ? 's' : ''} found`,
+          );
+        } catch {
+          // Cancelled or network — silently ignore
+        } finally {
+          setLoading(false);
+        }
+      }, 200);
+    },
+    [activeDelivery],
+  );
+
+  const handleQueryChange = (text: string) => {
+    setQuery(text);
+    runSuggest(text);
+  };
+
+  const handleClear = () => {
+    setQuery('');
+    setResult(null);
+    setActiveIndex(-1);
+    inputRef.current?.focus();
+  };
+
+  // ── Navigation helpers ───────────────────────────────────────────────────
+
+  const navigateToResults = useCallback(
+    (params: { q?: string; categoryId?: number; resolvedCategoryId?: number | null }) => {
+      if (params.q) pushRecent(params.q);
+      navigation.navigate('BrowseMain', params);
+    },
+    [navigation, pushRecent],
+  );
+
+  const handleSuggestionPress = useCallback(
+    (item: Suggestion) => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      switch (item.type) {
+        case 'category':
+          navigateToResults({ categoryId: item.id as number });
+          break;
+        case 'service':
+          navigation.navigate('ServiceDetail', { serviceId: item.id });
+          break;
+        case 'provider':
+          navigation.navigate('ProviderProfile', { providerId: item.id });
+          break;
+        default:
+          navigateToResults({
+            q: item.label,
+            resolvedCategoryId: result?.resolved_category?.id ?? null,
+          });
+      }
+    },
+    [navigation, navigateToResults, result],
+  );
+
+  const handleSubmit = () => {
+    const q = query.trim();
+    if (!q) return;
+    navigateToResults({
+      q,
+      resolvedCategoryId: result?.resolved_category?.id ?? null,
+    });
+  };
+
+  const handleRecentPress = (q: string) => {
+    setQuery(q);
+    runSuggest(q);
+  };
+
+  // ── Popular categories (from store, first 8) ─────────────────────────────
+
+  const popularCategories = categories.slice(0, 8);
+
+  // ── Empty-query state ────────────────────────────────────────────────────
+
+  const showEmptyState = query.trim().length === 0;
+  const showNoMatch    = !loading && query.trim().length > 0 && result?.suggestions.length === 0;
+  const suggestions    = result?.suggestions ?? [];
+
+  // ── Render ───────────────────────────────────────────────────────────────
+
+  return (
+    <SafeAreaView style={styles.safe} edges={['top']}>
+      {/* ── Search bar ──────────────────────────────────────────────── */}
+      <View style={styles.searchRow}>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => navigation.goBack()}
+          accessibilityLabel="Go back"
+          accessibilityRole="button"
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Ionicons name="chevron-back" size={22} color={palette.textPrimary} />
+        </TouchableOpacity>
+
+        <View
+          style={styles.inputWrap}
+          accessible
+          accessibilityRole="combobox"
+          accessibilityLabel="Search services"
+          accessibilityState={{ expanded: suggestions.length > 0 }}
+        >
+          <Ionicons name="search-outline" size={16} color={palette.textSecondary} />
+          <TextInput
+            ref={inputRef}
+            style={styles.input}
+            placeholder="Search services…"
+            placeholderTextColor={palette.textDisabled}
+            value={query}
+            onChangeText={handleQueryChange}
+            returnKeyType="search"
+            onSubmitEditing={handleSubmit}
+            autoCorrect={false}
+            autoCapitalize="none"
+            accessibilityLabel="Search services"
+          />
+          {query.length > 0 && (
+            <TouchableOpacity
+              onPress={handleClear}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel="Clear search"
+              accessibilityRole="button"
             >
-              <View style={styles.cardInner}>
-                <View style={styles.cardLeft}>
-                  <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
-                  <Text style={styles.cardCategory}>{item.category.name}</Text>
+              <Ionicons name="close-circle" size={16} color={palette.textDisabled} />
+            </TouchableOpacity>
+          )}
+          {loading && (
+            <View style={styles.loadingDot} />
+          )}
+        </View>
+      </View>
 
-                  <View style={styles.metaRow}>
-                    <MaterialCommunityIcons name="star" size={13} color={palette.warning} />
-                    <Text style={styles.metaText}>
-                      {item.provider.r_bayes.toFixed(1)} ({item.provider.v_reviews})
-                    </Text>
-                    <Text style={styles.dot}>·</Text>
-                    <MaterialCommunityIcons name="map-marker-outline" size={13} color={palette.textSecondary} />
-                    <Text style={styles.metaText}>{item.distance_km} km</Text>
-                  </View>
+      {/* ── Location context line ────────────────────────────────────── */}
+      <TouchableRipple
+        onPress={() => setPickerVisible(true)}
+        style={styles.locationRow}
+        accessibilityLabel={`Searching near ${activeDelivery?.label ?? 'no location set'}. Tap to change`}
+        accessibilityRole="button"
+      >
+        <View style={styles.locationRowInner}>
+          <Ionicons
+            name={activeDelivery ? 'location' : 'location-outline'}
+            size={13}
+            color={activeDelivery ? palette.primary : palette.textSecondary}
+          />
+          <Text style={styles.locationTxt} numberOfLines={1}>
+            {activeDelivery
+              ? `Searching near ${activeDelivery.label}`
+              : 'Set your delivery location'}
+          </Text>
+          <Ionicons name="chevron-down" size={12} color={palette.textSecondary} />
+        </View>
+      </TouchableRipple>
 
-                  {/* Tap provider name to open ProviderProfileScreen */}
-                  <TouchableRipple
-                    onPress={() => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      navigation.navigate('ProviderProfile', { providerId: item.provider_id });
-                    }}
-                    style={styles.providerPill}
-                    borderless
-                  >
-                    <Text style={styles.providerText} numberOfLines={1}>
-                      View provider profile →
-                    </Text>
-                  </TouchableRipple>
-                </View>
-
-                <View style={styles.cardRight}>
-                  <Text style={styles.price}>ZMW {item.base_price.toFixed(0)}</Text>
-                  <View style={styles.badgeRow}>
-                    {item.has_promo_slot && (
-                      <View style={[styles.badge, styles.promoBadge]}>
-                        <Text style={styles.badgeText}>AD</Text>
-                      </View>
-                    )}
-                    <TierBadge tier={item.provider.trust_tier} />
-                  </View>
+      {/* ── Suggestions list (when query ≥ 1 char) ──────────────────── */}
+      {!showEmptyState && (
+        <FlatList
+          data={suggestions}
+          keyExtractor={(item, i) => `${item.type}-${item.id}-${i}`}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 84 }}
+          renderItem={({ item }) => (
+            <SuggestionRow
+              item={item}
+              onPress={() => handleSuggestionPress(item)}
+            />
+          )}
+          ListEmptyComponent={
+            showNoMatch ? (
+              <View style={styles.noMatch}>
+                <Ionicons name="search-outline" size={36} color={palette.textDisabled} />
+                <Text style={styles.noMatchTitle}>No results for "{query}"</Text>
+                <Text style={styles.noMatchBody}>
+                  Try a different term or browse popular categories below.
+                </Text>
+                <View style={styles.noMatchCats}>
+                  {popularCategories.map((cat) => (
+                    <TouchableOpacity
+                      key={cat.id}
+                      style={styles.noMatchChip}
+                      onPress={() => navigateToResults({ categoryId: cat.id })}
+                    >
+                      <Text style={styles.noMatchChipTxt}>{cat.name}</Text>
+                    </TouchableOpacity>
+                  ))}
                 </View>
               </View>
-            </TouchableRipple>
-          )}
+            ) : null
+          }
         />
       )}
+
+      {/* ── Empty-query state: recents + popular categories ─────────── */}
+      {showEmptyState && (
+        <FlatList
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 84 }}
+          data={[]}
+          renderItem={null}
+          ListHeaderComponent={
+            <>
+              {/* Recent searches */}
+              {hydrated && recents.length > 0 && (
+                <View style={styles.section}>
+                  <View style={styles.sectionHeader}>
+                    <Text style={styles.sectionTitle}>Recent</Text>
+                    <TouchableOpacity
+                      onPress={() => useRecentSearchStore.getState().clear()}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Text style={styles.clearAll}>Clear all</Text>
+                    </TouchableOpacity>
+                  </View>
+                  {recents.map((r) => (
+                    <TouchableRipple
+                      key={r.query}
+                      onPress={() => handleRecentPress(r.query)}
+                      style={styles.recentRow}
+                    >
+                      <View style={styles.recentInner}>
+                        <Ionicons name="time-outline" size={16} color={palette.textSecondary} />
+                        <Text style={styles.recentTxt} numberOfLines={1}>{r.query}</Text>
+                        <TouchableOpacity
+                          onPress={() => removeRecent(r.query)}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          accessibilityLabel={`Remove ${r.query} from recent searches`}
+                        >
+                          <Ionicons name="close" size={14} color={palette.textDisabled} />
+                        </TouchableOpacity>
+                      </View>
+                    </TouchableRipple>
+                  ))}
+                </View>
+              )}
+
+              {/* Popular categories */}
+              {popularCategories.length > 0 && (
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>Popular categories</Text>
+                  <View style={styles.catGrid}>
+                    {popularCategories.map((cat) => (
+                      <TouchableRipple
+                        key={cat.id}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          navigateToResults({ categoryId: cat.id });
+                        }}
+                        style={styles.catChip}
+                        borderless
+                      >
+                        <View style={styles.catChipInner}>
+                          <Ionicons
+                            name={(cat.icon as any) ?? 'grid-outline'}
+                            size={14}
+                            color={palette.primary}
+                          />
+                          <Text style={styles.catChipTxt} numberOfLines={1}>{cat.name}</Text>
+                        </View>
+                      </TouchableRipple>
+                    ))}
+                  </View>
+                </View>
+              )}
+            </>
+          }
+        />
+      )}
+
+      <LocationPickerSheet
+        visible={pickerVisible}
+        onClose={() => setPickerVisible(false)}
+        onSelect={setActiveDelivery}
+        title="Search near"
+      />
     </SafeAreaView>
   );
 }
 
-// ── Trust-tier badge ──────────────────────────────────────────────────────────
-function TierBadge({ tier }: { tier: number }) {
-  const config = tier >= 4
-    ? { label: 'Elite',    bg: '#7C3AED' }
-    : tier === 3
-    ? { label: 'Pro',      bg: palette.success }
-    : tier === 2
-    ? { label: 'Verified', bg: palette.primary }
-    : tier === 1
-    ? { label: 'Basic',    bg: palette.textSecondary }
-    : { label: 'New',      bg: palette.textDisabled };
-
-  return (
-    <View style={[styles.badge, { backgroundColor: config.bg }]}>
-      <Text style={styles.badgeText}>{config.label}</Text>
-    </View>
-  );
-}
+// ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: palette.background },
 
-  searchBar: {
-    flexDirection:    'row',
-    alignItems:       'center',
-    backgroundColor:  palette.surface,
-    borderRadius:     r.lg,
-    borderWidth:      1,
-    borderColor:      palette.border,
-    marginHorizontal: spacing.lg,
-    marginTop:        spacing.md,
-    marginBottom:     spacing.sm,
+  // Search bar row
+  searchRow: {
+    flexDirection:     'row',
+    alignItems:        'center',
     paddingHorizontal: spacing.md,
-    height:           48,
-    ...shadow.card,
+    paddingVertical:   spacing.sm,
+    gap:               spacing.xs,
+    backgroundColor:   palette.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: palette.border,
   },
-  searchIcon:  { marginRight: spacing.xs },
-  searchInput: {
+  backBtn: {
+    width:          40,
+    height:         40,
+    alignItems:     'center',
+    justifyContent: 'center',
+  },
+  inputWrap: {
+    flex:              1,
+    flexDirection:     'row',
+    alignItems:        'center',
+    backgroundColor:   palette.background,
+    borderRadius:      r.xl,
+    borderWidth:       1,
+    borderColor:       palette.border,
+    paddingHorizontal: spacing.md,
+    height:            44,
+    gap:               spacing.xs,
+  },
+  input: {
     flex:            1,
-    fontFamily:      'PlusJakartaSans_400Regular',
+    fontFamily:      fontFamily.regular,
     fontSize:        15,
     color:           palette.textPrimary,
     paddingVertical: 0,
   },
+  loadingDot: {
+    width:           6,
+    height:          6,
+    borderRadius:    3,
+    backgroundColor: palette.primary,
+    opacity:         0.6,
+  },
 
-  filterRow: {
-    flexDirection:    'row',
-    alignItems:       'center',
-    paddingHorizontal: spacing.lg,
+  // Location line
+  locationRow: {
+    marginHorizontal: spacing.lg,
+    marginTop:        spacing.xs + 2,
     marginBottom:     spacing.xs,
-    gap:              spacing.xs,
+    alignSelf:        'flex-start',
+    borderRadius:     r.full,
   },
-  filterLabel: {
-    ...typography.label,
-    color:        palette.textSecondary,
-    marginRight:  spacing.xs,
-    fontSize:     12,
-  },
-
-  catChips: {
-    paddingHorizontal: spacing.lg,
-    paddingBottom:     spacing.sm,
-    gap:               spacing.xs,
-  },
-
-  chip: {
-    backgroundColor: palette.surface,
-    borderWidth:     1,
-    borderColor:     palette.border,
-    borderRadius:    r.full,
-    height:          34,
-  },
-  chipSelected:     { backgroundColor: palette.primary, borderColor: palette.primary },
-  chipText:         { ...typography.bodySmall, color: palette.textSecondary, fontSize: 13 },
-  chipTextSelected: { color: '#FFFFFF' },
-
-  resultCount: {
-    ...typography.bodySmall,
-    color:           palette.textSecondary,
-    paddingHorizontal: spacing.lg,
-    marginBottom:    spacing.xs,
-  },
-
-  skeletons: { paddingHorizontal: spacing.lg, gap: spacing.xs },
-
-  card: {
-    backgroundColor: palette.surface,
-    borderRadius:    r.lg,
-    borderWidth:     1,
-    borderColor:     palette.border,
-    marginBottom:    spacing.sm,
-    overflow:        'hidden',
-    ...shadow.card,
-  },
-  cardInner: {
-    flexDirection:   'row',
-    justifyContent:  'space-between',
-    padding:         spacing.md,
-    gap:             spacing.sm,
-  },
-  cardLeft:    { flex: 1 },
-  cardRight:   { alignItems: 'flex-end', justifyContent: 'space-between', minWidth: 80 },
-  cardTitle:   { ...typography.label, color: palette.textPrimary, fontSize: 15, marginBottom: 2 },
-  cardCategory:{ ...typography.bodySmall, color: palette.textSecondary, marginBottom: spacing.xs },
-
-  metaRow:  { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: spacing.xs },
-  metaText: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12 },
-  dot:      { color: palette.textDisabled },
-
-  providerPill:  { alignSelf: 'flex-start', paddingVertical: 2 },
-  providerText:  { ...typography.bodySmall, color: palette.primary, fontSize: 12 },
-
-  price: { ...typography.label, color: palette.primary, fontSize: 16, marginBottom: spacing.xs },
-
-  badgeRow: { flexDirection: 'row', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' },
-  badge: {
-    borderRadius:    r.full,
+  locationRowInner: {
+    flexDirection:     'row',
+    alignItems:        'center',
+    gap:               4,
     paddingHorizontal: spacing.sm,
-    paddingVertical: 2,
+    paddingVertical:   spacing.xs,
+    backgroundColor:   palette.primaryLight,
+    borderRadius:      r.full,
   },
-  promoBadge: { backgroundColor: '#F59E0B' },
-  badgeText: {
-    fontFamily:  'PlusJakartaSans_700Bold',
-    fontSize:    10,
-    color:       '#FFFFFF',
-    letterSpacing: 0.5,
+  locationTxt: {
+    fontFamily: fontFamily.regular,
+    fontSize:   12,
+    color:      palette.primary,
+    maxWidth:   220,
   },
 
-  footer: { paddingVertical: spacing.md, alignItems: 'center' },
-
-  empty: {
+  // Suggestion rows
+  suggRow: { paddingHorizontal: spacing.lg },
+  suggInner: {
+    flexDirection:   'row',
     alignItems:      'center',
-    paddingVertical: spacing.xxl * 1.5,
+    gap:             spacing.sm,
+    paddingVertical: spacing.sm + 2,
+    borderBottomWidth: 1,
+    borderBottomColor: palette.border,
+    minHeight:       52,
+  },
+  iconCircle: {
+    width:           36,
+    height:          36,
+    borderRadius:    r.full,
+    backgroundColor: palette.background,
+    borderWidth:     1,
+    borderColor:     palette.border,
+    alignItems:      'center',
+    justifyContent:  'center',
+    flexShrink:      0,
+  },
+  iconCircleCategory: {
+    backgroundColor: palette.primaryLight,
+    borderColor:     palette.primary,
+  },
+  avatarCircle: {
+    width:           36,
+    height:          36,
+    borderRadius:    r.full,
+    backgroundColor: palette.primaryLight,
+    alignItems:      'center',
+    justifyContent:  'center',
+    flexShrink:      0,
+  },
+  avatarTxt: {
+    fontFamily: fontFamily.medium,
+    fontSize:   13,
+    color:      palette.primary,
+  },
+  suggText:      { flex: 1 },
+  suggLabel:     { fontFamily: fontFamily.regular, fontSize: 15, color: palette.textPrimary },
+  suggLabelBold: { fontFamily: fontFamily.medium },
+  suggSub:       { fontFamily: fontFamily.regular, fontSize: 12, color: palette.textSecondary, marginTop: 1 },
+
+  // No-match state
+  noMatch: {
+    alignItems:        'center',
     paddingHorizontal: spacing.xl,
+    paddingTop:        spacing.xxl,
+    gap:               spacing.sm,
   },
-  emptyTitle: {
-    ...typography.heading3,
+  noMatchTitle: {
+    fontFamily: fontFamily.medium,
+    fontSize:   16,
     color:      palette.textPrimary,
-    marginTop:  spacing.md,
-    marginBottom: spacing.xs,
+    textAlign:  'center',
+    marginTop:  spacing.sm,
   },
-  emptyText: {
-    ...typography.body,
-    color:     palette.textSecondary,
-    textAlign: 'center',
+  noMatchBody: {
+    fontFamily: fontFamily.regular,
+    fontSize:   13,
+    color:      palette.textSecondary,
+    textAlign:  'center',
+    lineHeight: 19,
+  },
+  noMatchCats: {
+    flexDirection: 'row',
+    flexWrap:      'wrap',
+    gap:           spacing.xs,
+    marginTop:     spacing.sm,
+    justifyContent: 'center',
+  },
+  noMatchChip: {
+    borderRadius:      r.full,
+    borderWidth:       1,
+    borderColor:       palette.border,
+    paddingHorizontal: spacing.md,
+    paddingVertical:   spacing.xs + 2,
+    backgroundColor:   palette.surface,
+  },
+  noMatchChipTxt: {
+    fontFamily: fontFamily.regular,
+    fontSize:   13,
+    color:      palette.textSecondary,
+  },
+
+  // Empty-query state sections
+  section: {
+    paddingHorizontal: spacing.lg,
+    paddingTop:        spacing.md,
+  },
+  sectionHeader: {
+    flexDirection:  'row',
+    justifyContent: 'space-between',
+    alignItems:     'center',
+    marginBottom:   spacing.xs,
+  },
+  sectionTitle: {
+    fontFamily:   fontFamily.medium,
+    fontSize:     13,
+    color:        palette.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom:  spacing.xs,
+  },
+  clearAll: {
+    fontFamily: fontFamily.regular,
+    fontSize:   12,
+    color:      palette.primary,
+  },
+
+  // Recent rows
+  recentRow: { borderRadius: r.sm },
+  recentInner: {
+    flexDirection:   'row',
+    alignItems:      'center',
+    gap:             spacing.sm,
+    paddingVertical: spacing.sm + 2,
+    minHeight:       44,
+  },
+  recentTxt: {
+    fontFamily: fontFamily.regular,
+    fontSize:   14,
+    color:      palette.textPrimary,
+    flex:       1,
+  },
+
+  // Popular category chips
+  catGrid: {
+    flexDirection: 'row',
+    flexWrap:      'wrap',
+    gap:           spacing.xs,
+  },
+  catChip: {
+    borderRadius:    r.full,
+    overflow:        'hidden',
+  },
+  catChipInner: {
+    flexDirection:     'row',
+    alignItems:        'center',
+    gap:               spacing.xs,
+    borderRadius:      r.full,
+    borderWidth:       1,
+    borderColor:       palette.border,
+    paddingHorizontal: spacing.md,
+    paddingVertical:   spacing.xs + 2,
+    backgroundColor:   palette.surface,
+    minHeight:         36,
+  },
+  catChipTxt: {
+    fontFamily: fontFamily.regular,
+    fontSize:   13,
+    color:      palette.textSecondary,
   },
 });

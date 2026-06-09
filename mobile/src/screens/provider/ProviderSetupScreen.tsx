@@ -244,15 +244,13 @@ export default function ProviderSetupScreen({ navigation }: any) {
           <Text style={styles.sectionLabel}>Service Area</Text>
           <View style={styles.card}>
             <LocationSearch
-              lat={lat}
-              lng={lng}
-              locationLabel={locationLabel}
-              onLocationChange={(newLat, newLng, label) => {
-                setLat(newLat);
-                setLng(newLng);
-                setLocationLabel(label);
+              value={lat && lng ? { lat: parseFloat(lat), lng: parseFloat(lng), label: locationLabel, region: null, source: 'SEARCH' } : null}
+              onChange={(loc) => {
+                setLat(loc ? String(loc.lat) : '');
+                setLng(loc ? String(loc.lng) : '');
+                setLocationLabel(loc?.label ?? '');
               }}
-              latError={latErr}
+              error={latErr}
             />
             <TextInput
               mode="outlined"

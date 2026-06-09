@@ -4,11 +4,14 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BookingController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\DisputeController;
+use App\Http\Controllers\Api\HomeBannerController;
 use App\Http\Controllers\Api\KycController;
+use App\Http\Controllers\Api\LocationController;
 use App\Http\Controllers\Api\SafetyReportController;
 use App\Http\Controllers\Api\ProviderProfileController;
 use App\Http\Controllers\Api\PublicProviderController;
 use App\Http\Controllers\Api\SearchController;
+use App\Http\Controllers\Api\SearchSuggestController;
 use App\Http\Controllers\Api\ServiceController;
 use Illuminate\Support\Facades\Route;
 
@@ -32,7 +35,9 @@ Route::prefix('auth')->group(function () {
 });
 
 // ── Search & Discovery (public, Phase 3) ───────────────────────────────────
-Route::get('/search', SearchController::class);
+Route::get('/search',         SearchController::class);
+Route::get('/search/suggest', SearchSuggestController::class);
+Route::get('/home-banners',   [HomeBannerController::class, 'index']);
 
 // ── Categories (public read) ────────────────────────────────────────────────
 Route::get('/categories', [CategoryController::class, 'index']);
@@ -66,6 +71,21 @@ Route::middleware('auth:api')->group(function () {
     // ── Safety reports ─────────────────────────────────────────────────────
     Route::post('/safety-reports', [SafetyReportController::class, 'store']);
 
+    // ── Location & address book (v3.1 §4) ──────────────────────────────────
+    Route::prefix('location')->group(function () {
+        Route::get('/search',  [LocationController::class, 'search']);
+        Route::post('/reverse', [LocationController::class, 'reverse']);
+    });
+    Route::prefix('me')->group(function () {
+        Route::get('/location',                     [LocationController::class, 'showPrimary']);
+        Route::put('/location',                     [LocationController::class, 'setPrimary']);
+        Route::get('/saved-locations',               [LocationController::class, 'indexSaved']);
+        Route::post('/saved-locations',              [LocationController::class, 'storeSaved']);
+        Route::put('/saved-locations/{id}',          [LocationController::class, 'updateSaved']);
+        Route::delete('/saved-locations/{id}',       [LocationController::class, 'destroySaved']);
+        Route::get('/providers',                     [BookingController::class, 'myProviders']);
+    });
+
     // ── KYC (any authenticated user acting as provider) ────────────────────
     Route::prefix('kyc')->group(function () {
         Route::get('/',          [KycController::class, 'status']);
@@ -79,8 +99,19 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/profile',         [ProviderProfileController::class, 'show']);
         Route::put('/profile',         [ProviderProfileController::class, 'upsert']);
         Route::post('/profile/kyc',    [ProviderProfileController::class, 'uploadKyc']);
+        Route::post('/profile/cover-photo',  [ProviderProfileController::class, 'uploadCoverPhoto']);
+        Route::post('/profile/portfolio',   [ProviderProfileController::class, 'uploadPortfolioImage']);
+        Route::delete('/profile/portfolio', [ProviderProfileController::class, 'deletePortfolioImage']);
+
+        // §6.5 — provider Hub aggregate (tier, §9.1 checklist, earnings, payout countdown)
+        Route::get('/dashboard',       [ProviderProfileController::class, 'dashboard']);
+        // §6.5/§9.3 — Earnings tab aggregate (totals, payout countdown, recent commissions)
+        Route::get('/earnings',        [ProviderProfileController::class, 'earnings']);
+        // §6.8 — incoming requests (New / Scheduled, trust hints, commission preview)
+        Route::get('/requests',        [BookingController::class, 'incomingRequests']);
 
         Route::get('/services',        [ServiceController::class, 'mine']);
+        Route::get('/services/commission-preview', [ServiceController::class, 'commissionPreview']);
         Route::post('/services',       [ServiceController::class, 'store']);
         Route::put('/services/{service}',    [ServiceController::class, 'update']);
         Route::delete('/services/{service}', [ServiceController::class, 'destroy']);

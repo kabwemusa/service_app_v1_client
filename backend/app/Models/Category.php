@@ -6,14 +6,36 @@ use Illuminate\Database\Eloquent\Model;
 
 class Category extends Model
 {
-    protected $fillable = ['name', 'icon_url', 'is_active', 'commission_rates'];
+    protected $fillable = [
+        'parent_id',
+        'name',
+        'slug',
+        'synonyms',
+        'icon_url',
+        'icon',
+        'is_active',
+        'display_order',
+        'commission_band',
+        'commission_rates',
+    ];
 
     protected function casts(): array
     {
         return [
             'is_active'        => 'boolean',
+            'synonyms'         => 'array',
             'commission_rates' => 'array',
         ];
+    }
+
+    public function parent()
+    {
+        return $this->belongsTo(Category::class, 'parent_id');
+    }
+
+    public function children()
+    {
+        return $this->hasMany(Category::class, 'parent_id')->where('is_active', true)->orderBy('display_order');
     }
 
     public function services()

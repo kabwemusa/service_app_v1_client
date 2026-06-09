@@ -42,6 +42,30 @@ class ServiceController extends Controller
         );
     }
 
+    /**
+     * GET /provider/services/commission-preview?category_id=&price=
+     *
+     * §6.7 — live "At {price}, {category}/{tier} commission is {rate}.
+     * You keep ~{net}." line, computed with the provider's real tier rate
+     * (v3 §8.1) and the §8.2 commission math so the editor can render it
+     * as the provider types a price.
+     */
+    public function commissionPreview(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'category_id' => ['required', 'integer', 'exists:categories,id'],
+            'price'       => ['required', 'numeric', 'min:0.01', 'max:99999.99'],
+        ]);
+
+        $preview = $this->service->commissionPreview(
+            $request->user(),
+            (int) $data['category_id'],
+            (float) $data['price'],
+        );
+
+        return ApiResponse::success($preview, 'Commission preview calculated.');
+    }
+
     private function paginatedPayload(\Illuminate\Pagination\LengthAwarePaginator $paginator): array
     {
         return [

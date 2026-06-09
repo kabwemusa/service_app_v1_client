@@ -212,11 +212,13 @@ export default function BookingScreen({ navigation, route }: any) {
 
     try {
       const booking = await createBooking({
-        service_id:      serviceId,
-        scheduled_start: toISO(start),
-        scheduled_end:   toISO(end),
-        delivery_lat:    parseFloat(selectedPlace.lat),
-        delivery_lng:    parseFloat(selectedPlace.lon),
+        service_id:               serviceId,
+        scheduled_start:          toISO(start),
+        scheduled_end:            toISO(end),
+        delivery_lat:             parseFloat(selectedPlace.lat),
+        delivery_lng:             parseFloat(selectedPlace.lon),
+        delivery_location_label:  placeLabel(selectedPlace),
+        delivery_location_source: 'SEARCH',
       });
       navigation.replace('BookingDetail', { bookingId: booking.id });
     } catch {
@@ -227,7 +229,7 @@ export default function BookingScreen({ navigation, route }: any) {
   const endHour = startHour + durationHrs;
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top']}>
       {/* Nav bar */}
       <View style={styles.navBar}>
         <TouchableRipple onPress={() => navigation.goBack()} borderless style={styles.backBtn}>

@@ -93,17 +93,59 @@ export interface PaginatedBookings {
 }
 
 export interface CreateBookingParams {
-  service_id:      string;
-  scheduled_start: string;
-  scheduled_end:   string;
-  delivery_lat:    number;
-  delivery_lng:    number;
+  service_id:                string;
+  scheduled_start:           string;
+  scheduled_end:             string;
+  delivery_lat:              number;
+  delivery_lng:              number;
+  delivery_location_label:   string;
+  delivery_location_region?: string | null;
+  delivery_location_source:  'DEVICE' | 'SEARCH' | 'SAVED';
 }
 
 export interface OpenDisputeParams {
   reason_category: string;
   description:     string;
   evidence?:       string[];
+}
+
+// §6.8 — incoming requests (New / Scheduled), each with a derived buyer
+// trust hint (§8 — qualitative only, never the raw risk score).
+export type TrustHint = 'REPEAT_CLIENT' | 'TRUSTED' | 'NEW';
+
+export interface IncomingRequestEntry {
+  booking_id:       string;
+  status:           'FUNDS_HELD' | 'IN_PROGRESS';
+  service_title:    string | null;
+  pricing_model:    'FIXED' | 'HOURLY' | 'QUOTE' | null;
+  scheduled_start:  string | null;
+  scheduled_end:    string | null;
+  delivery_label:   string | null;
+  delivery_region:  string | null;
+  distance_km:      number | null;
+  gross_zmw:        number;
+  net_zmw:          number;
+  commission_rate:  number;
+  escrow_label:     string;
+  buyer_label:      string;
+  trust_hint:       TrustHint;
+  created_at:       string | null;
+}
+
+export interface IncomingRequests {
+  weekly: { this_week_zmw: number; weekly_cap_zmw: number | null };
+  response_nudge: { response_rate_7d: number | null; show: boolean };
+  new:       IncomingRequestEntry[];
+  scheduled: IncomingRequestEntry[];
+}
+
+// §6.1 — providers this buyer has completed bookings with (Home "Your providers" shelf)
+export interface MyProvider {
+  id:           string;
+  display_name: string;
+  trust_tier:   number;
+  r_raw:        number;
+  v_reviews:    number;
 }
 
 // ── API calls ──────────────────────────────────────────────────────────────
@@ -141,4 +183,10 @@ export const bookingsApi = {
 
   withdrawDispute: (disputeId: string) =>
     api.post<Dispute>(`/disputes/${disputeId}/withdraw`, {}),
+
+  incomingRequests: () =>
+    api.get<IncomingRequests>('/provider/requests'),
+
+  myProviders: () =>
+    api.get<MyProvider[]>('/me/providers'),
 };

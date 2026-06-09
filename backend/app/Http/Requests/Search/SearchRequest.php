@@ -13,15 +13,25 @@ class SearchRequest extends FormRequest
 
     public function rules(): array
     {
-        $maxRadius = config('search.search.max_radius_km', 10);
-
         return [
+            // v3.1 §4.6: no customer-facing radius control. `lat`/`lng` are the
+            // resolved delivery location L (device GPS, saved place, or search pick) —
+            // never typed by the user. Candidate radius is derived server-side from
+            // the provider's own service_radius_km capped by MAX_SEARCH_RADIUS_KM (§4.4).
             'query'       => ['nullable', 'string', 'max:100'],
-            'lat'         => ['required', 'numeric', 'between:-90,90'],
-            'lng'         => ['required', 'numeric', 'between:-180,180'],
-            'radius_km'   => ['nullable', 'integer', "between:1,{$maxRadius}"],
+            'lat'         => ['nullable', 'numeric', 'between:-90,90'],
+            'lng'         => ['nullable', 'numeric', 'between:-180,180'],
             'category_id' => ['nullable', 'integer', 'exists:categories,id'],
             'page'        => ['nullable', 'integer', 'min:1'],
+            // Browse filters (v3.1 §6 Filters sheet)
+            'max_price'         => ['nullable', 'numeric', 'min:0'],
+            'availability'      => ['nullable', 'string', 'in:any,today,week,date'],
+            'availability_date' => ['nullable', 'date', 'required_if:availability,date'],
+            'verified_id'       => ['nullable', 'boolean'],
+            'top_rated'         => ['nullable', 'boolean'],
+            'min_tier'          => ['nullable', 'integer', 'in:0,2,3,4'],
+            'languages'         => ['nullable', 'string', 'max:50'], // comma-joined codes: en,ny,bem,ton
+            'sort'              => ['nullable', 'string', 'in:recommended,top_rated,price_asc,fastest,nearest'],
         ];
     }
 }

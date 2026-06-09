@@ -1,19 +1,29 @@
+import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import React, { useEffect } from 'react';
 import { Alert, FlatList, StyleSheet, View } from 'react-native';
 import { FAB, Text, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Service } from '../../api/services';
+import { Service, ServiceStatus } from '../../api/services';
+import { priceLabel } from '../../components/discovery/RankedServiceCard';
 import { CardSkeleton } from '../../components/ui/SkeletonBlock';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useServiceStore } from '../../store/serviceStore';
 import { palette, radius as r, shadow, spacing, typography } from '../../theme';
 
+// §6.7 — listings carry a `status` (DRAFT/ACTIVE/PAUSED/HIDDEN), not a boolean.
+const STATUS_META: Record<ServiceStatus, { color: string; label: string }> = {
+  ACTIVE: { color: palette.success,      label: 'Active'  },
+  DRAFT:  { color: palette.warning,      label: 'Draft'   },
+  PAUSED: { color: palette.textDisabled, label: 'Paused'  },
+  HIDDEN: { color: palette.danger,       label: 'Hidden'  },
+};
+
 export default function MyServicesScreen({ navigation }: any) {
   const { myServices, loading, error, fetchMyServices, deleteService, clearError } = useServiceStore();
   const { showSuccess, showError } = useSnackbar();
-  const insets = useSafeAreaInsets();
+  const tabBarHeight = useBottomTabBarHeight();
   const showBack = navigation.canGoBack();
 
   useEffect(() => {
@@ -72,7 +82,7 @@ export default function MyServicesScreen({ navigation }: any) {
         <FlatList
           data={myServices}
           keyExtractor={(service) => service.id}
-          contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 120 }]}
+          contentContainerStyle={[styles.list, { paddingBottom: tabBarHeight + 80 }]}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={(
             <View style={styles.empty}>
@@ -89,12 +99,22 @@ export default function MyServicesScreen({ navigation }: any) {
                 borderless
               >
                 <View style={styles.cardInner}>
-                  <View style={[styles.activeDot, !item.is_active && styles.inactiveDot]} />
+                  <View style={[styles.activeDot, { backgroundColor: STATUS_META[item.status].color }]} />
                   <View style={styles.cardBody}>
                     <Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text>
-                    <Text style={styles.cardCategory}>{item.category?.name}</Text>
+                    <View style={styles.cardMetaRow}>
+                      <Text style={styles.cardCategory}>{item.category?.name}</Text>
+                      {item.status !== 'ACTIVE' && (
+                        <>
+                          <Text style={styles.metaDot}>·</Text>
+                          <Text style={[styles.statusLabel, { color: STATUS_META[item.status].color }]}>
+                            {STATUS_META[item.status].label}
+                          </Text>
+                        </>
+                      )}
+                    </View>
                   </View>
-                  <Text style={styles.cardPrice}>ZMW {item.base_price.toFixed(0)}</Text>
+                  <Text style={styles.cardPrice}>{priceLabel(item.pricing_model, item.base_price)}</Text>
                 </View>
               </TouchableRipple>
               <TouchableRipple
@@ -117,7 +137,7 @@ export default function MyServicesScreen({ navigation }: any) {
 
       <FAB
         icon="plus"
-        style={[styles.fab, { bottom: insets.bottom + spacing.lg }]}
+        style={[styles.fab, { bottom: tabBarHeight + spacing.sm }]}
         onPress={() => navigation.navigate('CreateService', { service: undefined })}
         color="#FFFFFF"
       />
@@ -181,10 +201,12 @@ const styles = StyleSheet.create({
     borderRadius: r.full,
     backgroundColor: palette.success,
   },
-  inactiveDot: { backgroundColor: palette.textDisabled },
   cardBody: { flex: 1 },
   cardTitle: { ...typography.label, color: palette.textPrimary, fontSize: 16, marginBottom: 3 },
+  cardMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   cardCategory: { ...typography.bodySmall, color: palette.textSecondary },
+  metaDot: { color: palette.textDisabled, fontSize: 12 },
+  statusLabel: { ...typography.bodySmall, fontSize: 12 },
   cardPrice: { ...typography.label, color: palette.primary, fontSize: 16 },
   deleteBtn: {
     justifyContent: 'center',

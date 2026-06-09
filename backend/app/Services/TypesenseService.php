@@ -57,7 +57,7 @@ class TypesenseService
                     ['name' => 'category_name',  'type' => 'string'],
                     ['name' => 'provider_id',    'type' => 'string'],
                     ['name' => 'base_price',     'type' => 'float'],
-                    ['name' => 'is_active',      'type' => 'bool'],
+                    ['name' => 'status',         'type' => 'string'],
                 ],
                 'default_sorting_field' => 'base_price',
             ];
@@ -133,7 +133,7 @@ class TypesenseService
             $this->ensureCollection();
 
             $services = Service::with('category')
-                ->where('is_active', true)
+                ->where('status', 'ACTIVE')
                 ->cursor();
 
             $batch   = [];
@@ -189,7 +189,7 @@ class TypesenseService
             $params = [
                 'q'          => $query,
                 'query_by'   => 'title,description,category_name',
-                'filter_by'  => 'is_active:true' . ($categoryId ? " && category_id:{$categoryId}" : ''),
+                'filter_by'  => 'status:=ACTIVE' . ($categoryId ? " && category_id:{$categoryId}" : ''),
                 'per_page'   => 250, // get broad set; spatial + ranking will narrow it
                 'page'       => 1,
             ];
@@ -239,7 +239,7 @@ class TypesenseService
             'category_name'=> $service->category?->name ?? '',
             'provider_id'  => $service->provider_id,
             'base_price'   => (float) $service->base_price,
-            'is_active'    => (bool) $service->is_active,
+            'status'       => (string) $service->status,
         ];
     }
 

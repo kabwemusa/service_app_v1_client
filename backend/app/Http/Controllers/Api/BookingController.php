@@ -11,6 +11,7 @@ use App\Services\DisputeService;
 use App\Support\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class BookingController extends Controller
 {
@@ -31,6 +32,12 @@ class BookingController extends Controller
             'per_page'     => $paginator->perPage(),
             'total'        => $paginator->total(),
         ], 'Bookings retrieved.');
+    }
+
+    /** GET /provider/requests — §6.8 incoming requests (New / Scheduled + trust hints) */
+    public function incomingRequests(Request $request): JsonResponse
+    {
+        return ApiResponse::success($this->bookings->incomingRequests($request->user()), 'Incoming requests retrieved.');
     }
 
     /** POST /bookings */
@@ -98,5 +105,43 @@ class BookingController extends Controller
     {
         $booking = $this->bookings->cancel($id, $request->user());
         return ApiResponse::success(new BookingResource($booking), 'Booking cancelled.');
+    }
+
+    /**
+     * GET /me/providers
+     *
+     * Returns up to 8 distinct providers this buyer has completed bookings with.
+     * Used for the "Your providers" shelf on the Home screen.
+     */
+    public function myProviders(Request $request): JsonResponse
+    {
+        $userId = $request->user()->id;
+
+        $rows = DB::select("
+            SELECT DISTINCT ON (b.provider_id)
+                b.provider_id  AS id,
+                pp.display_name,
+                pp.trust_tier,
+                u.r_raw,
+                u.v_reviews
+            FROM bookings b
+            JOIN users            u  ON u.id        = b.provider_id
+            JOIN provider_profiles pp ON pp.user_id = b.provider_id
+            WHERE b.buyer_id = ?
+              AND b.status   = 'COMPLETED'
+            ORDER BY b.provider_id, b.updated_at DESC
+            LIMIT 8
+        ", [$userId]);
+
+        return ApiResponse::success(
+            array_map(fn ($r) => [
+                'id'           => $r->id,
+                'display_name' => $r->display_name,
+                'trust_tier'   => (int) $r->trust_tier,
+                'r_raw'        => round((float) $r->r_raw, 2),
+                'v_reviews'    => (int) $r->v_reviews,
+            ], $rows),
+            'My providers retrieved.'
+        );
     }
 }
