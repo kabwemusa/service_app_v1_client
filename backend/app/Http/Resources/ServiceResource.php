@@ -16,6 +16,9 @@ class ServiceResource extends JsonResource
             'category'               => new CategoryResource($this->whenLoaded('category')),
             'title'                  => $this->title,
             'description'            => $this->description,
+            // Platform payment mode a new booking for this service would be created under
+            // (DIRECT = pay provider directly, no escrow). Drives mode-aware CTA copy.
+            'payment_mode'           => config('booking.payment_mode', 'DIRECT'),
             // §5.1/§5.5 — QUOTE listings carry no price; the client shows "By quote".
             'pricing_model'          => $this->pricing_model,
             'base_price'             => $this->base_price,
@@ -56,7 +59,10 @@ class ServiceResource extends JsonResource
                 // value stored on the user; trust_score is NEVER exposed to customers (§7).
                 'r_raw'                  => round((float) $this->provider->r_raw, 2),
                 'v_reviews'              => (int) $this->provider->v_reviews,
-                'completion_rate'        => round((float) $this->provider->completion_rate, 3),
+                // NULL = no history yet (v3.2 §4.1) — clients render "–", never 0%
+                'completion_rate'        => $this->provider->completion_rate !== null
+                    ? round((float) $this->provider->completion_rate, 3)
+                    : null,
                 // Earned badges (v3 §9.2) — set by findOrFail via ProviderProfileService::earnedBadges()
                 'badges'                 => $this->provider_badges ?? [],
             ]),

@@ -27,13 +27,14 @@ interface AuthState {
   pendingIdentifier:   string | null;  // email or phone used at registration
   loading:        boolean;
   error:          ApiError | null;
-  register:  (payload: RegisterPayload) => Promise<void>;
-  verifyOtp: (otp: string) => Promise<void>;
-  login:     (payload: LoginPayload) => Promise<void>;
-  resendOtp: () => Promise<void>;
-  logout:    () => Promise<void>;
-  hydrate:   () => Promise<void>;
-  setActiveRole: (role: ActiveRole) => Promise<void>;
+  register:       (payload: RegisterPayload) => Promise<void>;
+  verifyOtp:      (otp: string) => Promise<void>;
+  login:          (payload: LoginPayload) => Promise<void>;
+  resendOtp:      () => Promise<void>;
+  logout:         () => Promise<void>;
+  hydrate:        () => Promise<void>;
+  setActiveRole:  (role: ActiveRole) => Promise<void>;
+  updateAccount:  (payload: { phone?: string | null; name?: string | null }) => Promise<void>;
   clearError: () => void;
 }
 
@@ -171,6 +172,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await authApi.resendOtp(pendingUserId);
     } catch (e) {
       set({ error: toApiError(e) });
+    }
+  },
+
+  updateAccount: async (payload) => {
+    set({ loading: true, error: null });
+    try {
+      const updatedUser = await authApi.updateAccount(payload);
+      const merged = { ...get().user, ...updatedUser } as AuthUser;
+      await AsyncStorage.setItem('auth_user', JSON.stringify(merged));
+      set({ user: merged });
+    } catch (e) {
+      const err = toApiError(e);
+      set({ error: err });
+      throw err;
+    } finally {
+      set({ loading: false });
     }
   },
 

@@ -74,6 +74,9 @@ export const authApi = {
   resendOtp: (userId: string) =>
     api.post('/auth/resend-otp', { user_id: userId }),
 
+  updateAccount: (payload: { phone?: string | null; name?: string | null }) =>
+    api.patch<AuthUser>('/me/account', payload),
+
   logout: async () => {
     try {
       const refreshToken = await AsyncStorage.getItem('refresh_token');

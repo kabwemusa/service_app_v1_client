@@ -41,7 +41,13 @@ class DisputeAutoCompleteWorker extends Command
         foreach ($due as $booking) {
             try {
                 $booking->update(["status" => "COMPLETED"]);
-                $this->payment->initiatePayout($booking);
+
+                // ESCROW only: initiate payout through MoMo.
+                // DIRECT bookings auto-complete without payment rails.
+                if (($booking->payment_mode ?? "ESCROW") === "ESCROW") {
+                    $this->payment->initiatePayout($booking);
+                }
+
                 Log::info("DisputeAutoCompleteWorker: auto-completed booking", ["booking_id" => $booking->id]);
             } catch (\Throwable $e) {
                 Log::error("DisputeAutoCompleteWorker: failed for booking", [

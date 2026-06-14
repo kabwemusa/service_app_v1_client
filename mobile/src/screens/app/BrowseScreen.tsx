@@ -57,6 +57,7 @@ function buildParams(
   subCategoryId: number | undefined,
   lat:           number | undefined,
   lng:           number | undefined,
+  region:        string | null | undefined,
   query:         string,
   page:          number,
 ): SearchParams {
@@ -65,6 +66,8 @@ function buildParams(
   const effectiveCategoryId = subCategoryId ?? categoryId;
   if (effectiveCategoryId)  params.category_id = effectiveCategoryId;
   if (lat && lng)           { params.lat = lat; params.lng = lng; }
+  // Promoted-slot inventory is matched per category × region (v3.2 §1.5)
+  if (region)               params.region = region;
   if (query.trim())     params.query = query.trim();
 
   if (filters.maxBudget !== null)      params.max_price  = filters.maxBudget;
@@ -92,7 +95,7 @@ export default function BrowseScreen({ navigation, route }: any) {
 
   const insets               = useSafeAreaInsets();
   const { categories }       = useCategoryStore();
-  const { activeDelivery, setActiveDelivery } = useLocationStore();
+  const { primaryLocation, setPrimary } = useLocationStore();
   const { results, loading, total, loadMore, search, resolvedCategory } = useSearchStore();
   const { showError }        = useSnackbar();
   const { push: pushRecent } = useRecentSearchStore();
@@ -138,7 +141,8 @@ export default function BrowseScreen({ navigation, route }: any) {
         filters, sort,
         initialCategoryId,
         subCategoryId,
-        activeDelivery?.lat, activeDelivery?.lng,
+        primaryLocation?.lat, primaryLocation?.lng,
+        primaryLocation?.region,
         query, page,
       );
       if (reset && query.trim()) pushRecent(query.trim());
@@ -151,13 +155,13 @@ export default function BrowseScreen({ navigation, route }: any) {
       });
       setIsOffline(false);
     },
-    [filters, sort, initialCategoryId, subCategoryId, activeDelivery, query, search, showError, pushRecent],
+    [filters, sort, initialCategoryId, subCategoryId, primaryLocation, query, search, showError, pushRecent],
   );
 
   // Re-run when filter/sort/location/subcategory changes
   useEffect(() => {
     runSearch(1, true);
-  }, [filters, sort, activeDelivery, initialCategoryId, subCategoryId]);
+  }, [filters, sort, primaryLocation, initialCategoryId, subCategoryId]);
 
   // Debounce in-category search query
   useEffect(() => {
@@ -205,13 +209,23 @@ export default function BrowseScreen({ navigation, route }: any) {
 
   // ── Location label ────────────────────────────────────────────────────────
 
-  const locationLabel = activeDelivery?.label ?? 'Set location';
+  const handlePrimarySelect = useCallback(
+    async (loc: { lat: number; lng: number; label: string; region: string | null; source: 'DEVICE' | 'SEARCH' | 'SAVED' }) => {
+      const ok = await setPrimary(loc);
+      if (!ok) showError('Could not update your location.');
+    },
+    [setPrimary, showError],
+  );
+
+  const locationLabel = primaryLocation?.label ?? 'Set location';
 
   // ── Result count subtitle ─────────────────────────────────────────────────
 
   const resultLine = loading && results.length === 0
     ? 'Loading…'
-    : `${total} service${total === 1 ? '' : 's'} near ${locationLabel}`;
+    : primaryLocation
+    ? `${total} service${total === 1 ? '' : 's'} near ${locationLabel}`
+    : `${total} service${total === 1 ? '' : 's'}`;
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -263,9 +277,9 @@ export default function BrowseScreen({ navigation, route }: any) {
           >
             <View style={styles.locationPillInner}>
               <Ionicons
-                name={activeDelivery ? 'location' : 'location-outline'}
+                name={primaryLocation ? 'location' : 'location-outline'}
                 size={13}
-                color={activeDelivery ? palette.primary : palette.textSecondary}
+                color={primaryLocation ? palette.primary : palette.textSecondary}
               />
               <Text style={styles.locationPillTxt} numberOfLines={1}>{locationLabel}</Text>
               <Ionicons name="chevron-down" size={12} color={palette.textSecondary} />
@@ -453,12 +467,12 @@ export default function BrowseScreen({ navigation, route }: any) {
         <View style={styles.emptyState}>
           <Ionicons name="search-outline" size={44} color={palette.textDisabled} />
           <Text style={styles.emptyTitle}>
-            No services near {locationLabel}
+            {primaryLocation ? `No services near ${locationLabel}` : 'No services found'}
           </Text>
           <Text style={styles.emptyBody}>
             {filterCount > 0
               ? 'Try loosening your filters or changing location.'
-              : "We couldn't find services in this area yet."}
+              : "We couldn't find matching services yet."}
           </Text>
           <View style={styles.emptyActions}>
             {filterCount > 0 && (
@@ -515,7 +529,7 @@ export default function BrowseScreen({ navigation, route }: any) {
         visible={filtersVisible}
         initial={filters}
         categoryId={initialCategoryId}
-        activeDelivery={activeDelivery}
+        primaryLocation={primaryLocation}
         onApply={handleApplyFilters}
         onClose={() => setFiltersVisible(false)}
       />
@@ -530,7 +544,7 @@ export default function BrowseScreen({ navigation, route }: any) {
       <LocationPickerSheet
         visible={locationVisible}
         onClose={() => setLocationVisible(false)}
-        onSelect={setActiveDelivery}
+        onSelect={handlePrimarySelect}
         title="Show services near"
       />
     </SafeAreaView>

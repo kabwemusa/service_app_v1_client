@@ -19,7 +19,8 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
-            'role' => \App\Http\Middleware\EnsureRole::class,
+            'role'      => \App\Http\Middleware\EnsureRole::class,
+            'admin.can' => \App\Http\Middleware\EnsureAdminCapability::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
@@ -53,6 +54,19 @@ return Application::configure(basePath: dirname(__DIR__))
             if ($request->expectsJson()) {
                 return ApiResponse::error(
                     'You are not authenticated. Please log in.',
+                    ErrorCode::UNAUTHENTICATED->value,
+                    401,
+                );
+            }
+        });
+
+        // JWT errors (missing / invalid / expired token) — base class covers
+        // TokenExpiredException, TokenInvalidException, etc. Without this they
+        // surface as 500 instead of an actionable 401.
+        $exceptions->render(function (\Tymon\JWTAuth\Exceptions\JWTException $e, Request $request) {
+            if ($request->expectsJson()) {
+                return ApiResponse::error(
+                    'Your session is invalid or has expired. Please log in again.',
                     ErrorCode::UNAUTHENTICATED->value,
                     401,
                 );

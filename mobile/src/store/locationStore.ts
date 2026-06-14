@@ -15,8 +15,7 @@ function toApiError(e: unknown): ApiError {
   return new ApiError((e as any)?.message ?? 'Something went wrong.', 'SERVER_ERROR');
 }
 
-/** The location discovery & booking requests are anchored to this session —
- *  defaults to the user's primary location, switchable without persisting (§4.5-B). */
+/** The booking request location is separate from the user's saved primary place. */
 export interface DeliveryLocation {
   lat:    number;
   lng:    number;
@@ -38,15 +37,17 @@ export function savedToDeliveryLocation(s: SavedLocation): DeliveryLocation {
 }
 
 interface LocationState {
-  primary:          PrimaryLocation | null;
-  /** null while we're still asking the server; true/false once we have an answer (§4.5-A gate). */
-  onboardingNeeded: boolean | null;
+  primaryLocation:  PrimaryLocation | null;
+  deliveryLocation: DeliveryLocation | null;
   saved:            SavedLocation[];
   savedLoaded:      boolean;
-  activeDelivery:   DeliveryLocation | null;
   loading:          boolean;
   savedLoading:     boolean;
   error:            ApiError | null;
+  // null = fetch not yet resolved (show loading gate in App.tsx)
+  // true  = fetch done, no primary set (show onboarding)
+  // false = fetch done, primary exists (show app)
+  onboardingNeeded: boolean | null;
 
   fetchPrimary:      () => Promise<void>;
   setPrimary:        (params: SetPrimaryParams) => Promise<boolean>;
@@ -54,20 +55,20 @@ interface LocationState {
   createSaved:       (params: SaveLocationParams) => Promise<SavedLocation | null>;
   updateSaved:       (id: string, params: Partial<SaveLocationParams>) => Promise<boolean>;
   deleteSaved:       (id: string) => Promise<boolean>;
-  setActiveDelivery: (loc: DeliveryLocation) => void;
+  setDeliveryLocation: (loc: DeliveryLocation | null) => void;
   clearError:        () => void;
   reset:             () => void;
 }
 
 const initialState = {
-  primary:          null as PrimaryLocation | null,
-  onboardingNeeded: null as boolean | null,
+  primaryLocation:  null as PrimaryLocation | null,
+  deliveryLocation: null as DeliveryLocation | null,
   saved:            [] as SavedLocation[],
   savedLoaded:      false,
-  activeDelivery:   null as DeliveryLocation | null,
   loading:          false,
   savedLoading:     false,
   error:            null as ApiError | null,
+  onboardingNeeded: null as boolean | null,
 };
 
 export const useLocationStore = create<LocationState>((set, get) => ({
@@ -81,13 +82,14 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     try {
       const primary = await locationApi.getPrimary();
       set((s) => ({
-        primary,
+        primaryLocation:  primary,
+        deliveryLocation: s.deliveryLocation ?? (primary ? toDeliveryLocation(primary) : null),
         onboardingNeeded: primary === null,
-        activeDelivery: s.activeDelivery ?? (primary ? toDeliveryLocation(primary) : null),
       }));
     } catch (e) {
-      // Fail open — a transient network error must never trap the user in onboarding.
-      set({ error: toApiError(e), onboardingNeeded: false });
+      // On network / server error treat as "no primary" so the onboarding
+      // screen appears rather than an infinite loading gate.
+      set({ error: toApiError(e), onboardingNeeded: true });
     } finally {
       set({ loading: false });
     }
@@ -98,9 +100,9 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     try {
       const primary = await locationApi.setPrimary(params);
       set((s) => ({
-        primary,
+        primaryLocation:  primary,
+        deliveryLocation: s.deliveryLocation ?? toDeliveryLocation(primary),
         onboardingNeeded: false,
-        activeDelivery: s.activeDelivery ?? toDeliveryLocation(primary),
       }));
       return true;
     } catch (e) {
@@ -161,5 +163,5 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     }
   },
 
-  setActiveDelivery: (loc) => set({ activeDelivery: loc }),
+  setDeliveryLocation: (loc) => set({ deliveryLocation: loc }),
 }));

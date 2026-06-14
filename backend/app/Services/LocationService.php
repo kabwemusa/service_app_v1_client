@@ -7,6 +7,8 @@ use App\Exceptions\Api\ApiException;
 use App\Exceptions\Api\NotFoundException;
 use App\Models\SavedLocation;
 use App\Models\User;
+use App\Services\Location\GazetteerService;
+use App\Services\Location\GeocodingService;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -16,19 +18,45 @@ use Illuminate\Support\Facades\DB;
  * `users.primary_location*` and the `is_primary` row in `saved_locations`
  * are kept in lockstep: setting one updates the other so the address book
  * always mirrors the location discovery is currently anchored to.
+ *
+ * Every confirmed label also feeds the gazetteer (v3.2 §3.1) — the
+ * accumulating Zambia-specific place index that improves autocomplete and
+ * shrinks the external geocoding bill.
  */
 class LocationService
 {
-    public function __construct(private readonly GeocodingService $geocoding) {}
+    public function __construct(
+        private readonly GeocodingService $geocoding,
+        private readonly GazetteerService $gazetteer,
+    ) {}
 
-    public function searchPlaces(string $query): array
+    public function searchPlaces(string $query, ?string $sessionToken = null): array
     {
-        return $this->geocoding->search($query);
+        return array_map(
+            fn (array $c) => $this->toApiShape($c),
+            $this->geocoding->search($query, 5, $sessionToken),
+        );
     }
 
     public function reverseGeocode(float $lat, float $lng): ?array
     {
-        return $this->geocoding->reverseGeocode($lat, $lng);
+        $result = $this->geocoding->reverseGeocode($lat, $lng);
+
+        return $result !== null ? $this->toApiShape($result) : null;
+    }
+
+    /** Driver candidate → the {label, region} API shape (region = province). */
+    private function toApiShape(array $candidate): array
+    {
+        return [
+            'label'       => $candidate['label'],
+            'place_name'  => $candidate['place_name'],
+            'region'      => $candidate['region_province'] ?? null,
+            'region_ward' => $candidate['region_ward'] ?? null,
+            'lat'         => $candidate['lat'],
+            'lng'         => $candidate['lng'],
+            'gazetteer'   => (bool) ($candidate['gazetteer'] ?? false),
+        ];
     }
 
     public function getPrimary(User $user): ?array
@@ -52,6 +80,21 @@ class LocationService
      */
     public function setPrimary(User $user, array $data): User
     {
+        // v3.2 §3.1 — a confirmed primary location is a verified
+        // (geohash → label) pair: capture it in the gazetteer.
+        $this->gazetteer->record(
+            lat:            (float) $data['lat'],
+            lng:            (float) $data['lng'],
+            label:          (string) $data['label'],
+            regionProvince: $data['region'] ?? null,
+            regionWard:     $data['region_ward'] ?? null,
+            source:         match ($data['source']) {
+                'DEVICE' => GazetteerService::SOURCE_CONFIRMED_REVERSE,
+                'SEARCH' => GazetteerService::SOURCE_SEARCH_PICK,
+                default  => GazetteerService::SOURCE_SAVED_LOCATION,
+            },
+        );
+
         DB::transaction(function () use ($user, $data) {
             $user->update([
                 'primary_location_lat'    => $data['lat'],
@@ -106,6 +149,16 @@ class LocationService
                 "You can save up to {$limit} places. Remove one before adding another.",
             );
         }
+
+        // Saved places are deliberate, named confirmations — prime gazetteer signal.
+        $this->gazetteer->record(
+            lat:            (float) $data['lat'],
+            lng:            (float) $data['lng'],
+            label:          (string) $data['label'],
+            regionProvince: $data['region'] ?? null,
+            regionWard:     $data['region_ward'] ?? null,
+            source:         GazetteerService::SOURCE_SAVED_LOCATION,
+        );
 
         return DB::transaction(function () use ($user, $data) {
             $makePrimary = (bool) ($data['is_primary'] ?? false);

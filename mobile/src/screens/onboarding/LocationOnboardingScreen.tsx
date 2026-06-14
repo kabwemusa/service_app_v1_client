@@ -3,7 +3,6 @@ import * as Haptics from 'expo-haptics';
 import React, { useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  FlatList,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -199,11 +198,13 @@ export default function LocationOnboardingScreen() {
 
               {suggestions.length > 0 && (
                 <View style={styles.dropdown}>
-                  <FlatList
-                    data={suggestions}
-                    keyExtractor={(item, idx) => `${item.label}-${idx}`}
-                    scrollEnabled={false}
-                    renderItem={({ item }) => (
+                  <ScrollView
+                    style={styles.dropdownList}
+                    keyboardShouldPersistTaps="handled"
+                    nestedScrollEnabled
+                  >
+                    {suggestions.map((item, idx) => (
+                      <React.Fragment key={`${item.label}-${idx}`}>
                       <TouchableOpacity style={styles.suggestion} onPress={() => handlePickSuggestion(item)}>
                         <Ionicons name="location-outline" size={16} color={palette.textSecondary} />
                         <View style={styles.flex}>
@@ -213,9 +214,10 @@ export default function LocationOnboardingScreen() {
                           )}
                         </View>
                       </TouchableOpacity>
-                    )}
-                    ItemSeparatorComponent={() => <View style={styles.sep} />}
-                  />
+                        {idx < suggestions.length - 1 && <View style={styles.sep} />}
+                      </React.Fragment>
+                    ))}
+                  </ScrollView>
                 </View>
               )}
 
@@ -238,10 +240,9 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   scroll: {
     flexGrow: 1,
-    justifyContent: 'center',
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.lg,
-    paddingBottom: spacing.xxl,
+    paddingBottom: spacing.xxl + 40,
   },
   hero: {
     marginBottom: spacing.lg,
@@ -302,6 +303,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: palette.border,
     overflow: 'hidden',
+  },
+  dropdownList: {
+    maxHeight: 240,
   },
   suggestion: {
     flexDirection: 'row',

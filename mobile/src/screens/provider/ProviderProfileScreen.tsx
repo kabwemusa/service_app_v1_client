@@ -2,12 +2,14 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import React, { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, View } from 'react-native';
+import { Image, ScrollView, StyleSheet, View } from 'react-native';
 import { Chip, Text, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { SkeletonBlock } from '../../components/ui/SkeletonBlock';
 import { MarkdownView } from '../../components/ui/MarkdownView';
+import { EARNED_BADGE_META, VettingBadge } from '../../components/discovery/VettingBadge';
 import { PublicProviderProfile, PublicReview, providersApi } from '../../api/providers';
+import { storageUrl } from '../../api/client';
 import { ApiError } from '../../api/errors';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { palette, radius as r, shadow, spacing, typography } from '../../theme';
@@ -43,9 +45,31 @@ export default function ProviderProfileScreen({ route, navigation }: any) {
     );
   }
 
-  const completionRate = Math.round(profile.completion_rate * 100);
+  // null = no history yet (backend v3.2 §4.1) — show "–", never a fake 0%
+  const completionLabel = profile.completion_rate != null
+    ? `${Math.round(profile.completion_rate * 100)}%`
+    : '–';
   const matrix = profile.profile.availability_matrix;
   const displayName = profile.display_name ?? 'Provider';
+
+  // Badges: provider-featured first, then the rest of what they've earned.
+  const featured = profile.highlights?.featured_badges ?? [];
+  const badges = [
+    ...featured,
+    ...(profile.earned_badges ?? []).filter((b) => !featured.includes(b)),
+  ];
+
+  // Portfolio: featured photos first, then the rest.
+  const featuredPhotos = profile.highlights?.featured_photo_keys ?? [];
+  const portfolio = [
+    ...featuredPhotos,
+    ...(profile.portfolio_images ?? []).filter((p) => !featuredPhotos.includes(p)),
+  ];
+
+  const sinceLabel = profile.year_started ? `Since ${profile.year_started}` : null;
+  const languagesLabel = (profile.languages ?? []).length > 0
+    ? profile.languages.map((c) => ({ en: 'English', ny: 'Nyanja', bem: 'Bemba', ton: 'Tonga' }[c] ?? c)).join(' · ')
+    : null;
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -66,16 +90,41 @@ export default function ProviderProfileScreen({ route, navigation }: any) {
           </TouchableRipple>
 
           <View style={styles.avatarRing}>
-            <MaterialCommunityIcons name="account" size={44} color={palette.primary} />
+            {profile.avatar_url ? (
+              <Image
+                source={{ uri: profile.avatar_url.startsWith('http') ? profile.avatar_url : storageUrl(profile.avatar_url) }}
+                style={styles.avatarImage}
+                accessibilityRole="image"
+                accessibilityLabel={`${displayName}'s profile photo`}
+              />
+            ) : (
+              <MaterialCommunityIcons name="account" size={44} color={palette.primary} />
+            )}
           </View>
           <Text style={styles.heroName}>{displayName}</Text>
-          {profile.profile.kyc_status === 'VERIFIED' && (
-            <View style={styles.verifiedBadge}>
-              <MaterialCommunityIcons name="check-decagram" size={14} color={palette.success} />
-              <Text style={styles.verifiedText}>Verified Provider</Text>
-            </View>
+          <VettingBadge trustTier={profile.trust_tier} size="sm" />
+          {(sinceLabel || profile.base_location_label) && (
+            <Text style={styles.heroMeta}>
+              {[profile.base_location_label, sinceLabel].filter(Boolean).join(' · ')}
+            </Text>
           )}
         </LinearGradient>
+
+        {/* Earned & featured badges */}
+        {badges.length > 0 && (
+          <View style={styles.badgeRow}>
+            {badges.map((key) => {
+              const meta = EARNED_BADGE_META[key];
+              if (!meta) return null;
+              return (
+                <View key={key} style={[styles.badgeChip, { borderColor: meta.color }]}>
+                  <Ionicons name={meta.icon as any} size={12} color={meta.color} />
+                  <Text style={[styles.badgeChipText, { color: meta.color }]}>{meta.label}</Text>
+                </View>
+              );
+            })}
+          </View>
+        )}
 
         {/* Stats strip */}
         <View style={styles.statsStrip}>
@@ -83,9 +132,9 @@ export default function ProviderProfileScreen({ route, navigation }: any) {
           <View style={styles.statDivider} />
           <StatCell icon="comment-multiple-outline" iconColor={palette.primary} value={String(profile.v_reviews)} label="Reviews" />
           <View style={styles.statDivider} />
-          <StatCell icon="check-circle-outline" iconColor={palette.success} value={`${completionRate}%`} label="Completion" />
+          <StatCell icon="check-circle-outline" iconColor={palette.success} value={completionLabel} label="Completion" />
           <View style={styles.statDivider} />
-          <StatCell icon="map-marker-radius" iconColor={palette.secondary} value={`${profile.profile.max_radius_km}km`} label="Radius" />
+          <StatCell icon="briefcase-check-outline" iconColor={palette.secondary} value={String(profile.jobs_done ?? 0)} label="Jobs done" />
         </View>
 
         <View style={styles.body}>
@@ -96,6 +145,34 @@ export default function ProviderProfileScreen({ route, navigation }: any) {
               <View style={styles.card}>
                 <MarkdownView>{profile.bio}</MarkdownView>
               </View>
+            </View>
+          )}
+
+          {/* Languages */}
+          {languagesLabel && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Languages</Text>
+              <View style={styles.card}>
+                <Text style={styles.languagesText}>{languagesLabel}</Text>
+              </View>
+            </View>
+          )}
+
+          {/* Portfolio — the provider's work, featured photos first */}
+          {portfolio.length > 0 && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Portfolio ({portfolio.length})</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.portfolioRow}>
+                {portfolio.map((path) => (
+                  <Image
+                    key={path}
+                    source={{ uri: path.startsWith('http') ? path : storageUrl(path) }}
+                    style={styles.portfolioImage}
+                    accessibilityRole="image"
+                    accessibilityLabel="Portfolio photo"
+                  />
+                ))}
+              </ScrollView>
             </View>
           )}
 
@@ -145,7 +222,12 @@ export default function ProviderProfileScreen({ route, navigation }: any) {
                 >
                   <View style={styles.svcInner}>
                     <View style={styles.svcLeft}>
-                      <Text style={styles.svcTitle} numberOfLines={2}>{svc.title}</Text>
+                      <View style={styles.svcTitleRow}>
+                        {svc.is_pinned && (
+                          <MaterialCommunityIcons name="pin" size={14} color={palette.primary} accessibilityLabel="Pinned by provider" />
+                        )}
+                        <Text style={styles.svcTitle} numberOfLines={2}>{svc.title}</Text>
+                      </View>
                       <Chip compact style={styles.svcChip} textStyle={styles.svcChipText}>
                         {svc.category.name}
                       </Chip>
@@ -269,16 +351,46 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     marginBottom: spacing.xs,
   },
-  verifiedBadge: {
+  avatarImage: {
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+  },
+  heroMeta: {
+    ...typography.bodySmall,
+    color: '#FFFFFFCC',
+    fontSize: 12,
+    marginTop: spacing.xs,
+  },
+
+  badgeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+  },
+  badgeChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#FFFFFF22',
+    borderWidth: 1.5,
     borderRadius: r.full,
     paddingHorizontal: spacing.sm,
-    paddingVertical: 3,
+    paddingVertical: 4,
+    backgroundColor: palette.surface,
   },
-  verifiedText: { ...typography.bodySmall, color: '#FFFFFF', fontSize: 12 },
+  badgeChipText: { fontFamily: 'PlusJakartaSans_600SemiBold', fontSize: 11 },
+
+  languagesText: { ...typography.body, color: palette.textSecondary },
+
+  portfolioRow: { gap: spacing.sm, paddingRight: spacing.lg },
+  portfolioImage: {
+    width: 140,
+    height: 105,
+    borderRadius: r.lg,
+    backgroundColor: palette.border,
+  },
 
   statsStrip: {
     flexDirection: 'row',
@@ -338,7 +450,8 @@ const styles = StyleSheet.create({
   svcInner:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: spacing.md },
   svcLeft:    { flex: 1, marginRight: spacing.sm },
   svcRight:   { alignItems: 'flex-end' },
-  svcTitle:   { ...typography.label, color: palette.textPrimary, fontSize: 14, marginBottom: spacing.xs },
+  svcTitleRow:{ flexDirection: 'row', alignItems: 'center', gap: 4 },
+  svcTitle:   { ...typography.label, color: palette.textPrimary, fontSize: 14, marginBottom: spacing.xs, flexShrink: 1 },
   svcChip:    { alignSelf: 'flex-start', height: 24, backgroundColor: palette.primaryLight },
   svcChipText:{ ...typography.bodySmall, color: palette.primary, fontSize: 11 },
   svcPrice:   { ...typography.label, color: palette.primary, fontSize: 15 },

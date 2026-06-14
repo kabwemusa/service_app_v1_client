@@ -281,7 +281,7 @@ interface Props {
   visible:        boolean;
   initial:        FilterState;
   categoryId?:    number;
-  activeDelivery: DeliveryLocation | null;
+  primaryLocation: DeliveryLocation | null;
   onApply:        (f: FilterState) => void;
   onClose:        () => void;
 }
@@ -290,7 +290,7 @@ export function FiltersSheet({
   visible,
   initial,
   categoryId,
-  activeDelivery,
+  primaryLocation,
   onApply,
   onClose,
 }: Props) {
@@ -317,9 +317,9 @@ export function FiltersSheet({
       try {
         const params: any = { page: 1 };
         if (categoryId)                params.category_id = categoryId;
-        if (activeDelivery) {
-          params.lat = activeDelivery.lat;
-          params.lng = activeDelivery.lng;
+        if (primaryLocation) {
+          params.lat = primaryLocation.lat;
+          params.lng = primaryLocation.lng;
         }
         if (draft.maxBudget !== null)  params.max_price   = draft.maxBudget;
         if (draft.availability !== 'any') {
@@ -343,7 +343,7 @@ export function FiltersSheet({
     }, 250);
 
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [visible, draft, categoryId, activeDelivery]);
+  }, [visible, draft, categoryId, primaryLocation]);
 
   const patch = useCallback((p: Partial<FilterState>) => {
     setDraft((prev) => ({ ...prev, ...p }));

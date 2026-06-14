@@ -50,6 +50,22 @@ class ProviderProfileController extends Controller
         return \App\Support\ApiResponse::success($this->service->earnings($request->user()), 'Earnings retrieved.');
     }
 
+    /**
+     * PATCH /provider/profile/availability-status — Hub Available/Away toggle.
+     * Away stops NEW booking requests; confirmed bookings are unaffected.
+     */
+    public function updateAvailabilityStatus(Request $request): JsonResponse
+    {
+        $request->validate(['accepting_bookings' => ['required', 'boolean']]);
+
+        $profile = $this->service->setAcceptingBookings($request->user(), $request->boolean('accepting_bookings'));
+
+        return \App\Support\ApiResponse::success(
+            ['accepting_bookings' => (bool) $profile->accepting_bookings],
+            'Availability status updated.',
+        );
+    }
+
     /** POST /provider/profile/cover-photo — upload or replace the provider's profile photo. */
     public function uploadCoverPhoto(Request $request): JsonResponse
     {

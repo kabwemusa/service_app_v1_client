@@ -89,6 +89,42 @@ class AuthController extends Controller
     }
 
     /**
+     * PATCH /api/me/account — update phone / name for the authenticated user
+     */
+    public function updateAccount(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        $data = $request->validate([
+            'phone' => [
+                'sometimes', 'nullable', 'string', 'max:20',
+                \Illuminate\Validation\Rule::unique('users', 'phone')->ignore($user->id),
+            ],
+            'name'  => ['sometimes', 'nullable', 'string', 'max:100'],
+        ]);
+
+        if (array_key_exists('phone', $data)) {
+            $user->phone = $data['phone'];
+        }
+        if (array_key_exists('name', $data)) {
+            $user->legal_name = $data['name'];
+        }
+
+        $user->save();
+
+        return ApiResponse::success([
+            'id'              => $user->id,
+            'email'           => $user->email,
+            'phone'           => $user->phone,
+            'role'            => $user->role,
+            'is_verified'     => $user->is_verified,
+            'completion_rate' => $user->completion_rate,
+            'r_raw'           => $user->r_raw,
+            'v_reviews'       => $user->v_reviews,
+        ], 'Account updated.');
+    }
+
+    /**
      * POST /api/auth/resend-otp
      */
     public function resendOtp(Request $request): JsonResponse

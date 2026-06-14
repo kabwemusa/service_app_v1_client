@@ -105,12 +105,38 @@ class ProviderProfileService
             ->where('calculated_at', '>=', now()->subDays(7))
             ->sum('net_to_provider');
 
+        $lastWeekNet = (float) Commission::where('provider_id', $user->id)
+            ->whereBetween('calculated_at', [now()->subDays(14), now()->subDays(7)])
+            ->sum('net_to_provider');
+
         $nextPayoutBooking = Booking::with('commission')
             ->where('provider_id', $user->id)
             ->where('status', 'COMPLETED')
             ->whereNull('disbursed_at')
             ->whereNotNull('payout_eligible_at')
             ->orderBy('payout_eligible_at')
+            ->first();
+
+        $completedJobs = $user->bookingsAsProvider()->where('status', 'COMPLETED')->count();
+
+        $mode = config('booking.payment_mode', 'DIRECT');
+
+        // TODAY aggregate — new requests = bookings awaiting a reply.
+        // DIRECT: REQUESTED/QUOTED awaiting the provider · ESCROW: FUNDS_HELD (same
+        // population as the §6.8 Requests tab "New" section).
+        $newRequestStatuses = $mode === 'DIRECT' ? ['REQUESTED', 'QUOTED'] : ['FUNDS_HELD'];
+        $nextJobStatuses    = $mode === 'DIRECT' ? ['ACCEPTED', 'IN_PROGRESS'] : ['FUNDS_HELD', 'IN_PROGRESS'];
+
+        $newRequests = Booking::where('provider_id', $user->id)
+            ->whereIn('status', $newRequestStatuses)
+            ->count();
+
+        $nextJob = Booking::with('service')
+            ->where('provider_id', $user->id)
+            ->whereIn('status', $nextJobStatuses)
+            ->whereNotNull('scheduled_start')
+            ->where('scheduled_start', '>=', now()->startOfDay())
+            ->orderBy('scheduled_start')
             ->first();
 
         return [
@@ -121,13 +147,18 @@ class ProviderProfileService
                 'weekly_cap_zmw'    => $tier->weeklyCapZmw(),
                 'payout_hold_hours' => $tier->payoutHoldHours(),
             ],
-            'next_tier'            => $this->nextTierSummary($tier),
+            'payment_mode'         => $mode,
+            'next_tier'            => $this->nextTierSummary($tier, $profile, $completedJobs, $user),
             'profile_completeness' => $profile->profile_completeness,
             'checklist'            => $this->checklist($user, $profile),
             'earned_badges'        => $this->earnedBadges($user, $profile),
+            // Ordered path to being visible in search — mirrors the SearchService
+            // hard gates (tier ≥ 1, completeness ≥ 40, ≥ 1 ACTIVE service).
+            'listing'              => $this->listingStatus($profile),
             'earnings' => [
                 'this_week_zmw'  => round($thisWeekNet, 2),
                 'weekly_cap_zmw' => $tier->weeklyCapZmw(),
+                'trend'          => $thisWeekNet > $lastWeekNet ? 'up' : ($thisWeekNet < $lastWeekNet ? 'down' : 'flat'),
             ],
             'next_payout' => $nextPayoutBooking ? [
                 'booking_id'  => $nextPayoutBooking->id,
@@ -138,6 +169,68 @@ class ProviderProfileService
                 'eligible' => $tier->hasInstantPayout(),
                 'fee_rate' => 0.01,
             ],
+            'accepting_bookings'  => (bool) ($profile->accepting_bookings ?? true),
+            // Public profile photo — never the KYC selfie.
+            'profile_photo_url'   => $profile->avatar_url ?? $profile->cover_image_url,
+            'display_name'        => $profile->display_name ?? $user->legal_name,
+            'notifications_count' => $newRequests,
+            'today' => [
+                'new_requests' => $newRequests,
+                'next_job'     => $nextJob ? [
+                    'service_title'  => $nextJob->service?->title ?? 'Booking',
+                    'scheduled_at'   => $nextJob->scheduled_start->toIso8601String(),
+                    'location_label' => $nextJob->delivery_location_label ?? '',
+                ] : null,
+            ],
+            'stats' => [
+                'rating'                 => ((int) $user->v_reviews) > 0 ? round((float) $user->r_raw, 2) : null,
+                'response_time_p50_mins' => $profile->response_time_p50_mins,
+                'repeat_client_rate'     => $profile->repeat_client_rate,
+                'jobs_done'              => $completedJobs,
+            ],
+        ];
+    }
+
+    /** Persist the Hub Available/Away toggle. */
+    public function setAcceptingBookings(User $user, bool $accepting): ProviderProfile
+    {
+        $profile = $this->getOrCreate($user);
+        $profile->accepting_bookings = $accepting;
+        $profile->save();
+
+        return $profile->fresh();
+    }
+
+    /**
+     * The ordered "get listed" path. A provider appears in search only when
+     * every gate the SearchService applies is met — surface each gate as an
+     * explicit, ordered step so the provider always knows what comes next.
+     */
+    private function listingStatus(ProviderProfile $profile): array
+    {
+        $minCompleteness = (int) config('search.search.min_profile_completeness', 40);
+
+        $steps = [
+            [
+                'key'   => 'verify_identity',
+                'label' => 'Verify your identity (Tier 1)',
+                'done'  => ($profile->trust_tier ?? 0) >= TrustTier::BASIC->value,
+            ],
+            [
+                'key'   => 'profile_strength',
+                'label' => "Build your profile to {$minCompleteness}+ strength",
+                'done'  => ($profile->profile_completeness ?? 0) >= $minCompleteness,
+            ],
+            [
+                'key'   => 'active_service',
+                'label' => 'Publish at least one service',
+                'done'  => $profile->services()->where('status', 'ACTIVE')->exists(),
+            ],
+        ];
+
+        return [
+            'listed' => collect($steps)->every(fn ($s) => $s['done']),
+            'steps'  => $steps,
         ];
     }
 
@@ -180,6 +273,8 @@ class ProviderProfileService
                 'service_title'   => $commission->booking?->service?->title,
                 'gross_zmw'       => round((float) $commission->gross_amount, 2),
                 'commission_rate' => (float) $commission->commission_rate,
+                // v3.2 §5 — "Repeat-client discount", its own statement line
+                'repeat_discount_rate' => (float) ($commission->repeat_discount_rate ?? 0),
                 'net_zmw'         => round((float) $commission->net_to_provider, 2),
                 'calculated_at'   => $commission->calculated_at?->toIso8601String(),
                 'paid'            => $commission->booking?->disbursed_at !== null,
@@ -188,6 +283,7 @@ class ProviderProfileService
             ->all();
 
         return [
+            'payment_mode' => config('booking.payment_mode', 'DIRECT'),
             'tier' => [
                 'value'             => $tier->value,
                 'label'             => $tier->label(),
@@ -279,7 +375,7 @@ class ProviderProfileService
     // ── Private helpers ──────────────────────────────────────────────────────
 
     /** v3 §4.1 — the next tier above the provider's current one (null at the top). */
-    private function nextTierSummary(TrustTier $tier): ?array
+    private function nextTierSummary(TrustTier $tier, ProviderProfile $profile, int $completedJobs, User $user): ?array
     {
         $next = match ($tier) {
             TrustTier::UNVERIFIED   => TrustTier::BASIC,
@@ -297,7 +393,40 @@ class ProviderProfileService
             'value'        => $next->value,
             'label'        => $next->label(),
             'requirements' => $this->tierRequirements($next),
+            'progress'     => $this->tierProgress($next, $profile, $completedJobs, $user),
+            'unlocks'      => $this->tierUnlocks($next),
         ];
+    }
+
+    /**
+     * Coarse 0–1 progress toward the next tier, from signals we already hold.
+     * KYC document review is external, so a submitted-but-pending document
+     * counts as half-way rather than pretending to know the outcome.
+     */
+    private function tierProgress(TrustTier $next, ProviderProfile $profile, int $completedJobs, User $user): float
+    {
+        $progress = match ($next) {
+            TrustTier::BASIC        => in_array($profile->kyc_status, ['SUBMITTED', 'MANUAL_REVIEW'], true) ? 0.5 : 0.0,
+            TrustTier::IDENTIFIED   => in_array($profile->kyc_status, ['SUBMITTED', 'MANUAL_REVIEW'], true) ? 0.5 : 0.0,
+            TrustTier::VERIFIED     => (! empty($profile->momo_provider) && ! empty($profile->momo_number)) ? 0.5 : 0.0,
+            TrustTier::PROFESSIONAL => 0.5 * min(1.0, $completedJobs / 20)
+                                     + (((float) $user->r_raw >= 4.5 && (int) $user->v_reviews > 0) ? 0.25 : 0.0),
+            default                 => 0.0,
+        };
+
+        return round(min(1.0, $progress), 2);
+    }
+
+    /** v3 §4.1 — what each tier unlocks, shown on the "unlock next tier" card. */
+    private function tierUnlocks(TrustTier $tier): array
+    {
+        return match ($tier) {
+            TrustTier::BASIC        => ['List services', 'Jobs up to ZMW 300'],
+            TrustTier::IDENTIFIED   => ['Jobs up to ZMW 2,000', '48h payout hold'],
+            TrustTier::VERIFIED     => ['Instant payout', 'Promoted slots', 'Jobs up to ZMW 10,000'],
+            TrustTier::PROFESSIONAL => ['No job caps', '12h payout hold', 'Professional badge'],
+            default                 => [],
+        };
     }
 
     /** v3 §4.1/§4.5 — the concrete unlock requirements shown on the "unlock next tier" card. */
@@ -311,10 +440,11 @@ class ProviderProfileService
             TrustTier::IDENTIFIED => [
                 "Scan a government ID (NRC, passport, or driver's licence)",
                 'Pass an automated liveness check',
+                // v3.2 §4.3 — pulled forward from Tier 3
+                'Your mobile money account name must match your ID',
             ],
             TrustTier::VERIFIED   => [
                 'Submit proof of address (utility bill, lease, or bank statement, ≤ 3 months old)',
-                'Match your mobile money account name to your legal name',
             ],
             TrustTier::PROFESSIONAL => [
                 'Provide a skill proof (trade certificate, diploma, professional licence, or portfolio review)',

@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Contracts\IdentityVerificationProviderInterface;
+use App\Contracts\WalletNameLookupInterface;
 use App\Enums\DocStatus;
 use App\Enums\DocType;
 use App\Enums\ErrorCode;
@@ -32,6 +33,7 @@ class KycService
 
     public function __construct(
         private readonly IdentityVerificationProviderInterface $verifier,
+        private readonly WalletNameLookupInterface             $walletNames,
     ) {}
 
     // ── Tier 1: contact + selfie ─────────────────────────────────────────────
@@ -83,19 +85,60 @@ class KycService
         $docPath    = $documentImage->store("kyc/{$user->id}/docs", 'local');
         $selfiePath = $selfieImage->store("kyc/{$user->id}/selfies", 'local');
 
-        $doc = IdentityDocument::create([
-            'user_id'         => $user->id,
-            'doc_type'        => $docType,
-            'doc_storage_url' => $docPath,
-            'status'          => DocStatus::SUBMITTED->value,
-            'submitted_at'    => now(),
+        // Resubmission: reuse the existing open document (don't create a
+        // duplicate) so the admin sees one record with the full progression.
+        $existing = $this->openDocumentFor($user, [
+            DocType::NRC->value, DocType::PASSPORT->value, DocType::DRIVERS_LICENSE->value,
+        ]);
+
+        if ($existing) {
+            $existing->fill([
+                'doc_type'            => $docType,
+                'doc_storage_url'     => $docPath,
+                'status'              => DocStatus::MANUAL_REVIEW->value, // back to the human queue
+                'confidence_score'    => null,
+                'doc_number_hash'     => null,
+                'extracted_fields'    => ['selfie_path' => $selfiePath],
+                'review_notes'        => null,
+                'reviewed_at'         => null,
+                'reviewer_admin_id'   => null,
+                'reviewer_id'         => null,
+                'info_requested_at'   => null,
+                'claimed_by_admin_id' => null,
+                'claimed_at'          => null,
+                'submitted_at'        => now(),
+            ]);
+            $existing->pushEvent('Resubmitted by applicant', 'Applicant', null, DocStatus::MANUAL_REVIEW->value);
+            $existing->save();
+
+            return $existing;
+        }
+
+        $doc = new IdentityDocument([
+            'user_id'          => $user->id,
+            'doc_type'         => $docType,
+            'doc_storage_url'  => $docPath,
+            'status'           => DocStatus::SUBMITTED->value,
+            'submitted_at'     => now(),
             'extracted_fields' => ['selfie_path' => $selfiePath],
         ]);
+        $doc->pushEvent('Submitted by applicant', 'Applicant', null, DocStatus::SUBMITTED->value);
+        $doc->save();
 
         // Dispatch async verification — runs the full §4.3 pipeline
         \App\Jobs\VerifyIdentityDocumentJob::dispatch($doc->id, $user->id);
 
         return $doc;
+    }
+
+    /** Latest non-approved document of the given types — the target for a resubmission. */
+    private function openDocumentFor(User $user, array $docTypes): ?IdentityDocument
+    {
+        return IdentityDocument::where('user_id', $user->id)
+            ->whereIn('doc_type', $docTypes)
+            ->whereNotIn('status', [DocStatus::APPROVED->value, DocStatus::AUTO_APPROVED->value])
+            ->latest('submitted_at')
+            ->first();
     }
 
     // ── Tier 3: proof of address ─────────────────────────────────────────────
@@ -111,13 +154,36 @@ class KycService
 
         $docPath = $document->store("kyc/{$user->id}/address", 'local');
 
-        $doc = IdentityDocument::create([
+        $existing = $this->openDocumentFor($user, [DocType::PROOF_OF_ADDRESS->value]);
+
+        if ($existing) {
+            $existing->fill([
+                'doc_storage_url'     => $docPath,
+                'status'              => DocStatus::MANUAL_REVIEW->value,
+                'review_notes'        => null,
+                'reviewed_at'         => null,
+                'reviewer_admin_id'   => null,
+                'reviewer_id'         => null,
+                'info_requested_at'   => null,
+                'claimed_by_admin_id' => null,
+                'claimed_at'          => null,
+                'submitted_at'        => now(),
+            ]);
+            $existing->pushEvent('Resubmitted by applicant', 'Applicant', null, DocStatus::MANUAL_REVIEW->value);
+            $existing->save();
+
+            return $existing;
+        }
+
+        $doc = new IdentityDocument([
             'user_id'         => $user->id,
             'doc_type'        => DocType::PROOF_OF_ADDRESS->value,
             'doc_storage_url' => $docPath,
             'status'          => DocStatus::MANUAL_REVIEW->value,  // always manual for PoA
             'submitted_at'    => now(),
         ]);
+        $doc->pushEvent('Submitted by applicant', 'Applicant', null, DocStatus::MANUAL_REVIEW->value);
+        $doc->save();
 
         return $doc;
     }
@@ -207,6 +273,19 @@ class KycService
                     return;
                 }
 
+                // Step 7b (v3.2 §4.3): MoMo wallet name match — pulled forward
+                // from Tier 3. A second, NRC-anchored identity confirmation
+                // that also pre-validates the payout rail. Mismatch → manual
+                // review, never auto-reject; no wallet data → don't block.
+                if (! $this->momoNameMatches($user, $result->extractedName)) {
+                    $this->markStatus(
+                        $doc,
+                        DocStatus::MANUAL_REVIEW,
+                        'MoMo wallet name does not match the verified ID — queued for manual review.',
+                    );
+                    return;
+                }
+
                 $this->markStatus($doc, DocStatus::AUTO_APPROVED);
                 $profile = ProviderProfile::where('user_id', $user->id)->first();
                 if ($profile) {
@@ -231,16 +310,36 @@ class KycService
 
         $docs = IdentityDocument::where('user_id', $user->id)
             ->orderByDesc('submitted_at')
-            ->get(['id', 'doc_type', 'status', 'confidence_score', 'submitted_at', 'reviewed_at']);
+            ->get(['id', 'doc_type', 'status', 'confidence_score', 'review_notes', 'info_requested_at', 'submitted_at', 'reviewed_at']);
+
+        $rejected = [DocStatus::AUTO_REJECTED->value, DocStatus::REJECTED->value];
 
         return [
             'trust_tier'    => $profile?->trust_tier ?? 0,
             'trust_score'   => $profile?->trust_score ?? 0.00,
             'kyc_status'    => $profile?->kyc_status ?? 'PENDING',
-            'documents'     => $docs,
-            'can_resubmit'  => $docs->where('status', DocStatus::AUTO_REJECTED->value)
-                                    ->where('submitted_at', '<', now()->subHours(24))
-                                    ->isNotEmpty(),
+            'documents'     => $docs->map(function (IdentityDocument $d) use ($rejected) {
+                // The review note is only surfaced to the applicant when it is a
+                // message FOR them — an admin's "needs info" note or a rejection
+                // reason. Internal pipeline notes on plain pending items stay hidden.
+                $infoRequested = $d->info_requested_at !== null;
+                $providerNote = ($infoRequested || in_array($d->status, $rejected, true))
+                    ? $d->review_notes
+                    : null;
+
+                return [
+                    'id'               => $d->id,
+                    'doc_type'         => $d->doc_type,
+                    'status'           => $d->status,
+                    'info_requested'   => $infoRequested,
+                    'review_note'      => $providerNote,
+                    'confidence_score' => $d->confidence_score,
+                    'submitted_at'     => $d->submitted_at,
+                    'reviewed_at'      => $d->reviewed_at,
+                ];
+            })->values(),
+            'can_resubmit'  => $docs->whereIn('status', $rejected)->isNotEmpty()
+                                || $docs->whereNotNull('info_requested_at')->isNotEmpty(),
         ];
     }
 
@@ -303,6 +402,14 @@ class KycService
             'review_notes' => $notes ?: null,
             'reviewed_at'  => now(),
         ]);
+
+        $label = match ($status) {
+            DocStatus::AUTO_APPROVED => 'Passed automated checks',
+            DocStatus::AUTO_REJECTED => 'Failed automated checks',
+            DocStatus::MANUAL_REVIEW => 'Routed to manual review',
+            default                  => 'Status updated',
+        };
+        $doc->pushEvent($label, 'Automated checks', $notes ?: null, $status->value, true);
     }
 
     private function markRejected(IdentityDocument $doc, string $reason): void
@@ -335,6 +442,61 @@ class KycService
         $a = strtolower(trim($extracted));
         $b = strtolower(trim($declared));
         return levenshtein($a, $b) <= 2;
+    }
+
+    /**
+     * v3.2 §4.3 — fuzzy match between the verified ID name and the registered
+     * MoMo wallet name. Returns true (don't block) when the check is disabled,
+     * the provider has no wallet on file, or the aggregator can't answer —
+     * absence of data is never a failure; only a real mismatch is.
+     */
+    private function momoNameMatches(User $user, ?string $verifiedIdName): bool
+    {
+        if (! config('trust.momo_name_match.enabled')) {
+            return true;
+        }
+
+        $idName = $verifiedIdName ?: $user->legal_name;
+        if (! $idName) {
+            return true;
+        }
+
+        $profile = ProviderProfile::where('user_id', $user->id)->first();
+        if (! $profile || empty($profile->momo_provider) || empty($profile->momo_number)) {
+            return true;
+        }
+
+        $walletName = $this->walletNames->lookupName($profile->momo_provider, $profile->momo_number);
+        if (! $walletName) {
+            return true;
+        }
+
+        return self::namesFuzzyMatch($idName, $walletName, (int) config('trust.momo_name_match.max_levenshtein', 2));
+    }
+
+    /**
+     * Normalized fuzzy comparison: lowercase, strip everything but letters and
+     * single spaces, compare order-insensitively (wallet registrations often
+     * flip surname/given-name order), Levenshtein ≤ $maxDistance.
+     */
+    public static function namesFuzzyMatch(string $a, string $b, int $maxDistance = 2): bool
+    {
+        $normalize = function (string $name): array {
+            $name  = mb_strtolower(trim($name));
+            $name  = preg_replace('/[^a-z\s]/u', '', $name) ?? '';
+            $parts = preg_split('/\s+/', $name, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+            sort($parts);
+            return $parts;
+        };
+
+        $na = implode(' ', $normalize($a));
+        $nb = implode(' ', $normalize($b));
+
+        if ($na === '' || $nb === '') {
+            return true; // nothing comparable → don't block
+        }
+
+        return levenshtein($na, $nb) <= $maxDistance;
     }
 
     private function requireProviderProfile(User $user): ProviderProfile

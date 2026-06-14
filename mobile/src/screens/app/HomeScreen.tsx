@@ -1,75 +1,107 @@
-import { Ionicons } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
-import React, { useCallback, useEffect, useState } from 'react';
+import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Dimensions,
   ScrollView,
   StyleSheet,
   TouchableOpacity,
   View,
-} from 'react-native';
-import { Text, TouchableRipple } from 'react-native-paper';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { CardSkeleton } from '../../components/ui/SkeletonBlock';
-import { BookingSheet } from '../../components/booking/BookingSheet';
-import { LocationPickerSheet } from '../../components/location/LocationPickerSheet';
-import { HomeBannerCarousel } from '../../components/discovery/HomeBannerCarousel';
-import { ServiceDiscoveryCard } from '../../components/discovery/ServiceDiscoveryCard';
-import { ApiError } from '../../api/errors';
-import { bookingsApi, MyProvider } from '../../api/bookings';
-import { searchApi, SearchResult } from '../../api/search';
-import { Service } from '../../api/services';
-import { useSnackbar } from '../../providers/SnackbarProvider';
-import { useAuthStore } from '../../store/authStore';
-import { useCategoryStore } from '../../store/categoryStore';
-import { useLocationStore } from '../../store/locationStore';
-import { palette, radius as r, spacing } from '../../theme';
-import { fontFamily } from '../../theme/typography';
+} from "react-native";
+import { Text, TouchableRipple } from "react-native-paper";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
+import { CardSkeleton } from "../../components/ui/SkeletonBlock";
+import { BookingSheet } from "../../components/booking/BookingSheet";
+import { LocationPickerSheet } from "../../components/location/LocationPickerSheet";
+import { HomeBannerCarousel } from "../../components/discovery/HomeBannerCarousel";
+import { ServiceDiscoveryCard } from "../../components/discovery/ServiceDiscoveryCard";
+import { ApiError } from "../../api/errors";
+import { BookAgainCard, bookingsApi, MyProvider } from "../../api/bookings";
+import { searchApi, SearchResult } from "../../api/search";
+import { Service } from "../../api/services";
+import { useSnackbar } from "../../providers/SnackbarProvider";
+import { useAuthStore } from "../../store/authStore";
+import { useCategoryStore } from "../../store/categoryStore";
+import { useLocationStore } from "../../store/locationStore";
+import { palette, radius as r, shadow, spacing } from "../../theme";
+import { fontFamily } from "../../theme/typography";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const SCREEN_W = Dimensions.get('window').width;
+const SCREEN_W = Dimensions.get("window").width;
 // Tile width for the 2-column category grid
-const TILE_W   = Math.floor((SCREEN_W - 2 * spacing.lg - spacing.sm) / 2);
+const TILE_W = Math.floor((SCREEN_W - 2 * spacing.lg - spacing.sm) / 2);
 
 // Deterministic palette — rotates by category.id so new categories always get a colour
 const CAT_PALETTE = [
-  '#0891B2', '#2563EB', '#7C3AED', '#D97706',
-  '#DB2777', '#16A34A', '#4B5563', '#0369A1',
-  '#15803D', '#B45309', '#1D4ED8', '#1E40AF',
-  '#92400E', '#9D174D',
+  "#0891B2",
+  "#2563EB",
+  "#7C3AED",
+  "#D97706",
+  "#DB2777",
+  "#16A34A",
+  "#4B5563",
+  "#0369A1",
+  "#15803D",
+  "#B45309",
+  "#1D4ED8",
+  "#1E40AF",
+  "#92400E",
+  "#9D174D",
 ];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function getGreeting(): string {
   const h = new Date().getHours();
-  if (h < 12) return 'Good morning';
-  if (h < 17) return 'Good afternoon';
-  return 'Good evening';
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  return "Good evening";
 }
 
 function toBookableService(r: SearchResult): Service {
   return {
-    id:                     r.id,
-    provider_id:            r.provider_id,
-    category_id:            r.category.id,
-    category:               { ...r.category, icon_url: null },
-    title:                  r.title,
-    description:            r.description,
-    pricing_model:          r.pricing_model,
-    base_price:             r.base_price,
+    id: r.id,
+    provider_id: r.provider_id,
+    category_id: r.category.id,
+    category: { ...r.category, icon_url: null },
+    title: r.title,
+    description: r.description,
+    pricing_model: r.pricing_model,
+    base_price: r.base_price,
+    payment_mode: r.payment_mode,
     duration_estimate_mins: null,
-    status:                 'ACTIVE',
-    is_pinned:              false,
-    latitude:               r.latitude,
-    longitude:              r.longitude,
-    distance_km:            r.distance_km,
-    provider:               r.provider,
-    inclusions:             [],
-    addons:                 [],
-    photos:                 [],
-    created_at:             '',
+    status: "ACTIVE",
+    is_pinned: false,
+    latitude: r.latitude,
+    longitude: r.longitude,
+    distance_km: r.distance_km,
+    // Slim search-result provider → full ServiceProvider shape; display-only
+    // fields the search payload doesn't carry default to empty.
+    provider: {
+      ...r.provider,
+      bio: null,
+      avatar_url: null,
+      cover_image_url: null,
+      kyc_status: null,
+      year_started: null,
+      languages: [],
+      certifications: [],
+      base_location_label: null,
+      availability_matrix: null,
+      repeat_client_rate: null,
+      badges: [],
+    },
+    inclusions: [],
+    addons: [],
+    photos: [],
+    reviews: [],
+    review_count: r.provider.v_reviews,
+    star_distribution: [],
+    created_at: "",
   };
 }
 
@@ -77,15 +109,17 @@ function toBookableService(r: SearchResult): Service {
 
 export default function HomeScreen({ navigation }: any) {
   const { categories, fetchCategories, loading: cLoading } = useCategoryStore();
-  const { activeDelivery, setActiveDelivery }              = useLocationStore();
-  const { showError, showSnackbar }                        = useSnackbar();
-  const user       = useAuthStore((s) => s.user);
+  const { primaryLocation, setPrimary } = useLocationStore();
+  const { showError, showSnackbar } = useSnackbar();
+  const user = useAuthStore((s) => s.user);
   const activeRole = useAuthStore((s) => s.activeRole);
   const insets = useSafeAreaInsets();
 
-  const [results, setResults]             = useState<SearchResult[]>([]);
-  const [loading, setLoading]             = useState(false);
-  const [myProviders, setMyProviders]     = useState<MyProvider[]>([]);
+  const [results, setResults] = useState<SearchResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [isFallback, setIsFallback] = useState(false);
+  const [myProviders, setMyProviders] = useState<MyProvider[]>([]);
+  const [bookAgain, setBookAgain] = useState<BookAgainCard | null>(null);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [bookingService, setBookingService] = useState<Service | null>(null);
 
@@ -93,12 +127,16 @@ export default function HomeScreen({ navigation }: any) {
     fetchCategories();
   }, []);
 
-  // Fetch "Your providers" from completed booking history — silent fail
+  // Fetch "Your providers" + "Book again" from completed history — silent fail
   useEffect(() => {
-    if (!user || activeRole !== 'CUSTOMER') return;
+    if (!user || activeRole !== "CUSTOMER") return;
     bookingsApi
       .myProviders()
       .then(setMyProviders)
+      .catch(() => {});
+    bookingsApi
+      .bookAgain()
+      .then(setBookAgain)
       .catch(() => {});
   }, [user?.id, activeRole]);
 
@@ -106,66 +144,95 @@ export default function HomeScreen({ navigation }: any) {
     setLoading(true);
     try {
       const res = await searchApi.search({
-        ...(activeDelivery ? { lat: activeDelivery.lat, lng: activeDelivery.lng } : {}),
+        ...(primaryLocation
+          ? { lat: primaryLocation.lat, lng: primaryLocation.lng }
+          : {}),
+        // Region enables promoted-slot matching (v3.2 §1.5 — category × region)
+        ...(primaryLocation?.region ? { region: primaryLocation.region } : {}),
         page: 1,
       });
       setResults(res.data);
+      setIsFallback(res.fallback ?? false);
     } catch (e) {
-      showError(e instanceof ApiError ? e.message : 'Could not load services.');
+      showError(e instanceof ApiError ? e.message : "Could not load services.");
     } finally {
       setLoading(false);
     }
-  }, [activeDelivery]);
+  }, [primaryLocation]);
 
   useEffect(() => {
     runDiscovery();
-  }, [activeDelivery]);
+  }, [primaryLocation]);
 
   const handleCategoryPress = (categoryId: number) => {
-    navigation.navigate('BrowseMain', { categoryId });
+    navigation.navigate("BrowseMain", { categoryId });
   };
 
   const handleBookPress = useCallback(
     (result: SearchResult) => {
-      if (result.pricing_model === 'QUOTE') {
+      if (result.pricing_model === "QUOTE") {
         showSnackbar({
-          message: 'Quote requests coming soon — the provider will send you a custom price.',
-          variant: 'info',
+          message:
+            "Quote requests coming soon — the provider will send you a custom price.",
+          variant: "info",
         });
         return;
       }
       setBookingService(toBookableService(result));
     },
-    [showSnackbar],
+    [showSnackbar]
   );
 
   const handleBooked = useCallback(
     (bookingId: string) => {
       setBookingService(null);
-      navigation.navigate('Bookings', { screen: 'BookingDetail', params: { bookingId } });
+      navigation.navigate("Bookings", {
+        screen: "BookingDetail",
+        params: { bookingId },
+      });
     },
-    [navigation],
+    [navigation]
   );
 
   const handleBannerAction = useCallback(
     (action: string) => {
       // Simple router: "Search?q=cleaning" → navigate to Search with query
-      if (action.startsWith('Search')) {
-        navigation.navigate('Search');
+      if (action.startsWith("Search")) {
+        navigation.navigate("Search");
       }
     },
-    [navigation],
+    [navigation]
   );
 
-  const sectionLabel = activeDelivery
-    ? `Top rated near ${activeDelivery.label}`
-    : 'Explore services';
+  const handlePrimarySelect = useCallback(
+    async (loc: {
+      lat: number;
+      lng: number;
+      label: string;
+      region: string | null;
+      source: "DEVICE" | "SEARCH" | "SAVED";
+    }) => {
+      const ok = await setPrimary(loc);
+      if (!ok) showError("Could not update your location.");
+    },
+    [setPrimary, showError]
+  );
+
+  const sectionLabel =
+    primaryLocation && !isFallback
+      ? `Top rated near - ${primaryLocation.label}`
+      : primaryLocation && isFallback
+      ? "Top rated providers"
+      : "Explore services";
 
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 112 }]}
+        contentContainerStyle={[
+          styles.scroll,
+          { paddingBottom: insets.bottom + 112 },
+        ]}
       >
         {/* ── Top bar ────────────────────────────────────────────────── */}
         <View style={styles.topBar}>
@@ -177,13 +244,17 @@ export default function HomeScreen({ navigation }: any) {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 setPickerVisible(true);
               }}
-              accessibilityLabel={activeDelivery ? `Location: ${activeDelivery.label}` : 'Set delivery location'}
+              accessibilityLabel={
+                primaryLocation
+                  ? `Location: ${primaryLocation.label}`
+                  : "Set location"
+              }
               accessibilityRole="button"
             >
               <Ionicons
-                name={activeDelivery ? 'location' : 'location-outline'}
+                name={primaryLocation ? "location" : "location-outline"}
                 size={20}
-                color={activeDelivery ? palette.primary : palette.textPrimary}
+                color={primaryLocation ? palette.primary : palette.textPrimary}
               />
             </TouchableOpacity>
             <TouchableOpacity
@@ -191,27 +262,31 @@ export default function HomeScreen({ navigation }: any) {
               accessibilityLabel="Notifications"
               accessibilityRole="button"
             >
-              <Ionicons name="notifications-outline" size={20} color={palette.textPrimary} />
+              <Ionicons
+                name="notifications-outline"
+                size={20}
+                color={palette.textPrimary}
+              />
             </TouchableOpacity>
           </View>
         </View>
 
         {/* ── Greeting + headline ────────────────────────────────────── */}
         <Text style={styles.greeting}>{getGreeting()}</Text>
-        <Text style={styles.headline}>Find trusted help{'\n'}near you</Text>
-
+        <Text style={styles.headline}>Find trusted help{"\n"}near you</Text>
+        <View style={styles.horizontalDivider} />
         {/* ── Promo carousel (data-driven, collapses when empty) ─────── */}
         {/* Negative margins cancel the parent's paddingHorizontal so slides
             run edge-to-edge; content inside each slide is re-padded. */}
         <View style={styles.carouselWrap}>
           <HomeBannerCarousel onAction={handleBannerAction} />
         </View>
-
+        <View style={styles.horizontalDivider} />
         {/* ── Categories ─────────────────────────────────────────────── */}
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Categories</Text>
           <TouchableRipple
-            onPress={() => navigation.navigate('Search')}
+            onPress={() => navigation.navigate("Search")}
             style={styles.seeAllBtn}
             borderless
           >
@@ -238,9 +313,18 @@ export default function HomeScreen({ navigation }: any) {
                   style={[styles.categoryTile, { width: TILE_W }]}
                 >
                   <View style={styles.categoryTileInner}>
-                    <View style={[styles.catIconCircle, { backgroundColor: `${iconColor}18` }]}>
+                    <View
+                      style={[
+                        styles.catIconCircle,
+                        { backgroundColor: `${iconColor}18` },
+                      ]}
+                    >
                       <Ionicons
-                        name={(cat.icon ?? 'grid-outline') as React.ComponentProps<typeof Ionicons>['name']}
+                        name={
+                          (cat.icon ?? "grid-outline") as React.ComponentProps<
+                            typeof Ionicons
+                          >["name"]
+                        }
                         size={16}
                         color={iconColor}
                       />
@@ -254,6 +338,8 @@ export default function HomeScreen({ navigation }: any) {
             })}
           </View>
         )}
+
+        <View style={styles.horizontalDivider} />
 
         {/* ── Your providers (hidden when list is empty) ─────────────── */}
         {myProviders.length > 0 && (
@@ -270,12 +356,14 @@ export default function HomeScreen({ navigation }: any) {
                 <TouchableOpacity
                   key={p.id}
                   style={styles.providerChip}
-                  onPress={() => navigation.navigate('ServiceDetail', { providerId: p.id })}
+                  onPress={() =>
+                    navigation.navigate("ProviderProfile", { providerId: p.id })
+                  }
                   activeOpacity={0.75}
                 >
                   <View style={styles.providerChipAvatar}>
                     <Text style={styles.providerChipInitial}>
-                      {(p.display_name || '?')[0].toUpperCase()}
+                      {(p.display_name || "?")[0].toUpperCase()}
                     </Text>
                   </View>
                   <Text style={styles.providerChipName} numberOfLines={2}>
@@ -287,6 +375,86 @@ export default function HomeScreen({ navigation }: any) {
           </>
         )}
 
+        {/* ── Book again (v3.2 §2.3 — highest-conversion surface) ─────── */}
+        {bookAgain && (
+          <>
+            <View style={styles.horizontalDivider} />
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Book again</Text>
+            </View>
+            <TouchableRipple
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                navigation.navigate("ServiceDetail", {
+                  serviceId: bookAgain.service.id,
+                });
+              }}
+              borderless
+              style={styles.bookAgainCard}
+              accessibilityRole="button"
+              accessibilityLabel={`Book ${bookAgain.service.title} again with ${
+                bookAgain.provider.display_name ?? "your provider"
+              }`}
+            >
+              <View style={styles.bookAgainInner}>
+                <View style={styles.bookAgainAvatar}>
+                  <Text style={styles.bookAgainInitial}>
+                    {(bookAgain.provider.display_name || "?")[0].toUpperCase()}
+                  </Text>
+                </View>
+                <View style={styles.bookAgainBody}>
+                  <Text style={styles.bookAgainTitle} numberOfLines={1}>
+                    {bookAgain.service.title}
+                  </Text>
+                  <Text style={styles.bookAgainSub} numberOfLines={1}>
+                    {bookAgain.provider.display_name}
+                    {bookAgain.delivery.label
+                      ? ` · ${bookAgain.delivery.label}`
+                      : ""}
+                  </Text>
+                </View>
+                <View style={styles.bookAgainCta}>
+                  <Ionicons name="repeat" size={14} color="#FFFFFF" />
+                  <Text style={styles.bookAgainCtaText}>Rebook</Text>
+                </View>
+              </View>
+            </TouchableRipple>
+          </>
+        )}
+
+        {/* ── Post a request (v3.2 §6 — urgency / thin-category entry) ── */}
+        <TouchableRipple
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            navigation.navigate("PostRequest");
+          }}
+          borderless
+          style={styles.postRequestCard}
+          accessibilityRole="button"
+          accessibilityLabel="Post a request — describe the job and nearby providers reply with prices"
+        >
+          <View style={styles.postRequestInner}>
+            <View style={styles.postRequestIcon}>
+              <Ionicons
+                name="megaphone-outline"
+                size={18}
+                color={palette.primary}
+              />
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.postRequestTitle}>Need someone now?</Text>
+              <Text style={styles.postRequestSub} numberOfLines={1}>
+                Post a request — nearby providers reply with prices
+              </Text>
+            </View>
+            <Ionicons
+              name="chevron-forward"
+              size={16}
+              color={palette.textDisabled}
+            />
+          </View>
+        </TouchableRipple>
+        <View style={styles.horizontalDivider} />
         {/* ── Discovery section ─────────────────────────────────────── */}
         <View style={styles.sectionHeader}>
           <TouchableRipple
@@ -301,11 +469,15 @@ export default function HomeScreen({ navigation }: any) {
               <Text style={styles.sectionTitle} numberOfLines={1}>
                 {sectionLabel}
               </Text>
-              <Ionicons name="chevron-down" size={15} color={palette.textSecondary} />
+              <Ionicons
+                name="chevron-down"
+                size={15}
+                color={palette.textSecondary}
+              />
             </View>
           </TouchableRipple>
           <TouchableRipple
-            onPress={() => navigation.navigate('Search')}
+            onPress={() => navigation.navigate("Search")}
             borderless
             style={styles.seeAllBtn}
           >
@@ -314,18 +486,52 @@ export default function HomeScreen({ navigation }: any) {
         </View>
 
         {/* Soft location nudge — informational, never blocks the feed */}
-        {!activeDelivery && (
+        {!primaryLocation && (
           <TouchableRipple
             onPress={() => setPickerVisible(true)}
             style={styles.locationNudge}
             rippleColor="rgba(123,26,58,0.06)"
           >
             <View style={styles.locationNudgeInner}>
-              <Ionicons name="location-outline" size={14} color={palette.primary} />
+              <Ionicons
+                name="location-outline"
+                size={14}
+                color={palette.primary}
+              />
               <Text style={styles.locationNudgeText}>
                 Set your location to see providers near you
               </Text>
-              <Ionicons name="chevron-forward" size={14} color={palette.primary} />
+              <Ionicons
+                name="chevron-forward"
+                size={14}
+                color={palette.primary}
+              />
+            </View>
+          </TouchableRipple>
+        )}
+
+        {/* Fallback notice — shown when location is set but no providers cover it */}
+        {isFallback && primaryLocation && results.length > 0 && (
+          <TouchableRipple
+            onPress={() => setPickerVisible(true)}
+            style={styles.fallbackNotice}
+            rippleColor="rgba(123,26,58,0.06)"
+          >
+            <View style={styles.fallbackNoticeInner}>
+              <Ionicons
+                name="information-circle-outline"
+                size={14}
+                color={palette.textSecondary}
+              />
+              <Text style={styles.fallbackNoticeText}>
+                No providers in {primaryLocation.label} yet — showing top rated
+                providers
+              </Text>
+              <Ionicons
+                name="chevron-forward"
+                size={14}
+                color={palette.textSecondary}
+              />
             </View>
           </TouchableRipple>
         )}
@@ -337,18 +543,22 @@ export default function HomeScreen({ navigation }: any) {
           ))
         ) : results.length === 0 ? (
           <View style={styles.emptyState}>
-            <Ionicons name="search-outline" size={40} color={palette.textDisabled} />
+            <Ionicons
+              name="search-outline"
+              size={40}
+              color={palette.textDisabled}
+            />
             <Text style={styles.emptyTitle}>
-              {activeDelivery
-                ? `No providers serve ${activeDelivery.label} yet`
-                : 'No services listed yet'}
+              {primaryLocation
+                ? `No providers serve ${primaryLocation.label} yet`
+                : "No services listed yet"}
             </Text>
             <Text style={styles.emptyBody}>
-              {activeDelivery
+              {primaryLocation
                 ? "Try a different location to see who's nearby."
-                : 'Check back soon — providers are joining every day.'}
+                : "Check back soon — providers are joining every day."}
             </Text>
-            {activeDelivery && (
+            {primaryLocation && (
               <TouchableRipple
                 onPress={() => setPickerVisible(true)}
                 style={styles.emptyAction}
@@ -359,30 +569,35 @@ export default function HomeScreen({ navigation }: any) {
             )}
           </View>
         ) : (
-          results.slice(0, 8).map((result) => (
-            <ServiceDiscoveryCard
-              key={result.id}
-              result={result}
-              onPress={() => navigation.navigate('ServiceDetail', { serviceId: result.id })}
-              onBook={() => handleBookPress(result)}
-            />
-          ))
+          results
+            .slice(0, 8)
+            .map((result) => (
+              <ServiceDiscoveryCard
+                key={result.id}
+                result={result}
+                onPress={() =>
+                  navigation.navigate("ServiceDetail", { serviceId: result.id })
+                }
+                onBook={() => handleBookPress(result)}
+              />
+            ))
         )}
       </ScrollView>
 
       <BookingSheet
         visible={!!bookingService}
         onClose={() => setBookingService(null)}
-        serviceId={bookingService?.id ?? ''}
-        serviceTitle={bookingService?.title ?? ''}
+        serviceId={bookingService?.id ?? ""}
+        serviceTitle={bookingService?.title ?? ""}
         basePrice={bookingService?.base_price ?? 0}
+        availabilityMatrix={bookingService?.provider?.availability_matrix}
         onBooked={handleBooked}
       />
 
       <LocationPickerSheet
         visible={pickerVisible}
         onClose={() => setPickerVisible(false)}
-        onSelect={setActiveDelivery}
+        onSelect={handlePrimarySelect}
         title="Show providers near"
       />
     </SafeAreaView>
@@ -392,51 +607,51 @@ export default function HomeScreen({ navigation }: any) {
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  safe:   { flex: 1, backgroundColor: palette.background },
+  safe: { flex: 1, backgroundColor: palette.background },
   scroll: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
 
   // ── Top bar ───────────────────────────────────────────────────
   topBar: {
-    flexDirection:  'row',
-    justifyContent: 'space-between',
-    alignItems:     'center',
-    marginBottom:   spacing.md,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: spacing.md,
   },
   brand: {
-    fontFamily:    fontFamily.extraBold,
-    fontSize:      15,
-    color:         palette.primary,
-    textTransform: 'uppercase',
+    fontFamily: fontFamily.extraBold,
+    fontSize: 15,
+    color: palette.primary,
+    textTransform: "uppercase",
     letterSpacing: 1,
   },
   topBarActions: {
-    flexDirection: 'row',
-    alignItems:    'center',
-    gap:           spacing.xs,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
   },
   iconBtn: {
-    width:           40,
-    height:          40,
-    borderRadius:    r.full,
+    width: 40,
+    height: 40,
+    borderRadius: r.full,
     backgroundColor: palette.surface,
-    borderWidth:     1,
-    borderColor:     palette.border,
-    alignItems:      'center',
-    justifyContent:  'center',
+    borderWidth: 1,
+    borderColor: palette.border,
+    alignItems: "center",
+    justifyContent: "center",
   },
 
   // ── Greeting ──────────────────────────────────────────────────
   greeting: {
-    fontFamily:   fontFamily.regular,
-    fontSize:     13,
-    color:        palette.textSecondary,
+    fontFamily: fontFamily.regular,
+    fontSize: 13,
+    color: palette.textSecondary,
     marginBottom: 2,
   },
   headline: {
-    fontFamily:   fontFamily.medium,
-    fontSize:     22,
-    lineHeight:   28,
-    color:        palette.textPrimary,
+    fontFamily: fontFamily.medium,
+    fontSize: 22,
+    lineHeight: 28,
+    color: palette.textPrimary,
     marginBottom: spacing.md,
   },
 
@@ -445,175 +660,295 @@ const styles = StyleSheet.create({
   // so carousel slides render edge-to-edge.
   carouselWrap: {
     marginHorizontal: -spacing.lg,
-    marginBottom:     spacing.md,
-    overflow:         'hidden',
+    marginBottom: spacing.md,
+    overflow: "hidden",
   },
 
   // ── Section headers ───────────────────────────────────────────
   sectionHeader: {
-    flexDirection:  'row',
-    justifyContent: 'space-between',
-    alignItems:     'center',
-    marginBottom:   spacing.sm,
-    marginTop:      spacing.md,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: spacing.sm,
+    marginTop: spacing.md,
   },
   sectionTitle: {
     fontFamily: fontFamily.medium,
-    fontSize:   16,
-    color:      palette.textPrimary,
+    fontSize: 16,
+    color: palette.textPrimary,
   },
-  sectionTitleBtn:  { borderRadius: r.sm, flexShrink: 1 },
+  sectionTitleBtn: { borderRadius: r.sm, flexShrink: 1 },
   sectionTitleInner: {
-    flexDirection: 'row',
-    alignItems:    'center',
-    gap:           4,
-    flexShrink:    1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    flexShrink: 1,
   },
   seeAllBtn: {
-    borderRadius:      r.full,
+    borderRadius: r.full,
     paddingHorizontal: spacing.sm,
-    paddingVertical:   spacing.xs,
+    paddingVertical: spacing.xs,
   },
   seeAll: {
     fontFamily: fontFamily.medium,
-    fontSize:   13,
-    color:      palette.primary,
+    fontSize: 13,
+    color: palette.primary,
   },
 
   // ── Category grid (2-column wrap) ────────────────────────────
   categoryGrid: {
-    flexDirection: 'row',
-    flexWrap:      'wrap',
-    gap:           spacing.sm,
-    marginBottom:  spacing.xs,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+    marginBottom: spacing.xs,
   },
   catSkeletonGrid: {
-    flexDirection: 'row',
-    flexWrap:      'wrap',
-    gap:           spacing.sm,
-    marginBottom:  spacing.xs,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+    marginBottom: spacing.xs,
   },
   catSkeleton: {
-    height:          52,
-    borderRadius:    r.md,
+    height: 52,
+    borderRadius: r.md,
     backgroundColor: palette.skeleton,
   },
   categoryTile: {
     backgroundColor: palette.surface,
-    borderRadius:    r.md,
-    borderWidth:     1,
-    borderColor:     palette.border,
-    overflow:        'hidden',
+    borderRadius: r.md,
+    borderWidth: 1,
+    borderColor: palette.border,
+    overflow: "hidden",
   },
   categoryTileInner: {
-    flexDirection:     'row',
-    alignItems:        'center',
-    gap:               spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
     paddingHorizontal: spacing.sm,
-    paddingVertical:   spacing.sm + 2,
-    minHeight:         52,
+    paddingVertical: spacing.sm + 2,
+    minHeight: 52,
   },
   catIconCircle: {
-    width:          32,
-    height:         32,
-    borderRadius:   r.full,
-    alignItems:     'center',
-    justifyContent: 'center',
-    flexShrink:     0,
+    width: 32,
+    height: 32,
+    borderRadius: r.full,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
   },
   catName: {
     fontFamily: fontFamily.regular,
-    fontSize:   12,
-    color:      palette.textPrimary,
-    flex:       1,
+    fontSize: 12,
+    color: palette.textPrimary,
+    flex: 1,
   },
 
   // ── Your providers shelf ──────────────────────────────────────
   providerShelf: {
-    gap:            spacing.md,
-    paddingBottom:  spacing.xs,
+    gap: spacing.md,
+    paddingBottom: spacing.xs,
   },
   providerChip: {
-    alignItems:  'center',
-    gap:         spacing.xs,
-    width:       60,
+    alignItems: "center",
+    gap: spacing.xs,
+    width: 60,
   },
   providerChipAvatar: {
-    width:           48,
-    height:          48,
-    borderRadius:    r.full,
+    width: 48,
+    height: 48,
+    borderRadius: r.full,
     backgroundColor: palette.primaryLight,
-    borderWidth:     1,
-    borderColor:     palette.border,
-    alignItems:      'center',
-    justifyContent:  'center',
+    borderWidth: 1,
+    borderColor: palette.border,
+    alignItems: "center",
+    justifyContent: "center",
   },
   providerChipInitial: {
     fontFamily: fontFamily.medium,
-    fontSize:   18,
-    color:      palette.primary,
+    fontSize: 18,
+    color: palette.primary,
   },
   providerChipName: {
     fontFamily: fontFamily.regular,
-    fontSize:   10,
-    color:      palette.textSecondary,
-    textAlign:  'center',
+    fontSize: 10,
+    color: palette.textSecondary,
+    textAlign: "center",
+  },
+
+  horizontalDivider: {
+    height: StyleSheet.hairlineWidth, // Creates a crisp, 1-pixel native line
+    backgroundColor: "#A9A9A9", // Choose your divider color
+    marginVertical: 15, // Adds space above and below the line
+  },
+  // ── Book again card (v3.2 §2.3) ──────────────────────────────
+  bookAgainCard: {
+    borderRadius: r.lg,
+    backgroundColor: palette.surface,
+    borderWidth: 1,
+    borderColor: palette.border,
+    marginBottom: spacing.md,
+    overflow: "hidden",
+    // ...shadow.card,
+  },
+  bookAgainInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    padding: spacing.md,
+  },
+  bookAgainAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: r.full,
+    backgroundColor: palette.primaryLight,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  bookAgainInitial: {
+    fontFamily: fontFamily.medium,
+    fontSize: 16,
+    color: palette.primary,
+  },
+  bookAgainBody: { flex: 1, minWidth: 0 },
+  bookAgainTitle: {
+    fontFamily: fontFamily.semiBold,
+    fontSize: 14,
+    color: palette.textPrimary,
+  },
+  bookAgainSub: {
+    fontFamily: fontFamily.regular,
+    fontSize: 12,
+    color: palette.textSecondary,
+    marginTop: 2,
+  },
+  bookAgainCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: palette.primary,
+    borderRadius: r.full,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+  },
+  bookAgainCtaText: {
+    fontFamily: fontFamily.semiBold,
+    fontSize: 12,
+    color: "#FFFFFF",
+  },
+
+  // ── Post a request entry (v3.2 §6) ───────────────────────────
+  postRequestCard: {
+    borderRadius: r.lg,
+    backgroundColor: palette.primaryLight,
+    borderWidth: 1,
+    borderColor: palette.border,
+    marginBottom: spacing.xs,
+    marginTop: spacing.xs,
+    overflow: "hidden",
+  },
+  postRequestInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    padding: spacing.md,
+  },
+  postRequestIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: r.full,
+    backgroundColor: palette.surface,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  postRequestTitle: {
+    fontFamily: fontFamily.semiBold,
+    fontSize: 14,
+    color: palette.textPrimary,
+  },
+  postRequestSub: {
+    fontFamily: fontFamily.regular,
+    fontSize: 12,
+    color: palette.textSecondary,
+    marginTop: 2,
   },
 
   // ── Location nudge banner ────────────────────────────────────
   locationNudge: {
-    borderRadius:    r.lg,
+    borderRadius: r.lg,
     backgroundColor: palette.primaryLight,
-    borderWidth:     1,
-    borderColor:     palette.border,
-    marginBottom:    spacing.sm,
-    overflow:        'hidden',
+    borderWidth: 1,
+    borderColor: palette.border,
+    marginBottom: spacing.sm,
+    overflow: "hidden",
   },
   locationNudgeInner: {
-    flexDirection:     'row',
-    alignItems:        'center',
-    gap:               spacing.xs,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
     paddingHorizontal: spacing.md,
-    paddingVertical:   spacing.sm + 2,
+    paddingVertical: spacing.sm + 2,
   },
   locationNudgeText: {
     fontFamily: fontFamily.regular,
-    fontSize:   13,
-    color:      palette.primary,
-    flex:       1,
+    fontSize: 13,
+    color: palette.primary,
+    flex: 1,
+  },
+
+  // ── Fallback notice (no local providers) ─────────────────────
+  fallbackNotice: {
+    borderRadius: r.lg,
+    backgroundColor: palette.surface,
+    borderWidth: 1,
+    borderColor: palette.border,
+    marginBottom: spacing.sm,
+    overflow: "hidden",
+  },
+  fallbackNoticeInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm + 2,
+  },
+  fallbackNoticeText: {
+    fontFamily: fontFamily.regular,
+    fontSize: 13,
+    color: palette.textSecondary,
+    flex: 1,
   },
 
   // ── Empty state ───────────────────────────────────────────────
   cardSkeleton: { height: 112, borderRadius: r.lg, marginBottom: spacing.sm },
   emptyState: {
-    alignItems:        'center',
-    paddingVertical:   spacing.xxl,
+    alignItems: "center",
+    paddingVertical: spacing.xxl,
     paddingHorizontal: spacing.lg,
   },
   emptyTitle: {
-    fontFamily:   fontFamily.medium,
-    fontSize:     15,
-    color:        palette.textPrimary,
-    textAlign:    'center',
-    marginTop:    spacing.sm,
+    fontFamily: fontFamily.medium,
+    fontSize: 15,
+    color: palette.textPrimary,
+    textAlign: "center",
+    marginTop: spacing.sm,
     marginBottom: spacing.xs,
   },
   emptyBody: {
     fontFamily: fontFamily.regular,
-    fontSize:   13,
-    color:      palette.textSecondary,
-    textAlign:  'center',
+    fontSize: 13,
+    color: palette.textSecondary,
+    textAlign: "center",
   },
   emptyAction: {
-    marginTop:         spacing.md,
-    backgroundColor:   palette.primaryLight,
-    borderRadius:      r.full,
+    marginTop: spacing.md,
+    backgroundColor: palette.primaryLight,
+    borderRadius: r.full,
     paddingHorizontal: spacing.lg,
-    paddingVertical:   spacing.sm,
+    paddingVertical: spacing.sm,
   },
   emptyActionText: {
     fontFamily: fontFamily.medium,
-    fontSize:   13,
-    color:      palette.primary,
+    fontSize: 13,
+    color: palette.primary,
   },
 });

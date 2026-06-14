@@ -9,7 +9,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Button, Text, TouchableRipple } from 'react-native-paper';
+import { Button, Dialog, Portal, Text, TextInput as PaperTextInput, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ApiError } from '../../api/errors';
 import { Booking, BookingStatus, bookingsApi } from '../../api/bookings';
@@ -39,6 +39,14 @@ async function reverseGeocodeName(lat: number, lon: number): Promise<string> {
 // ── Status display helpers ─────────────────────────────────────────────────
 
 const STATUS_LABEL: Record<BookingStatus, string> = {
+  // DIRECT
+  REQUESTED:          'Awaiting Response',
+  QUOTED:             'Quote Received',
+  ACCEPTED:           'Confirmed',
+  DECLINED:           'Declined',
+  EXPIRED:            'Expired',
+  NO_SHOW:            'No-show',
+  // ESCROW + shared
   AWAITING_KYC:       'Awaiting Verification',
   PENDING_PAYMENT:    'Awaiting Payment',
   FUNDS_HELD:         'Payment Held',
@@ -52,6 +60,12 @@ const STATUS_LABEL: Record<BookingStatus, string> = {
 };
 
 const STATUS_COLOR: Record<BookingStatus, string> = {
+  REQUESTED:          palette.textSecondary,
+  QUOTED:             palette.warning,
+  ACCEPTED:           palette.primary,
+  DECLINED:           palette.textSecondary,
+  EXPIRED:            palette.textSecondary,
+  NO_SHOW:            palette.danger,
   AWAITING_KYC:       palette.warning,
   PENDING_PAYMENT:    palette.warning,
   FUNDS_HELD:         palette.primary,
@@ -65,6 +79,12 @@ const STATUS_COLOR: Record<BookingStatus, string> = {
 };
 
 const STATUS_BG: Record<BookingStatus, string> = {
+  REQUESTED:          palette.background,
+  QUOTED:             palette.warningLight,
+  ACCEPTED:           palette.primaryLight,
+  DECLINED:           palette.background,
+  EXPIRED:            palette.background,
+  NO_SHOW:            palette.dangerLight,
   AWAITING_KYC:       palette.warningLight,
   PENDING_PAYMENT:    palette.warningLight,
   FUNDS_HELD:         palette.primaryLight,
@@ -116,7 +136,10 @@ export default function BookingDetailScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
   const { showError } = useSnackbar();
   const { user } = useAuthStore();
-  const { pay, start, deliver, complete, cancel, submitting, error, clearError } = useBookingStore();
+  const {
+    pay, start, deliver, complete, cancel, submitting, error, clearError,
+    accept, quote, decline, acceptQuote, markPaid, review,
+  } = useBookingStore();
 
   const [booking, setBooking]               = useState<Booking | null>(null);
   const [loading, setLoading]               = useState(true);
@@ -130,6 +153,10 @@ export default function BookingDetailScreen({ navigation, route }: any) {
   const [safetyText, setSafetyText]           = useState('');
   const [tosAcknowledged, setTosAcknowledged] = useState(false);
   const [actionLoading, setActionLoading]     = useState(false);
+  const [showQuote, setShowQuote]             = useState(false);
+  const [quotePrice, setQuotePrice]           = useState('');
+  const [reviewRating, setReviewRating]       = useState(0);
+  const [reviewComment, setReviewComment]     = useState('');
 
   useEffect(() => { loadBooking(); }, [bookingId]);
 
@@ -266,7 +293,36 @@ export default function BookingDetailScreen({ navigation, route }: any) {
 
   const isMyBookingAsBuyer    = booking?.buyer.id    === user?.id;
   const isMyBookingAsProvider = booking?.provider.id === user?.id;
+  const isDirect = (booking?.payment_mode ?? 'ESCROW') === 'DIRECT';
   const busy = submitting || actionLoading;
+
+  async function handleQuoteSubmit() {
+    const price = Number(quotePrice);
+    if (!Number.isFinite(price) || price <= 0) {
+      showError('Enter a valid amount above ZMW 0.');
+      return;
+    }
+    await handleAction(() => quote(booking!.id, price));
+    setShowQuote(false);
+    setQuotePrice('');
+  }
+
+  async function handleSubmitReview() {
+    if (reviewRating < 1) {
+      showError('Please tap a star rating before submitting.');
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const updated = await review(booking!.id, reviewRating, reviewComment.trim() || undefined);
+      setBooking(updated);
+      Alert.alert('Thanks for your review', 'Your feedback helps other customers and the provider.');
+    } catch (e) {
+      showError(e instanceof ApiError ? e.message : 'Could not submit your review.');
+    } finally {
+      setActionLoading(false);
+    }
+  }
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -297,8 +353,8 @@ export default function BookingDetailScreen({ navigation, route }: any) {
             </Text>
           </View>
 
-          {/* Payout countdown (provider, COMPLETED) */}
-          {isMyBookingAsProvider && booking.status === 'COMPLETED' && booking.payout_eligible_at && (
+          {/* Payout countdown (provider, COMPLETED) — escrow only */}
+          {!isDirect && isMyBookingAsProvider && booking.status === 'COMPLETED' && booking.payout_eligible_at && (
             <View style={styles.countdownBanner}>
               <Ionicons name="timer-outline" size={16} color={palette.primary} />
               <Text style={styles.countdownText}>{payoutCountdown(booking.payout_eligible_at)}</Text>
@@ -310,7 +366,12 @@ export default function BookingDetailScreen({ navigation, route }: any) {
             <Text style={styles.cardLabel}>Service</Text>
             <Text style={styles.cardValue}>{booking.service.title}</Text>
             <View style={styles.priceRow}>
-              <Text style={styles.cardSub}>ZMW {(booking.amount ?? booking.service.base_price).toFixed(2)}</Text>
+              <Text style={styles.cardSub}>
+                ZMW {(booking.agreed_amount ?? booking.amount ?? booking.service.base_price).toFixed(2)}
+              </Text>
+              {isDirect && booking.status === 'QUOTED' && (
+                <Text style={styles.protectionFee}>quoted</Text>
+              )}
               {booking.buyer_protection_fee > 0 && isMyBookingAsBuyer && (
                 <Text style={styles.protectionFee}>
                   + ZMW {booking.buyer_protection_fee.toFixed(2)} protection
@@ -411,6 +472,121 @@ export default function BookingDetailScreen({ navigation, route }: any) {
 
           {/* ── Action buttons ── */}
 
+          {/* DIRECT — Provider: respond to a new request */}
+          {isDirect && isMyBookingAsProvider && booking.status === 'REQUESTED' && (
+            <>
+              <Button
+                mode="contained"
+                style={styles.actionBtn}
+                contentStyle={styles.actionBtnContent}
+                labelStyle={styles.actionBtnLabel}
+                loading={busy} disabled={busy}
+                onPress={() => confirmAction(
+                  'Accept request',
+                  `Accept this booking at ZMW ${(booking.amount ?? booking.service.base_price).toFixed(2)}? This confirms the job — the customer pays you directly.`,
+                  () => accept(booking.id),
+                )}
+              >
+                Accept · ZMW {(booking.amount ?? booking.service.base_price).toFixed(0)}
+              </Button>
+              <Button
+                mode="outlined"
+                style={[styles.actionBtn, { borderColor: palette.primary }]}
+                contentStyle={styles.actionBtnContent}
+                labelStyle={styles.actionBtnLabel}
+                disabled={busy}
+                textColor={palette.primary}
+                onPress={() => { setQuotePrice(String(booking.amount ?? booking.service.base_price ?? '')); setShowQuote(true); }}
+              >
+                Send a quote
+              </Button>
+              <Button
+                mode="text"
+                style={{ marginTop: spacing.xs }}
+                labelStyle={[styles.actionBtnLabel, { color: palette.danger }]}
+                disabled={busy}
+                textColor={palette.danger}
+                onPress={() => confirmAction(
+                  'Decline request',
+                  'Decline this booking? The customer will be notified.',
+                  () => decline(booking.id),
+                )}
+              >
+                Decline
+              </Button>
+            </>
+          )}
+
+          {/* DIRECT — Buyer: provider sent a quote */}
+          {isDirect && isMyBookingAsBuyer && booking.status === 'QUOTED' && (
+            <>
+              <Button
+                mode="contained"
+                style={styles.actionBtn}
+                contentStyle={styles.actionBtnContent}
+                labelStyle={styles.actionBtnLabel}
+                loading={busy} disabled={busy}
+                onPress={() => confirmAction(
+                  'Accept quote',
+                  `Accept the provider's quote of ZMW ${(booking.agreed_amount ?? 0).toFixed(2)}? This confirms the booking — you'll pay the provider directly.`,
+                  () => acceptQuote(booking.id),
+                )}
+              >
+                Accept quote · ZMW {(booking.agreed_amount ?? 0).toFixed(0)}
+              </Button>
+              <Button
+                mode="text"
+                style={{ marginTop: spacing.xs }}
+                labelStyle={[styles.actionBtnLabel, { color: palette.danger }]}
+                disabled={busy}
+                textColor={palette.danger}
+                onPress={() => confirmAction(
+                  'Decline quote',
+                  'Decline this quote and cancel the request?',
+                  () => cancel(booking.id),
+                )}
+              >
+                Decline quote
+              </Button>
+            </>
+          )}
+
+          {/* DIRECT — Buyer: waiting on provider to respond */}
+          {isDirect && isMyBookingAsBuyer && booking.status === 'REQUESTED' && (
+            <View style={styles.waitNote}>
+              <Ionicons name="hourglass-outline" size={16} color={palette.textSecondary} />
+              <Text style={styles.waitNoteText}>Waiting for the provider to accept your request.</Text>
+            </View>
+          )}
+
+          {/* DIRECT — either party: informational "mark as paid" record */}
+          {isDirect &&
+            ['ACCEPTED', 'IN_PROGRESS', 'DELIVERED'].includes(booking.status) &&
+            booking.payment_status !== 'MARKED_PAID' && (
+            <Button
+              mode="outlined"
+              style={[styles.actionBtn, { borderColor: palette.primary }]}
+              contentStyle={styles.actionBtnContent}
+              labelStyle={styles.actionBtnLabel}
+              loading={busy} disabled={busy}
+              textColor={palette.primary}
+              onPress={() => confirmAction(
+                'Mark as paid',
+                'Record that payment was made directly between you and the other party. This is for your records only — no money moves through the app.',
+                () => markPaid(booking.id),
+              )}
+            >
+              Mark as paid
+            </Button>
+          )}
+
+          {isDirect && booking.payment_status === 'MARKED_PAID' && (
+            <View style={styles.waitNote}>
+              <Ionicons name="checkmark-circle-outline" size={16} color={palette.success} />
+              <Text style={[styles.waitNoteText, { color: palette.success }]}>Marked as paid directly.</Text>
+            </View>
+          )}
+
           {/* Buyer: pay */}
           {isMyBookingAsBuyer && booking.status === 'PENDING_PAYMENT' && (
             <Button
@@ -429,8 +605,8 @@ export default function BookingDetailScreen({ navigation, route }: any) {
             </Button>
           )}
 
-          {/* Provider: start */}
-          {isMyBookingAsProvider && booking.status === 'FUNDS_HELD' && (
+          {/* Provider: start (DIRECT: ACCEPTED → IN_PROGRESS · ESCROW: FUNDS_HELD → IN_PROGRESS) */}
+          {isMyBookingAsProvider && (booking.status === 'FUNDS_HELD' || booking.status === 'ACCEPTED') && (
             <Button
               mode="contained"
               style={styles.actionBtn}
@@ -468,11 +644,13 @@ export default function BookingDetailScreen({ navigation, route }: any) {
                 loading={busy} disabled={busy}
                 onPress={() => confirmAction(
                   'Confirm Completion',
-                  'This releases funds to the provider. The action cannot be undone.',
+                  isDirect
+                    ? 'Confirm the job is done. This closes the booking and lets you leave a review. No money moves through the app.'
+                    : 'This releases funds to the provider. The action cannot be undone.',
                   () => complete(booking.id),
                 )}
               >
-                Confirm & Release Funds
+                {isDirect ? 'Confirm completion' : 'Confirm & Release Funds'}
               </Button>
 
               {!showDispute ? (
@@ -546,8 +724,9 @@ export default function BookingDetailScreen({ navigation, route }: any) {
             </>
           )}
 
-          {/* Provider: instant payout (COMPLETED, hold not yet expired) */}
-          {isMyBookingAsProvider &&
+          {/* Provider: instant payout (COMPLETED, hold not yet expired) — escrow only */}
+          {!isDirect &&
+           isMyBookingAsProvider &&
            booking.status === 'COMPLETED' &&
            !booking.instant_payout_requested &&
            booking.payout_eligible_at &&
@@ -571,8 +750,62 @@ export default function BookingDetailScreen({ navigation, route }: any) {
             </Button>
           )}
 
+          {/* Buyer: leave a review (COMPLETED / DISBURSED, not yet reviewed) */}
+          {isMyBookingAsBuyer && ['COMPLETED', 'DISBURSED'].includes(booking.status) && !booking.has_review && (
+            <View style={styles.reviewCard}>
+              <Text style={styles.reviewTitle}>Rate your experience</Text>
+              <Text style={styles.reviewSub}>How was your booking with {booking.provider.display_name ?? 'the provider'}?</Text>
+              <View style={styles.starRow}>
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <TouchableRipple
+                    key={n}
+                    borderless
+                    style={styles.starBtn}
+                    onPress={() => setReviewRating(n)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${n} star${n > 1 ? 's' : ''}`}
+                  >
+                    <Ionicons
+                      name={n <= reviewRating ? 'star' : 'star-outline'}
+                      size={34}
+                      color={n <= reviewRating ? palette.warning : palette.textDisabled}
+                    />
+                  </TouchableRipple>
+                ))}
+              </View>
+              <TextInput
+                style={styles.textArea}
+                multiline
+                numberOfLines={3}
+                placeholder="Add a comment (optional)"
+                placeholderTextColor={palette.textDisabled}
+                value={reviewComment}
+                onChangeText={setReviewComment}
+              />
+              <Button
+                mode="contained"
+                style={[styles.actionBtn, { marginTop: spacing.sm }]}
+                contentStyle={styles.actionBtnContent}
+                labelStyle={styles.actionBtnLabel}
+                loading={busy}
+                disabled={busy || reviewRating < 1}
+                onPress={handleSubmitReview}
+              >
+                Submit review
+              </Button>
+            </View>
+          )}
+
+          {/* Buyer: already reviewed */}
+          {isMyBookingAsBuyer && ['COMPLETED', 'DISBURSED'].includes(booking.status) && booking.has_review && (
+            <View style={styles.waitNote}>
+              <Ionicons name="checkmark-circle-outline" size={16} color={palette.success} />
+              <Text style={[styles.waitNoteText, { color: palette.success }]}>Thanks — you’ve reviewed this booking.</Text>
+            </View>
+          )}
+
           {/* Buyer: cancel (before IN_PROGRESS) */}
-          {isMyBookingAsBuyer && ['PENDING_PAYMENT', 'FUNDS_HELD'].includes(booking.status) && (
+          {isMyBookingAsBuyer && ['PENDING_PAYMENT', 'FUNDS_HELD', 'REQUESTED', 'ACCEPTED'].includes(booking.status) && (
             <Button
               mode="text"
               style={{ marginTop: spacing.sm }}
@@ -582,7 +815,9 @@ export default function BookingDetailScreen({ navigation, route }: any) {
                 'Cancel Booking',
                 booking.status === 'FUNDS_HELD'
                   ? 'A refund will be issued to your account.'
-                  : 'Are you sure you want to cancel?',
+                  : isDirect && booking.status === 'ACCEPTED'
+                    ? 'Cancelling a confirmed booking may affect your account rating. Continue?'
+                    : 'Are you sure you want to cancel?',
                 () => cancel(booking.id),
               )}
               textColor={palette.danger}
@@ -592,7 +827,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
           )}
 
           {/* ── Safety section (visible during any active booking) ── */}
-          {['FUNDS_HELD', 'IN_PROGRESS', 'DELIVERED'].includes(booking.status) && (
+          {['FUNDS_HELD', 'ACCEPTED', 'IN_PROGRESS', 'DELIVERED'].includes(booking.status) && (
             <View style={styles.safetySection}>
               {/* Emergency button — §11.4 */}
               {booking.status === 'IN_PROGRESS' && (
@@ -743,6 +978,38 @@ export default function BookingDetailScreen({ navigation, route }: any) {
           )}
         </ScrollView>
       )}
+
+      {/* DIRECT — provider quote dialog */}
+      <Portal>
+        <Dialog visible={showQuote} onDismiss={() => setShowQuote(false)}>
+          <Dialog.Title>Send a quote</Dialog.Title>
+          <Dialog.Content>
+            <Text style={{ ...typography.bodySmall, color: palette.textSecondary, marginBottom: spacing.sm }}>
+              Propose your price for this job. The customer pays you directly if they accept.
+            </Text>
+            <PaperTextInput
+              mode="outlined"
+              keyboardType="numeric"
+              value={quotePrice}
+              onChangeText={(t) => setQuotePrice(t.replace(/[^0-9.]/g, ''))}
+              left={<PaperTextInput.Affix text="ZMW" />}
+              placeholder="Your price"
+              autoFocus
+            />
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => setShowQuote(false)}>Cancel</Button>
+            <Button
+              mode="contained"
+              loading={busy}
+              disabled={busy || quotePrice.trim() === '' || Number(quotePrice) <= 0}
+              onPress={handleQuoteSubmit}
+            >
+              Send quote
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
     </SafeAreaView>
   );
 }
@@ -841,6 +1108,20 @@ const styles = StyleSheet.create({
 
   actionBtn:        { borderRadius: r.lg, marginBottom: spacing.sm },
   actionBtnOutline: { borderColor: palette.danger },
+  waitNote: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.xs,
+    backgroundColor: palette.background, borderRadius: r.lg,
+    paddingVertical: spacing.sm, paddingHorizontal: spacing.md, marginBottom: spacing.sm,
+  },
+  waitNoteText: { ...typography.bodySmall, color: palette.textSecondary, flex: 1 },
+  reviewCard: {
+    backgroundColor: palette.surface, borderRadius: r.lg, borderWidth: 1,
+    borderColor: palette.border, padding: spacing.md, marginBottom: spacing.sm,
+  },
+  reviewTitle: { ...typography.label, color: palette.textPrimary },
+  reviewSub:   { ...typography.bodySmall, color: palette.textSecondary, marginTop: 2, marginBottom: spacing.sm },
+  starRow:     { flexDirection: 'row', justifyContent: 'center', gap: spacing.xs, marginBottom: spacing.sm },
+  starBtn:     { padding: spacing.xs, borderRadius: r.full },
   actionBtnContent: { height: 52 },
   actionBtnLabel:   { ...typography.label, fontSize: 15 },
 

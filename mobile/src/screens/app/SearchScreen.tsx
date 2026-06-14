@@ -115,7 +115,7 @@ export default function SearchScreen({ navigation }: any) {
   const abortRef    = useRef<AbortController | null>(null);
 
   const { categories, fetchCategories } = useCategoryStore();
-  const { activeDelivery, setActiveDelivery } = useLocationStore();
+  const { primaryLocation, setPrimary } = useLocationStore();
   const { recents, hydrated, hydrate, push: pushRecent, remove: removeRecent } = useRecentSearchStore();
 
   useEffect(() => {
@@ -143,8 +143,8 @@ export default function SearchScreen({ navigation }: any) {
         try {
           const data = await searchApi.suggest(
             q,
-            activeDelivery?.lat,
-            activeDelivery?.lng,
+            primaryLocation?.lat,
+            primaryLocation?.lng,
           );
           setResult(data);
           setActiveIndex(-1);
@@ -159,7 +159,7 @@ export default function SearchScreen({ navigation }: any) {
         }
       }, 200);
     },
-    [activeDelivery],
+    [primaryLocation],
   );
 
   const handleQueryChange = (text: string) => {
@@ -220,6 +220,13 @@ export default function SearchScreen({ navigation }: any) {
     setQuery(q);
     runSuggest(q);
   };
+
+  const handlePrimarySelect = useCallback(
+    async (loc: { lat: number; lng: number; label: string; region: string | null; source: 'DEVICE' | 'SEARCH' | 'SAVED' }) => {
+      await setPrimary(loc);
+    },
+    [setPrimary],
+  );
 
   // ── Popular categories (from store, first 8) ─────────────────────────────
 
@@ -288,19 +295,19 @@ export default function SearchScreen({ navigation }: any) {
       <TouchableRipple
         onPress={() => setPickerVisible(true)}
         style={styles.locationRow}
-        accessibilityLabel={`Searching near ${activeDelivery?.label ?? 'no location set'}. Tap to change`}
+        accessibilityLabel={`Searching near ${primaryLocation?.label ?? 'no location set'}. Tap to change`}
         accessibilityRole="button"
       >
         <View style={styles.locationRowInner}>
           <Ionicons
-            name={activeDelivery ? 'location' : 'location-outline'}
+            name={primaryLocation ? 'location' : 'location-outline'}
             size={13}
-            color={activeDelivery ? palette.primary : palette.textSecondary}
+            color={primaryLocation ? palette.primary : palette.textSecondary}
           />
           <Text style={styles.locationTxt} numberOfLines={1}>
-            {activeDelivery
-              ? `Searching near ${activeDelivery.label}`
-              : 'Set your delivery location'}
+            {primaryLocation
+              ? `Searching near ${primaryLocation.label}`
+              : 'Set your location'}
           </Text>
           <Ionicons name="chevron-down" size={12} color={palette.textSecondary} />
         </View>
@@ -425,7 +432,7 @@ export default function SearchScreen({ navigation }: any) {
       <LocationPickerSheet
         visible={pickerVisible}
         onClose={() => setPickerVisible(false)}
-        onSelect={setActiveDelivery}
+        onSelect={handlePrimarySelect}
         title="Search near"
       />
     </SafeAreaView>

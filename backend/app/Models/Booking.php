@@ -24,10 +24,16 @@ class Booking extends Model
         'buyer_id',
         'provider_id',
         'service_id',
+        'payment_mode',
         'status',
         'amount',
+        'agreed_amount',
         'buyer_protection_fee',
+        'payment_status',
+        'payment_marked_by',
+        'payment_marked_at',
         'payout_eligible_at',
+        'expires_at',
         'instant_payout_requested',
         'scheduled_start',
         'scheduled_end',
@@ -47,7 +53,10 @@ class Booking extends Model
             'completed_at'             => 'datetime',
             'disbursed_at'             => 'datetime',
             'payout_eligible_at'       => 'datetime',
+            'payment_marked_at'        => 'datetime',
+            'expires_at'               => 'datetime',
             'amount'                   => 'float',
+            'agreed_amount'            => 'float',
             'buyer_protection_fee'     => 'float',
             'instant_payout_requested' => 'boolean',
         ];
@@ -85,5 +94,10 @@ class Booking extends Model
     public function dispute()
     {
         return $this->hasOne(\App\Models\Dispute::class);
+    }
+
+    public function review()
+    {
+        return $this->hasOne(\App\Models\Review::class);
     }
 }

@@ -124,10 +124,6 @@ class BookingConflictService
         float  $deliveryLat,
         float  $deliveryLng,
     ): void {
-        $speedKmh   = (float) config('search.search.max_radius_km', 10); // not ideal – use env
-        $speedKmh   = (float) env('TRANSIT_SPEED_KMH', 30);
-        $bufferMins = (float) env('TRANSIT_BUFFER_MINS', 15);
-
         $point = "ST_GeogFromText('POINT({$deliveryLng} {$deliveryLat})')";
 
         $prev = DB::selectOne("
@@ -147,10 +143,10 @@ class BookingConflictService
             return; // no prior booking — no transit conflict possible
         }
 
-        $prevEnd      = Carbon::parse($prev->scheduled_end);
-        $distanceKm   = (float) $prev->distance_m / 1000;
-        $tTransitMins = ($distanceKm / $speedKmh) * 60;
-        $requiredGap  = $tTransitMins + $bufferMins; // total minutes needed
+        $prevEnd     = Carbon::parse($prev->scheduled_end);
+        $distanceKm  = (float) $prev->distance_m / 1000;
+        // Departure = end of the previous job; that moment decides peak vs off-peak.
+        $requiredGap = $this->requiredTransitMinutes($distanceKm, $prevEnd->copy()->setTimezone(self::LUSAKA_TZ));
 
         $actualGapMins = $prevEnd->diffInMinutes($start, false);
 
@@ -167,5 +163,38 @@ class BookingConflictService
                 . "to travel from their previous job ({$distStr} away).",
             );
         }
+    }
+
+    /**
+     * v3.2 §1.6 transit math — minutes the provider needs between jobs.
+     *
+     * Straight-line distance × road-circuity 1.35, at 20 km/h during Lusaka
+     * peak (06:30–09:00, 16:30–19:00) or 30 km/h off-peak, plus the fixed
+     * setup buffer. `$departure` must already be in Africa/Lusaka time.
+     */
+    public function requiredTransitMinutes(float $straightLineKm, Carbon $departure): float
+    {
+        $cfg = config('location.transit');
+
+        $roadKm   = max(0.0, $straightLineKm) * $cfg['circuity'];
+        $speedKmh = $this->isPeak($departure, $cfg['peak_windows'])
+            ? $cfg['speed_peak_kmh']
+            : $cfg['speed_offpeak_kmh'];
+
+        return ($roadKm / $speedKmh) * 60 + $cfg['buffer_mins'];
+    }
+
+    /** @param array<int, array{0: string, 1: string}> $windows "HH:MM" pairs */
+    private function isPeak(Carbon $departure, array $windows): bool
+    {
+        $time = $departure->format('H:i');
+
+        foreach ($windows as [$from, $to]) {
+            if ($time >= $from && $time < $to) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

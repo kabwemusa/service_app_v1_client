@@ -23,7 +23,7 @@ export interface RankedCardData {
   provider: {
     r_raw:           number;
     v_reviews:       number;
-    completion_rate: number;
+    completion_rate: number | null;
     trust_tier?:     number;
   } | null;
 }

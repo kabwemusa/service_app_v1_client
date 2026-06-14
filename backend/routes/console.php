@@ -1,5 +1,6 @@
 <?php
 
+use App\Console\Commands\BookingExpiryWorker;
 use App\Console\Commands\DisputeAutoCompleteWorker;
 use App\Console\Commands\PaymentExpiryWorker;
 use App\Console\Commands\PayoutRetryWorker;
@@ -12,6 +13,11 @@ use Illuminate\Support\Facades\Schedule;
 Artisan::command("inspire", function () {
     $this->comment(Inspiring::quote());
 })->purpose("Display an inspiring quote");
+
+// ── DIRECT Workers ───────────────────────────────────────────────────────────
+
+// Expire REQUESTED bookings with no provider response within BOOKING_RESPONSE_WINDOW_HOURS
+Schedule::command(BookingExpiryWorker::class)->everyFiveMinutes()->withoutOverlapping();
 
 // ── Escrow Workers ────────────────────────────────────────────────────────────
 
@@ -26,6 +32,22 @@ Schedule::command(DisputeAutoCompleteWorker::class)->everyFifteenMinutes()->with
 
 // Recompute §5.4 trust scores for all active providers nightly
 Schedule::job(new ComputeTrustScoreJob)->dailyAt('02:00')->withoutOverlapping();
+
+// v3.2 §1.5 — promoted-slot auction reserves (5% of category-region median booking value)
+Schedule::command(\App\Console\Commands\RecomputePromotedReservesCommand::class)
+    ->weeklyOn(1, '03:00')
+    ->withoutOverlapping();
+
+// v3.2 §6 — close post-a-request broadcasts whose time window has passed
+Schedule::call(fn () => app(\App\Services\ServiceRequestService::class)->expireStale())
+    ->everyFifteenMinutes()
+    ->name('service-requests-expire')
+    ->withoutOverlapping();
+
+// v3.2 §7 — weekly north-star metric snapshots (after the week closes)
+Schedule::command(\App\Console\Commands\MetricsWeeklyCommand::class)
+    ->weeklyOn(1, '03:30')
+    ->withoutOverlapping();
 
 // Dispatch payout for all COMPLETED bookings whose hold window has expired (§8.6 — 4×/day)
 Schedule::call(fn () => app(BookingService::class)->processDuePayouts())

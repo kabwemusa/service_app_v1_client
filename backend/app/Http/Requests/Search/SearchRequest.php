@@ -22,6 +22,9 @@ class SearchRequest extends FormRequest
             'lat'         => ['nullable', 'numeric', 'between:-90,90'],
             'lng'         => ['nullable', 'numeric', 'between:-180,180'],
             'category_id' => ['nullable', 'integer', 'exists:categories,id'],
+            // Province label of the active delivery location — promoted-slot
+            // inventory is auctioned per category × region (v3.2 §1.5).
+            'region'      => ['nullable', 'string', 'max:60'],
             'page'        => ['nullable', 'integer', 'min:1'],
             // Browse filters (v3.1 §6 Filters sheet)
             'max_price'         => ['nullable', 'numeric', 'min:0'],

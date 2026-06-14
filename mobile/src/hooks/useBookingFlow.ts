@@ -26,7 +26,9 @@ export function useBookingFlow(serviceId: string) {
   const { createBooking, submitting, error, clearError } = useBookingStore();
   const { showError } = useSnackbar();
 
-  const days = next14Days();
+  // Stable across re-renders — computed once on mount so Date objects don't
+  // change identity every render (which would break memo deps in BookingSheet).
+  const [days] = useState(() => next14Days());
   const [selectedDay,      setSelectedDay]      = useState<Date>(days[0]);
   const [startHour,        setStartHour]        = useState(9);
   const [durationHrs,      setDurationHrs]      = useState(1);
@@ -43,9 +45,8 @@ export function useBookingFlow(serviceId: string) {
     setDeliveryLocation(loc);
   }
 
-  function reset() {
-    const fresh = next14Days();
-    setSelectedDay(fresh[0]);
+  function reset(initialDay?: Date) {
+    setSelectedDay(initialDay ?? days[0]);
     setStartHour(9);
     setDurationHrs(1);
     setDeliveryLocation(null);

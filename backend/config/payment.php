@@ -30,6 +30,24 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Repeat-pair commission taper (v3.2 §5)
+    |--------------------------------------------------------------------------
+    | The dominant leak pattern is rational: pairs go off-platform after job 1
+    | because only the commission remains visible. Make staying rational —
+    | bookings 3–5 between the same (buyer, provider) pair get tier_rate − 2pts,
+    | 6+ get −3pts (floor 0), and the buyer-protection fee is waived from the
+    | pair's 3rd booking (waiver capped at ZMW 20).
+    */
+    'repeat_taper' => [
+        'tier1_discount'           => (float) env('REPEAT_TAPER_T1', 0.02),
+        'tier2_discount'           => (float) env('REPEAT_TAPER_T2', 0.03),
+        'start_booking'            => (int)   env('REPEAT_TAPER_START', 3),
+        'deep_booking'             => (int)   env('REPEAT_TAPER_DEEP', 6),
+        'protection_waiver_cap_zmw' => (float) env('REPEAT_PROTECTION_WAIVER_CAP_ZMW', 20.0),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | MTN MoMo Gateway
     |--------------------------------------------------------------------------
     |

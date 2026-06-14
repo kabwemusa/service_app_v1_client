@@ -31,11 +31,15 @@ class LocationController extends Controller
 
         return ApiResponse::success(
             collect($results)->map(fn (array $r) => [
-                'label'      => $r['label'],
-                'place_name' => $r['place_name'],
-                'region'     => $r['region'],
-                'lat'        => $r['lat'],
-                'lng'        => $r['lng'],
+                'label'       => $r['label'],
+                'place_name'  => $r['place_name'],
+                'region'      => $r['region'],
+                // v3.2 §3.4 — township/ward level alongside province
+                'region_ward' => $r['region_ward'] ?? null,
+                // True for entries served from our own gazetteer (§3.1)
+                'gazetteer'   => (bool) ($r['gazetteer'] ?? false),
+                'lat'         => $r['lat'],
+                'lng'         => $r['lng'],
             ]),
             'Place candidates retrieved.',
         );

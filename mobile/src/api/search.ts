@@ -13,11 +13,18 @@ export interface SearchResult {
   description:   string | null;
   pricing_model: PricingModel;
   base_price:    number | null;
+  payment_mode:  'DIRECT' | 'ESCROW';
   latitude:      number;
   longitude:     number;
   distance_km:   number | null;
   // trust_score (raw 0–1) is never exposed client-side — use trust_tier badge (v3.1 §7)
   has_promo_slot:      boolean;
+  /**
+   * v3.2 §1.5 — structural placement: 'promoted' rows occupy the reserved
+   * positions 1/4 and MUST carry the "Promoted" label; never inferred from
+   * has_promo_slot (owning a slot ≠ occupying a promoted position).
+   */
+  placement:           'organic' | 'promoted';
   completed_job_count: number;
   provider: {
     id:                     string;
@@ -25,7 +32,8 @@ export interface SearchResult {
     r_raw:                  number;
     r_bayes:                number;
     v_reviews:              number;
-    completion_rate:        number;
+    /** null = provider has no booking history yet — render "–", not 0%. */
+    completion_rate:        number | null;
     trust_tier:             number;
     response_time_p50_mins: number | null;
   };
@@ -70,6 +78,9 @@ export interface SearchParams {
   lat?:         number;
   lng?:         number;
   category_id?: number;
+  /** Province label of the active delivery location — enables promoted-slot
+   *  matching (v3.2 §1.5: inventory is auctioned per category × region). */
+  region?:      string;
   page?:        number;
   // Browse filters (v3.1 §6 Filters sheet)
   max_price?:         number;
@@ -89,6 +100,9 @@ export interface PaginatedSearchResults {
   per_page:           number;
   total:              number;
   resolved_category:  ResolvedCategory | null;
+  /** True when no providers cover the delivery location and results are
+   *  national-quality-ranked fallbacks instead. */
+  fallback:           boolean;
 }
 
 export const searchApi = {

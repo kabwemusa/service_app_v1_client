@@ -36,17 +36,50 @@ class IdentityDocument extends Model
         'expires_on',
         'submitted_at',
         'reviewed_at',
+        // Admin-review (Verification queue)
+        'claimed_by_admin_id',
+        'claimed_at',
+        'reviewer_admin_id',
+        'info_requested_at',
+        'timeline',
     ];
 
     protected function casts(): array
     {
         return [
-            'extracted_fields' => 'array',
-            'confidence_score' => 'float',
-            'submitted_at'     => 'datetime',
-            'reviewed_at'      => 'datetime',
-            'expires_on'       => 'date',
+            'extracted_fields'  => 'array',
+            'confidence_score'  => 'float',
+            'submitted_at'      => 'datetime',
+            'reviewed_at'       => 'datetime',
+            'expires_on'        => 'date',
+            'claimed_at'        => 'datetime',
+            'info_requested_at' => 'datetime',
+            'timeline'          => 'array',
         ];
+    }
+
+    /**
+     * Append a progression event (submitted, reviewed, resubmitted, …) to the
+     * timeline. Keep it PII-free: status, actor label, and an optional note only.
+     * Does not persist — call within the caller's update()/save() flow, or pass
+     * $save = true to persist immediately.
+     */
+    public function pushEvent(string $label, string $actor, ?string $note = null, ?string $status = null, bool $save = false): void
+    {
+        $timeline   = $this->timeline ?? [];
+        $timeline[] = array_filter([
+            'at'     => now()->toIso8601String(),
+            'label'  => $label,
+            'actor'  => $actor,
+            'status' => $status ?? $this->status,
+            'note'   => $note,
+        ], static fn ($v) => $v !== null);
+
+        $this->timeline = $timeline;
+
+        if ($save) {
+            $this->save();
+        }
     }
 
     public function docType(): DocType
@@ -72,5 +105,15 @@ class IdentityDocument extends Model
     public function reviewer()
     {
         return $this->belongsTo(User::class, 'reviewer_id');
+    }
+
+    public function claimedByAdmin()
+    {
+        return $this->belongsTo(AdminUser::class, 'claimed_by_admin_id');
+    }
+
+    public function reviewerAdmin()
+    {
+        return $this->belongsTo(AdminUser::class, 'reviewer_admin_id');
     }
 }

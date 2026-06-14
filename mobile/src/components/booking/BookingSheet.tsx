@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Dimensions,
   KeyboardAvoidingView,
@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import Animated, {
+  runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
@@ -23,6 +24,33 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DURATION_OPTIONS, HOUR_OPTIONS, useBookingFlow } from '../../hooks/useBookingFlow';
 import { LocationSearch } from '../ui/LocationSearch';
 import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+
+// ── Availability helpers ──────────────────────────────────────────────────────
+
+type AvailMatrix = Record<string, { start: string; end: string }[]>;
+const DAY_KEYS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'] as const;
+
+function isDayAvailable(day: Date, matrix: AvailMatrix | null | undefined): boolean {
+  // Null / empty matrix = provider hasn't set restrictions → all days open.
+  if (!matrix || Object.keys(matrix).length === 0) return true;
+  const key   = DAY_KEYS[day.getDay()];
+  const slots = matrix[key];
+  return Array.isArray(slots) && slots.length > 0;
+}
+
+function isHourAvailable(hour: number, day: Date, matrix: AvailMatrix | null | undefined): boolean {
+  if (!matrix || Object.keys(matrix).length === 0) return true;
+  const key   = DAY_KEYS[day.getDay()];
+  const slots = matrix[key];
+  if (!Array.isArray(slots) || slots.length === 0) return false;
+  return slots.some((slot) => {
+    const startH = parseInt(slot.start.split(':')[0], 10);
+    const endH   = parseInt(slot.end.split(':')[0], 10);
+    return hour >= startH && hour < endH;
+  });
+}
+
+// ── Sheet constants ───────────────────────────────────────────────────────────
 
 const { height: SCREEN_H } = Dimensions.get('window');
 const SHEET_H      = Math.min(SCREEN_H * 0.84, 700);
@@ -38,30 +66,61 @@ interface Props {
   serviceTitle:    string;
   basePrice:       number;
   pricingModel?:   'FIXED' | 'HOURLY' | 'QUOTE';
+  // Platform payment mode — drives fee breakdown + CTA copy (DIRECT = no escrow, no 2% fee).
+  paymentMode?:    'DIRECT' | 'ESCROW';
+  // Provider availability: keys are SUN/MON/…/SAT, values are [{start, end}] windows.
+  // Null/undefined = no restrictions (all days and hours selectable).
+  availabilityMatrix?: AvailMatrix | null;
   // Add-ons selected on the service detail screen (v3.1 §5.3 / §6.2).
   // Displayed as fee-card line items and included in the total.
   selectedAddons?: { id: number; name: string; price: number }[];
   onBooked:        (bookingId: string) => void;
 }
 
-export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePrice, pricingModel = 'FIXED', selectedAddons = [], onBooked }: Props) {
+export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePrice, pricingModel = 'FIXED', paymentMode = 'DIRECT', availabilityMatrix, selectedAddons = [], onBooked }: Props) {
   const insets          = useSafeAreaInsets();
   const translateY      = useSharedValue(SHEET_H);
   const backdropOpacity = useSharedValue(0);
   const flow            = useBookingFlow(serviceId);
 
+  // Normalise to null so helpers receive a consistent type.
+  const avail = availabilityMatrix ?? null;
+
+  // First day in the next-14 window that is available per the provider's matrix.
+  const firstAvailableDay = useMemo(
+    () => flow.days.find((d) => isDayAvailable(d, avail)) ?? flow.days[0],
+    // flow.days is stable (useState initialiser in useBookingFlow).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [flow.days, avail],
+  );
+
   const close = useCallback(() => {
     translateY.value      = withSpring(SHEET_H, SPRING_CLOSE);
-    backdropOpacity.value = withTiming(0, { duration: 200 }, () => onClose());
+    // The withTiming completion callback runs on the UI thread (worklet); onClose
+    // is a JS function, so it must be marshalled back with runOnJS or the app crashes.
+    backdropOpacity.value = withTiming(0, { duration: 200 }, (finished) => {
+      if (finished) runOnJS(onClose)();
+    });
   }, [onClose]);
 
+  // Open: animate in and reset to the first available day.
   useEffect(() => {
     if (visible) {
       translateY.value      = withSpring(0, SPRING_OPEN);
       backdropOpacity.value = withTiming(0.55, { duration: 250 });
-      flow.reset();
+      flow.reset(firstAvailableDay);
     }
   }, [visible]);
+
+  // When the selected day changes, ensure the selected hour is still within the
+  // provider's working window — auto-advance to the first available slot if not.
+  useEffect(() => {
+    if (!avail) return;
+    if (!isHourAvailable(flow.startHour, flow.selectedDay, avail)) {
+      const firstHour = HOUR_OPTIONS.find((h) => isHourAvailable(h, flow.selectedDay, avail));
+      if (firstHour !== undefined) flow.setStartHour(firstHour);
+    }
+  }, [flow.selectedDay]);
 
   // Drag-to-dismiss via PanResponder on the handle area
   const dragStart = useRef(0);
@@ -153,20 +212,34 @@ export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePr
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.chipRow}
               >
-                {flow.days.slice(0, 10).map((day, i) => {
-                  const active = day.toDateString() === flow.selectedDay.toDateString();
+                {flow.days.slice(0, 14).map((day, i) => {
+                  const active      = day.toDateString() === flow.selectedDay.toDateString();
+                  const available   = isDayAvailable(day, avail);
                   return (
                     <TouchableOpacity
                       key={i}
-                      style={[styles.dayChip, active && styles.chipSel]}
-                      onPress={() => flow.setSelectedDay(day)}
+                      style={[
+                        styles.dayChip,
+                        active && styles.chipSel,
+                        !available && styles.dayChipUnavailable,
+                      ]}
+                      onPress={() => available && flow.setSelectedDay(day)}
+                      activeOpacity={available ? 0.7 : 1}
+                      accessible
+                      accessibilityLabel={
+                        available
+                          ? day.toLocaleDateString('en', { weekday: 'long', day: 'numeric', month: 'short' })
+                          : `${day.toLocaleDateString('en', { weekday: 'long' })} — unavailable`
+                      }
+                      accessibilityState={{ disabled: !available, selected: active }}
                     >
-                      <Text style={[styles.dayWkd, active && styles.chipTxtSel]}>
+                      <Text style={[styles.dayWkd, active && styles.chipTxtSel, !available && styles.dayTxtUnavailable]}>
                         {day.toLocaleDateString('en', { weekday: 'short' })}
                       </Text>
-                      <Text style={[styles.dayNum, active && styles.chipTxtSel]}>
+                      <Text style={[styles.dayNum, active && styles.chipTxtSel, !available && styles.dayTxtUnavailable]}>
                         {day.getDate()}
                       </Text>
+                      {!available && <View style={styles.dayUnavailableDot} />}
                     </TouchableOpacity>
                   );
                 })}
@@ -180,14 +253,21 @@ export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePr
                 contentContainerStyle={styles.chipRow}
               >
                 {HOUR_OPTIONS.map((h) => {
-                  const active = h === flow.startHour;
+                  const active    = h === flow.startHour;
+                  const available = isHourAvailable(h, flow.selectedDay, avail);
                   return (
                     <TouchableOpacity
                       key={h}
-                      style={[styles.timeChip, active && styles.chipSel]}
-                      onPress={() => flow.setStartHour(h)}
+                      style={[
+                        styles.timeChip,
+                        active && styles.chipSel,
+                        !available && styles.timeChipUnavailable,
+                      ]}
+                      onPress={() => available && flow.setStartHour(h)}
+                      activeOpacity={available ? 0.7 : 1}
+                      accessibilityState={{ disabled: !available, selected: active }}
                     >
-                      <Text style={[styles.timeChipTxt, active && styles.chipTxtSel]}>
+                      <Text style={[styles.timeChipTxt, active && styles.chipTxtSel, !available && styles.timeTxtUnavailable]}>
                         {h.toString().padStart(2, '0')}:00
                       </Text>
                     </TouchableOpacity>
@@ -229,9 +309,11 @@ export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePr
 
               {/* ── Fee breakdown (§6.4 itemised checkout transparency) ── */}
               {(() => {
+                const isDirect = paymentMode === 'DIRECT';
                 const svcCost  = pricingModel === 'HOURLY' ? basePrice * flow.durationHrs : basePrice;
                 const addonSum = selectedAddons.reduce((s, a) => s + a.price, 0);
-                const prot     = Math.min((svcCost + addonSum) * 0.02, 50);
+                // No buyer-protection fee in DIRECT mode — there is no escrow to back it.
+                const prot     = isDirect ? 0 : Math.min((svcCost + addonSum) * 0.02, 50);
                 const total    = svcCost + addonSum + prot;
                 return (
                   <View style={styles.feeCard}>
@@ -248,22 +330,30 @@ export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePr
                         <Text style={styles.feeAmt}>ZMW {addon.price.toFixed(0)}</Text>
                       </View>
                     ))}
-                    <View style={styles.feeRow}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                        <Text style={styles.feeLbl}>Buyer protection (2%)</Text>
-                        <Ionicons name="information-circle-outline" size={13} color={palette.textDisabled} />
+                    {!isDirect && (
+                      <View style={styles.feeRow}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <Text style={styles.feeLbl}>Buyer protection (2%)</Text>
+                          <Ionicons name="information-circle-outline" size={13} color={palette.textDisabled} />
+                        </View>
+                        <Text style={styles.feeAmt}>ZMW {prot.toFixed(0)}</Text>
                       </View>
-                      <Text style={styles.feeAmt}>ZMW {prot.toFixed(0)}</Text>
-                    </View>
+                    )}
                     <View style={styles.feeDivider} />
                     <View style={styles.feeRow}>
-                      <Text style={styles.feeTotalLbl}>Total</Text>
+                      <Text style={styles.feeTotalLbl}>{isDirect ? 'Agreed price' : 'Total'}</Text>
                       <Text style={styles.feeTotalAmt}>ZMW {total.toFixed(0)}</Text>
                     </View>
                     <View style={styles.escrowBanner}>
-                      <Ionicons name="lock-closed-outline" size={14} color={palette.success} />
+                      <Ionicons
+                        name={isDirect ? 'cash-outline' : 'lock-closed-outline'}
+                        size={14}
+                        color={palette.success}
+                      />
                       <Text style={styles.escrowNote}>
-                        Held securely in escrow — released to the provider only when you confirm the job is complete.
+                        {isDirect
+                          ? `Once the provider accepts, you pay them ZMW ${total.toFixed(0)} directly. Nothing is charged through the app.`
+                          : 'Held securely in escrow — released to the provider only when you confirm the job is complete.'}
                       </Text>
                     </View>
 
@@ -277,7 +367,7 @@ export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePr
                       loading={flow.submitting}
                       disabled={!flow.canSubmit}
                     >
-                      {`Confirm booking · ZMW ${total.toFixed(0)}`}
+                      {isDirect ? 'Request booking' : `Confirm booking · ZMW ${total.toFixed(0)}`}
                     </Button>
                   </View>
                 );
@@ -365,8 +455,23 @@ const styles = StyleSheet.create({
     backgroundColor: palette.background,
     alignItems:      'center',
   },
+  // Unavailable day: muted background, no border highlight.
+  dayChipUnavailable: {
+    backgroundColor: palette.skeleton,
+    borderColor:     palette.border,
+    opacity:         0.55,
+  },
   dayWkd: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 11 },
   dayNum: { ...typography.label,     color: palette.textPrimary,   fontSize: 16 },
+  dayTxtUnavailable: { color: palette.textDisabled },
+  // Small strikethrough-style dot beneath the date number to signal unavailability.
+  dayUnavailableDot: {
+    width:           4,
+    height:          4,
+    borderRadius:    2,
+    backgroundColor: palette.textDisabled,
+    marginTop:       2,
+  },
 
   timeChip: {
     paddingHorizontal: spacing.md,
@@ -376,7 +481,13 @@ const styles = StyleSheet.create({
     borderColor:       palette.border,
     backgroundColor:   palette.background,
   },
-  timeChipTxt: { ...typography.bodySmall, color: palette.textPrimary },
+  timeChipUnavailable: {
+    backgroundColor: palette.skeleton,
+    borderColor:     palette.border,
+    opacity:         0.5,
+  },
+  timeChipTxt:       { ...typography.bodySmall, color: palette.textPrimary },
+  timeTxtUnavailable: { color: palette.textDisabled },
 
   durationRow: { flexDirection: 'row', gap: spacing.xs, flexWrap: 'wrap' },
   durChip: {

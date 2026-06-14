@@ -70,6 +70,10 @@ export interface NextTierSummary {
   value:        number;
   label:        string;
   requirements: string[];
+  /** 0–1 fraction of requirements met (NEW — v3 §4.5) */
+  progress?:    number;
+  /** Human-readable list of what this tier unlocks (NEW — v3 §4.1) */
+  unlocks?:     string[];
 }
 
 // §6.5/§9.3 Earnings tab aggregate — GET /provider/earnings
@@ -85,6 +89,8 @@ export interface EarningsEntry {
 }
 
 export interface ProviderEarnings {
+  /** DIRECT = paid directly by customers (no escrow/payouts) · ESCROW = platform payouts. */
+  payment_mode: 'DIRECT' | 'ESCROW';
   tier: TierSummary;
   summary: {
     this_week_zmw:   number;
@@ -105,6 +111,8 @@ export interface ProviderEarnings {
 }
 
 export interface ProviderDashboard {
+  /** DIRECT = paid directly by customers (no escrow/payouts) · ESCROW = platform payouts. */
+  payment_mode:          'DIRECT' | 'ESCROW';
   tier:                  TierSummary;
   next_tier:             NextTierSummary | null;
   profile_completeness:  number;
@@ -113,9 +121,19 @@ export interface ProviderDashboard {
     next:  { key: string; label: string; points: number } | null;
   };
   earned_badges: string[];
+  /**
+   * Ordered path to being visible in search — mirrors the backend search
+   * gates (Tier ≥ 1, profile strength ≥ 40, ≥ 1 ACTIVE service).
+   */
+  listing?: {
+    listed: boolean;
+    steps: { key: string; label: string; done: boolean }[];
+  };
   earnings: {
     this_week_zmw:  number;
     weekly_cap_zmw: number | null;
+    /** 'up' | 'down' | 'flat' vs previous week (NEW) */
+    trend?:         'up' | 'down' | 'flat';
   };
   next_payout: {
     booking_id:  string;
@@ -125,6 +143,35 @@ export interface ProviderDashboard {
   instant_payout: {
     eligible: boolean;
     fee_rate: number;
+  };
+
+  /** Available/Away toggle — persists server-side (NEW — v3.1 availability concept) */
+  accepting_bookings?:  boolean;
+  /** Public profile photo URL — NOT the KYC selfie (NEW — maps to cover_image_url) */
+  profile_photo_url?:   string | null;
+  /** Provider display name for header (NEW) */
+  display_name?:        string | null;
+  /** Unread notification count for badge (NEW) */
+  notifications_count?: number;
+  /** TODAY aggregate (NEW) */
+  today?: {
+    new_requests: number;
+    next_job: {
+      service_title:  string;
+      scheduled_at:   string;
+      location_label: string;
+    } | null;
+  };
+  /** Key performance stats (NEW — v3 §5.1, §7.1) */
+  stats?: {
+    rating:                 number | null;
+    response_time_p50_mins: number | null;
+    repeat_client_rate:     number | null;
+    jobs_done:              number;
+  };
+  /** Current subscription plan (NEW — v3 §8.4) */
+  subscription?: {
+    plan: 'FREE' | 'PRO' | 'ELITE';
   };
 }
 
@@ -166,4 +213,12 @@ export const providerProfileApi = {
 
   deletePortfolioImage: (path: string) =>
     api.delete<ProviderProfile>(`/provider/profile/portfolio?path=${encodeURIComponent(path)}`),
+
+  /**
+   * Persist Available/Away toggle — v3.1 availability concept.
+   * PATCH /provider/profile/availability-status
+   * Away: stops NEW booking requests; does NOT affect confirmed bookings.
+   */
+  toggleAcceptingBookings: (accepting: boolean) =>
+    api.patch<{ accepting_bookings: boolean }>('/provider/profile/availability-status', { accepting_bookings: accepting }),
 };

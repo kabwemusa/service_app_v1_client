@@ -16,8 +16,7 @@ interface BookingState {
   submitting:  boolean;
   error:       ApiError | null;
 
-  // §6.8 — provider incoming requests (separate slice; own loading flag so it
-  // doesn't fight with the buyer-side bookings list above)
+  // §6.8 — provider incoming requests (separate slice)
   incomingRequests: IncomingRequests | null;
   incomingLoading:  boolean;
   incomingError:    ApiError | null;
@@ -28,12 +27,26 @@ interface BookingState {
   fetchBookings:  (reset?: boolean) => Promise<void>;
   loadMore:       () => Promise<void>;
   createBooking:  (params: CreateBookingParams) => Promise<Booking>;
+
+  // ESCROW action
   pay:            (id: string) => Promise<Booking>;
+
+  // DIRECT actions (provider side)
+  accept:         (id: string) => Promise<Booking>;
+  quote:          (id: string, quotedAmount: number) => Promise<Booking>;
+  decline:        (id: string) => Promise<Booking>;
+
+  // DIRECT actions (buyer side)
+  acceptQuote:    (id: string) => Promise<Booking>;
+  markPaid:       (id: string) => Promise<Booking>;
+
+  // Shared actions
   start:          (id: string) => Promise<Booking>;
   deliver:        (id: string) => Promise<Booking>;
   complete:       (id: string) => Promise<Booking>;
   dispute:        (id: string, params: OpenDisputeParams) => Promise<Booking>;
   cancel:         (id: string) => Promise<Booking>;
+  review:         (id: string, rating: number, comment?: string) => Promise<Booking>;
   clearError:     () => void;
   reset:          () => void;
 }
@@ -52,7 +65,6 @@ const initialState = {
   incomingError:    null,
 };
 
-/** Replace or insert a booking in the list by id. */
 function upsert(list: Booking[], updated: Booking): Booking[] {
   const idx = list.findIndex((b) => b.id === updated.id);
   if (idx >= 0) {
@@ -68,7 +80,6 @@ export const useBookingStore = create<BookingState>((set, get) => ({
 
   clearError: () => set({ error: null }),
   clearIncomingError: () => set({ incomingError: null }),
-
   reset: () => set(initialState),
 
   fetchIncomingRequests: async () => {
@@ -88,7 +99,7 @@ export const useBookingStore = create<BookingState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const result: PaginatedBookings = await bookingsApi.list(page);
-      set((s) => ({
+      set((s: any) => ({
         bookings: reset ? result.data : [...s.bookings, ...result.data],
         page:     result.current_page,
         lastPage: result.last_page,
@@ -104,7 +115,7 @@ export const useBookingStore = create<BookingState>((set, get) => ({
   loadMore: async () => {
     const { page, lastPage, loading } = get();
     if (loading || page >= lastPage) return;
-    set((s) => ({ page: s.page + 1 }));
+    set((s: any) => ({ page: s.page + 1 }));
     await get().fetchBookings(false);
   },
 
@@ -112,7 +123,7 @@ export const useBookingStore = create<BookingState>((set, get) => ({
     set({ submitting: true, error: null });
     try {
       const booking = await bookingsApi.create(params);
-      set((s) => ({ bookings: [booking, ...s.bookings], total: s.total + 1 }));
+      set((s: any) => ({ bookings: [booking, ...s.bookings], total: s.total + 1 }));
       return booking;
     } catch (e) {
       const err = toApiError(e);
@@ -127,7 +138,82 @@ export const useBookingStore = create<BookingState>((set, get) => ({
     set({ submitting: true, error: null });
     try {
       const booking = await bookingsApi.pay(id);
-      set((s) => ({ bookings: upsert(s.bookings, booking) }));
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
+      return booking;
+    } catch (e) {
+      const err = toApiError(e);
+      set({ error: err });
+      throw err;
+    } finally {
+      set({ submitting: false });
+    }
+  },
+
+  accept: async (id) => {
+    set({ submitting: true, error: null });
+    try {
+      const booking = await bookingsApi.accept(id);
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
+      return booking;
+    } catch (e) {
+      const err = toApiError(e);
+      set({ error: err });
+      throw err;
+    } finally {
+      set({ submitting: false });
+    }
+  },
+
+  quote: async (id, quotedAmount) => {
+    set({ submitting: true, error: null });
+    try {
+      const booking = await bookingsApi.quote(id, quotedAmount);
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
+      return booking;
+    } catch (e) {
+      const err = toApiError(e);
+      set({ error: err });
+      throw err;
+    } finally {
+      set({ submitting: false });
+    }
+  },
+
+  decline: async (id) => {
+    set({ submitting: true, error: null });
+    try {
+      const booking = await bookingsApi.decline(id);
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
+      return booking;
+    } catch (e) {
+      const err = toApiError(e);
+      set({ error: err });
+      throw err;
+    } finally {
+      set({ submitting: false });
+    }
+  },
+
+  acceptQuote: async (id) => {
+    set({ submitting: true, error: null });
+    try {
+      const booking = await bookingsApi.acceptQuote(id);
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
+      return booking;
+    } catch (e) {
+      const err = toApiError(e);
+      set({ error: err });
+      throw err;
+    } finally {
+      set({ submitting: false });
+    }
+  },
+
+  markPaid: async (id) => {
+    set({ submitting: true, error: null });
+    try {
+      const booking = await bookingsApi.markPaid(id);
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
       return booking;
     } catch (e) {
       const err = toApiError(e);
@@ -142,7 +228,7 @@ export const useBookingStore = create<BookingState>((set, get) => ({
     set({ submitting: true, error: null });
     try {
       const booking = await bookingsApi.start(id);
-      set((s) => ({ bookings: upsert(s.bookings, booking) }));
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
       return booking;
     } catch (e) {
       const err = toApiError(e);
@@ -157,7 +243,7 @@ export const useBookingStore = create<BookingState>((set, get) => ({
     set({ submitting: true, error: null });
     try {
       const booking = await bookingsApi.deliver(id);
-      set((s) => ({ bookings: upsert(s.bookings, booking) }));
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
       return booking;
     } catch (e) {
       const err = toApiError(e);
@@ -172,7 +258,7 @@ export const useBookingStore = create<BookingState>((set, get) => ({
     set({ submitting: true, error: null });
     try {
       const booking = await bookingsApi.complete(id);
-      set((s) => ({ bookings: upsert(s.bookings, booking) }));
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
       return booking;
     } catch (e) {
       const err = toApiError(e);
@@ -187,7 +273,7 @@ export const useBookingStore = create<BookingState>((set, get) => ({
     set({ submitting: true, error: null });
     try {
       const { booking } = await bookingsApi.dispute(id, params);
-      set((s) => ({ bookings: upsert(s.bookings, booking) }));
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
       return booking;
     } catch (e) {
       const err = toApiError(e);
@@ -202,7 +288,22 @@ export const useBookingStore = create<BookingState>((set, get) => ({
     set({ submitting: true, error: null });
     try {
       const booking = await bookingsApi.cancel(id);
-      set((s) => ({ bookings: upsert(s.bookings, booking) }));
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
+      return booking;
+    } catch (e) {
+      const err = toApiError(e);
+      set({ error: err });
+      throw err;
+    } finally {
+      set({ submitting: false });
+    }
+  },
+
+  review: async (id, rating, comment) => {
+    set({ submitting: true, error: null });
+    try {
+      const booking = await bookingsApi.review(id, rating, comment);
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
       return booking;
     } catch (e) {
       const err = toApiError(e);

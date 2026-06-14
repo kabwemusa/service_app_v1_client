@@ -36,6 +36,7 @@ class ProviderProfile extends Model
         'service_radius_km',
         // Schedule
         'availability_matrix',
+        'accepting_bookings',
         // Responsiveness
         'response_time_p50_mins',
         'response_rate_7d',
@@ -57,6 +58,7 @@ class ProviderProfile extends Model
     {
         return [
             'availability_matrix'   => 'array',
+            'accepting_bookings'    => 'boolean',
             'portfolio_images'      => 'array',
             'certifications'        => 'array',
             'highlights'            => 'array',

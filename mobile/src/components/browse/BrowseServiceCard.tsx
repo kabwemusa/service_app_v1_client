@@ -42,7 +42,9 @@ export function BrowseServiceCard({ data, saved, onPress, onSave }: Props) {
   const catIcon  = (data.category?.icon ?? 'grid-outline') as React.ComponentProps<typeof Ionicons>['name'];
 
   const responseTime = provider ? formatResponseTime(provider.response_time_p50_mins) : null;
-  const isPromoted   = data.has_promo_slot;
+  // v3.2 §1.5 — "Promoted" is structural: it marks a row occupying a reserved
+  // promoted position, never a provider who merely owns a slot.
+  const isPromoted   = data.placement === 'promoted';
   const isRisingStar = !isPromoted && data.completed_job_count < RISING_STAR_JOB_THRESHOLD;
   const isVerified   = (provider?.trust_tier ?? 0) >= 2;
 

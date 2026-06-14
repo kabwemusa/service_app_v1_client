@@ -155,7 +155,11 @@ class DisputeService
 
     private function resolveBuyer(Booking $booking): void
     {
-        $this->payment->initiateRefund($booking);
+        // ESCROW only: initiate a refund through MoMo.
+        if (($booking->payment_mode ?? 'ESCROW') === 'ESCROW') {
+            $this->payment->initiateRefund($booking);
+        }
+
         $booking->update(['status' => 'CANCELLED']);
 
         // Reverse any commission recorded
@@ -174,13 +178,15 @@ class DisputeService
 
     private function resolveProvider(Booking $booking): void
     {
-        // Move booking to COMPLETED so the payout worker picks it up
         $booking->update([
             'status'       => 'COMPLETED',
             'completed_at' => $booking->completed_at ?? now(),
         ]);
 
-        $this->payment->initiatePayout($booking);
+        // ESCROW only: initiate the payout through MoMo.
+        if (($booking->payment_mode ?? 'ESCROW') === 'ESCROW') {
+            $this->payment->initiatePayout($booking);
+        }
     }
 
     private function resolvePartial(Booking $booking, float $refundAmount): void
@@ -192,8 +198,10 @@ class DisputeService
             );
         }
 
-        // Refund the buyer portion
-        $this->payment->initiatePartialRefund($booking, $refundAmount);
+        // ESCROW only: refund and payout through MoMo.
+        if (($booking->payment_mode ?? 'ESCROW') === 'ESCROW') {
+            $this->payment->initiatePartialRefund($booking, $refundAmount);
+        }
 
         // Recalculate commission on the retained gross
         $commission = Commission::where('booking_id', $booking->id)->first();
@@ -206,7 +214,8 @@ class DisputeService
             'completed_at' => $booking->completed_at ?? now(),
         ]);
 
-        // Payout the net-to-provider from the recalculated commission
-        $this->payment->initiatePayout($booking);
+        if (($booking->payment_mode ?? 'ESCROW') === 'ESCROW') {
+            $this->payment->initiatePayout($booking);
+        }
     }
 }

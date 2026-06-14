@@ -2,24 +2,32 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\TrustTier;
 use App\Exceptions\Api\ForbiddenException;
 use App\Exceptions\Api\NotFoundException;
 use App\Http\Controllers\Controller;
 
 use App\Models\User;
+use App\Services\ProviderProfileService;
 use App\Support\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 
 class PublicProviderController extends Controller
 {
+    public function __construct(private readonly ProviderProfileService $profiles) {}
+
     /**
      * GET /providers/{userId}
      *
-     * Returns public-safe profile data for a VERIFIED provider:
-     *   - ranking metrics (r_raw, v_reviews, completion_rate)
-     *   - kyc_status, max_radius_km, availability_matrix, profile_completeness
-     *   - their active service listings (with PostGIS coords)
+     * Public-safe profile for any sellable (Tier ≥ 1, ACTIVE) provider — the
+     * same population the search index serves, so a card tapped in search can
+     * never 403 here. Returns everything a customer needs to judge a provider:
+     * identity (tier, badges), track record (rating, jobs, completion),
+     * portfolio images, provider-curated highlights, services, and reviews.
+     *
+     * Never returns coordinates (v3.1 §4 — labels only) or reviewers' full
+     * legal names.
      */
     public function show(string $userId): JsonResponse
     {
@@ -31,11 +39,22 @@ class PublicProviderController extends Controller
 
         $profile = $user->providerProfile;
 
-        if (! $profile || $profile->kyc_status !== 'VERIFIED') {
+        if (! $profile
+            || ($profile->trust_tier ?? 0) < TrustTier::BASIC->value
+            || $user->account_state !== 'ACTIVE') {
             throw new ForbiddenException('This provider is not yet verified.');
         }
 
-        // Active services with coordinates
+        $highlights = array_merge(
+            ['pinned_service_ids' => [], 'featured_photo_keys' => [], 'featured_badges' => []],
+            (array) ($profile->highlights ?? []),
+        );
+
+        // A provider can only show badges they have actually earned.
+        $earnedBadges   = $this->profiles->earnedBadges($user, $profile);
+        $featuredBadges = array_values(array_intersect((array) $highlights['featured_badges'], $earnedBadges));
+
+        // Active services — labels only, no coordinates (v3.1 §4)
         $services = DB::select("
             SELECT
                 s.id,
@@ -44,9 +63,7 @@ class PublicProviderController extends Controller
                 s.pricing_model,
                 s.base_price,
                 s.category_id,
-                cat.name AS category_name,
-                ST_Y(s.service_location::geometry) AS latitude,
-                ST_X(s.service_location::geometry) AS longitude
+                cat.name AS category_name
             FROM services s
             JOIN categories cat ON cat.id = s.category_id
             WHERE s.provider_id = ?
@@ -54,6 +71,14 @@ class PublicProviderController extends Controller
               AND cat.is_active  = true
             ORDER BY s.created_at DESC
         ", [$userId]);
+
+        // Provider-pinned services first (highlights), then newest-first.
+        $pinned = array_flip(array_values((array) $highlights['pinned_service_ids']));
+        usort($services, function ($a, $b) use ($pinned) {
+            $pa = $pinned[$a->id] ?? PHP_INT_MAX;
+            $pb = $pinned[$b->id] ?? PHP_INT_MAX;
+            return $pa <=> $pb;
+        });
 
         // Recent reviews for this provider (latest 20)
         $reviews = DB::select("
@@ -71,6 +96,11 @@ class PublicProviderController extends Controller
             LIMIT 20
         ", [$userId]);
 
+        $jobsDone = (int) DB::table('bookings')
+            ->where('provider_id', $userId)
+            ->where('status', 'COMPLETED')
+            ->count();
+
         return ApiResponse::success([
             'id'                  => $user->id,
             'display_name'        => $profile->display_name,
@@ -79,10 +109,25 @@ class PublicProviderController extends Controller
             'avatar_url'          => $profile->avatar_url,
             'cover_image_url'     => $profile->cover_image_url,
             'base_location_label' => $profile->base_location_label,
+            'trust_tier'          => (int) ($profile->trust_tier ?? 0),
+            'tier_label'          => $profile->tier()->label(),
+            'year_started'        => $profile->year_started,
+            'languages'           => (array) ($profile->languages ?? []),
             'r_raw'               => round((float) $user->r_raw, 2),
             'v_reviews'           => (int) $user->v_reviews,
-            'completion_rate'     => round((float) $user->completion_rate, 2),
+            // NULL = no history yet (v3.2 §4.1) — clients render "–", never 0%
+            'completion_rate'     => $user->completion_rate !== null ? round((float) $user->completion_rate, 2) : null,
             'last_active_at'      => $user->last_active_at?->toISOString(),
+            'jobs_done'           => $jobsDone,
+            'repeat_client_rate'  => $profile->repeat_client_rate,
+            'response_time_p50_mins' => $profile->response_time_p50_mins,
+            'earned_badges'       => $earnedBadges,
+            'portfolio_images'    => array_values((array) ($profile->portfolio_images ?? [])),
+            'highlights'          => [
+                'pinned_service_ids'  => array_values((array) $highlights['pinned_service_ids']),
+                'featured_photo_keys' => array_values((array) $highlights['featured_photo_keys']),
+                'featured_badges'     => $featuredBadges,
+            ],
             'profile'             => [
                 'kyc_status'           => $profile->kyc_status,
                 'max_radius_km'        => $profile->max_radius_km,
@@ -96,16 +141,27 @@ class PublicProviderController extends Controller
                 'pricing_model' => $s->pricing_model,
                 'base_price'    => $s->base_price !== null ? (float) $s->base_price : null,
                 'category'      => ['id' => $s->category_id, 'name' => $s->category_name],
-                'latitude'      => $s->latitude  !== null ? (float) $s->latitude  : null,
-                'longitude'     => $s->longitude !== null ? (float) $s->longitude : null,
+                'is_pinned'     => isset($pinned[$s->id]),
             ], $services),
             'reviews' => array_map(fn ($rev) => [
                 'id'         => $rev->id,
                 'rating'     => (float) $rev->rating,
                 'comment'    => $rev->comment,
                 'created_at' => $rev->created_at,
-                'reviewer'   => ['id' => $rev->reviewer_id, 'name' => $rev->reviewer_name],
+                'reviewer'   => ['id' => $rev->reviewer_id, 'name' => $this->maskName($rev->reviewer_name)],
             ], $reviews),
         ], 'Provider profile retrieved.');
+    }
+
+    /** "Chanda Mwansa" → "Chanda M." — never expose a reviewer's full legal name. */
+    private function maskName(?string $name): string
+    {
+        $parts = preg_split('/\s+/', trim((string) $name)) ?: [];
+        $parts = array_values(array_filter($parts));
+
+        if (count($parts) === 0) return 'Customer';
+        if (count($parts) === 1) return $parts[0];
+
+        return $parts[0] . ' ' . mb_substr(end($parts), 0, 1) . '.';
     }
 }

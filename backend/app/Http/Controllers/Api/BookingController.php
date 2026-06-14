@@ -34,7 +34,7 @@ class BookingController extends Controller
         ], 'Bookings retrieved.');
     }
 
-    /** GET /provider/requests — §6.8 incoming requests (New / Scheduled + trust hints) */
+    /** GET /provider/requests */
     public function incomingRequests(Request $request): JsonResponse
     {
         return ApiResponse::success($this->bookings->incomingRequests($request->user()), 'Incoming requests retrieved.');
@@ -54,11 +54,47 @@ class BookingController extends Controller
         return ApiResponse::success(new BookingResource($booking), 'Booking retrieved.');
     }
 
-    /** POST /bookings/{id}/pay */
+    /** POST /bookings/{id}/pay — ESCROW: initiate MoMo pay-in */
     public function pay(Request $request, string $id): JsonResponse
     {
         $booking = $this->bookings->confirmPayment($id, $request->user());
         return ApiResponse::success(new BookingResource($booking), 'Payment confirmed. Funds held.');
+    }
+
+    /** POST /bookings/{id}/accept — DIRECT: provider accepts at listed price */
+    public function accept(Request $request, string $id): JsonResponse
+    {
+        $booking = $this->bookings->accept($id, $request->user());
+        return ApiResponse::success(new BookingResource($booking), 'Booking accepted.');
+    }
+
+    /** POST /bookings/{id}/quote — DIRECT: provider sends an alternate-price quote */
+    public function quote(Request $request, string $id): JsonResponse
+    {
+        $request->validate(['quoted_amount' => 'required|numeric|min:1']);
+        $booking = $this->bookings->quote($id, $request->user(), (float) $request->quoted_amount);
+        return ApiResponse::success(new BookingResource($booking), 'Quote sent to buyer.');
+    }
+
+    /** POST /bookings/{id}/accept-quote — DIRECT: buyer confirms provider's quote */
+    public function acceptQuote(Request $request, string $id): JsonResponse
+    {
+        $booking = $this->bookings->acceptQuote($id, $request->user());
+        return ApiResponse::success(new BookingResource($booking), 'Quote accepted.');
+    }
+
+    /** POST /bookings/{id}/decline — DIRECT: provider declines */
+    public function decline(Request $request, string $id): JsonResponse
+    {
+        $booking = $this->bookings->decline($id, $request->user());
+        return ApiResponse::success(new BookingResource($booking), 'Booking declined.');
+    }
+
+    /** POST /bookings/{id}/mark-paid — DIRECT: record that direct payment was made */
+    public function markPaid(Request $request, string $id): JsonResponse
+    {
+        $booking = $this->bookings->markPaid($id, $request->user());
+        return ApiResponse::success(new BookingResource($booking), 'Payment recorded.');
     }
 
     /** POST /bookings/{id}/start */
@@ -78,18 +114,22 @@ class BookingController extends Controller
     /** POST /bookings/{id}/complete */
     public function complete(Request $request, string $id): JsonResponse
     {
-        $booking = $this->bookings->complete($id, $request->user());
-        return ApiResponse::success(new BookingResource($booking), 'Booking completed. Payout hold started.');
+        $booking  = $this->bookings->complete($id, $request->user());
+        $isDirect = ($booking->payment_mode ?? 'ESCROW') === 'DIRECT';
+        $message  = $isDirect
+            ? 'Booking completed.'
+            : 'Booking completed. Payout hold started.';
+        return ApiResponse::success(new BookingResource($booking), $message);
     }
 
-    /** POST /bookings/{id}/instant-payout — provider requests instant payout (Tier 3+) */
+    /** POST /bookings/{id}/instant-payout — provider requests instant payout (Tier 3+, ESCROW only) */
     public function instantPayout(Request $request, string $id): JsonResponse
     {
         $booking = $this->bookings->requestInstantPayout($id, $request->user());
         return ApiResponse::success(new BookingResource($booking), 'Instant payout initiated (1% fee applied).');
     }
 
-    /** POST /bookings/{id}/dispute — buyer opens a dispute (DELIVERED → DISPUTED) */
+    /** POST /bookings/{id}/dispute */
     public function dispute(OpenDisputeRequest $request, string $id): JsonResponse
     {
         $booking = $this->bookings->findOrFail($id, $request->user());
@@ -107,11 +147,26 @@ class BookingController extends Controller
         return ApiResponse::success(new BookingResource($booking), 'Booking cancelled.');
     }
 
+    /** POST /bookings/{id}/review — buyer leaves a rating + comment for a completed booking */
+    public function review(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'rating'  => ['required', 'numeric', 'min:1', 'max:5'],
+            'comment' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $booking = $this->bookings->review(
+            $id,
+            $request->user(),
+            (float) $validated['rating'],
+            $validated['comment'] ?? null,
+        );
+
+        return ApiResponse::success(new BookingResource($booking), 'Thanks for your review.');
+    }
+
     /**
      * GET /me/providers
-     *
-     * Returns up to 8 distinct providers this buyer has completed bookings with.
-     * Used for the "Your providers" shelf on the Home screen.
      */
     public function myProviders(Request $request): JsonResponse
     {
@@ -143,5 +198,66 @@ class BookingController extends Controller
             ], $rows),
             'My providers retrieved.'
         );
+    }
+
+    /**
+     * GET /me/book-again — v3.2 §2.3
+     */
+    public function bookAgain(Request $request): JsonResponse
+    {
+        $row = DB::selectOne("
+            SELECT
+                b.id              AS booking_id,
+                b.completed_at,
+                b.delivery_location_label,
+                b.delivery_location_region,
+                ST_Y(b.delivery_location::geometry) AS delivery_lat,
+                ST_X(b.delivery_location::geometry) AS delivery_lng,
+                s.id              AS service_id,
+                s.title           AS service_title,
+                s.pricing_model,
+                s.base_price,
+                cat.name          AS category_name,
+                p.id              AS provider_id,
+                pp.display_name   AS provider_name,
+                pp.avatar_url     AS provider_avatar_url,
+                pp.trust_tier
+            FROM bookings b
+            JOIN services          s   ON s.id       = b.service_id
+            JOIN categories        cat ON cat.id     = s.category_id
+            JOIN users             p   ON p.id       = b.provider_id
+            JOIN provider_profiles pp  ON pp.user_id = b.provider_id
+            WHERE b.buyer_id = ?
+              AND b.status   = 'COMPLETED'
+              AND s.status   = 'ACTIVE'
+              AND p.account_state = 'ACTIVE'
+              AND pp.trust_tier  >= 1
+            ORDER BY b.completed_at DESC NULLS LAST
+            LIMIT 1
+        ", [$request->user()->id]);
+
+        return ApiResponse::success($row ? [
+            'booking_id'   => $row->booking_id,
+            'completed_at' => $row->completed_at,
+            'service' => [
+                'id'            => $row->service_id,
+                'title'         => $row->service_title,
+                'pricing_model' => $row->pricing_model,
+                'base_price'    => $row->base_price !== null ? (float) $row->base_price : null,
+                'category_name' => $row->category_name,
+            ],
+            'provider' => [
+                'id'           => $row->provider_id,
+                'display_name' => $row->provider_name,
+                'avatar_url'   => $row->provider_avatar_url,
+                'trust_tier'   => (int) $row->trust_tier,
+            ],
+            'delivery' => [
+                'label'  => $row->delivery_location_label,
+                'region' => $row->delivery_location_region,
+                'lat'    => $row->delivery_lat !== null ? (float) $row->delivery_lat : null,
+                'lng'    => $row->delivery_lng !== null ? (float) $row->delivery_lng : null,
+            ],
+        ] : null, 'Book-again card retrieved.');
     }
 }

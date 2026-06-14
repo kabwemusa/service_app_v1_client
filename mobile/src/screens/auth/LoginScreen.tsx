@@ -1,22 +1,28 @@
-import * as Haptics from 'expo-haptics';
-import { LinearGradient } from 'expo-linear-gradient';
-import React, { useEffect, useState } from 'react';
+import * as Haptics from "expo-haptics";
+import { LinearGradient } from "expo-linear-gradient";
+import React, { useEffect, useState } from "react";
 import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   StyleSheet,
   View,
-} from 'react-native';
-import { Button, HelperText, Text, TextInput, TouchableRipple } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useSnackbar } from '../../providers/SnackbarProvider';
-import { useAuthStore } from '../../store/authStore';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+} from "react-native";
+import {
+  Button,
+  HelperText,
+  Text,
+  TextInput,
+  TouchableRipple,
+} from "react-native-paper";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useSnackbar } from "../../providers/SnackbarProvider";
+import { useAuthStore } from "../../store/authStore";
+import { palette, radius as r, shadow, spacing, typography } from "../../theme";
 
 export default function LoginScreen({ navigation }: any) {
-  const [identifier, setIdentifier] = useState('');
-  const [password, setPassword] = useState('');
+  const [identifier, setIdentifier] = useState("");
+  const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
 
   const { login, loading, error, clearError } = useAuthStore();
@@ -29,8 +35,14 @@ export default function LoginScreen({ navigation }: any) {
     }
   }, [error]);
 
-  const identifierError = error?.isValidation ? (error.fieldError('identifier') ?? error.fieldError('email') ?? error.fieldError('phone')) : null;
-  const passwordError   = error?.isValidation ? error.fieldError('password') : null;
+  const identifierError = error?.isValidation
+    ? error.fieldError("identifier") ??
+      error.fieldError("email") ??
+      error.fieldError("phone")
+    : null;
+  const passwordError = error?.isValidation
+    ? error.fieldError("password")
+    : null;
 
   const handleLogin = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -41,7 +53,7 @@ export default function LoginScreen({ navigation }: any) {
     <SafeAreaView style={styles.safe}>
       <KeyboardAvoidingView
         style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         <ScrollView
           contentContainerStyle={styles.scroll}
@@ -50,7 +62,7 @@ export default function LoginScreen({ navigation }: any) {
         >
           <View style={styles.hero}>
             <LinearGradient
-              colors={['#FFFFFF', '#EDF3FF']}
+              colors={["#FFFFFF", "#EDF3FF"]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={styles.brandPill}
@@ -97,12 +109,12 @@ export default function LoginScreen({ navigation }: any) {
                 style={styles.input}
                 outlineStyle={styles.inputOutline}
                 left={<TextInput.Icon icon="lock-outline" />}
-                right={(
+                right={
                   <TextInput.Icon
-                    icon={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                    icon={showPassword ? "eye-off-outline" : "eye-outline"}
                     onPress={() => setShowPassword((v) => !v)}
                   />
-                )}
+                }
               />
               {passwordError && (
                 <HelperText type="error" visible style={styles.helper}>
@@ -124,7 +136,7 @@ export default function LoginScreen({ navigation }: any) {
             </Button>
 
             <TouchableRipple
-              onPress={() => navigation.navigate('Register')}
+              onPress={() => navigation.navigate("Register")}
               borderless
               style={styles.footer}
             >
@@ -144,14 +156,14 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   scroll: {
     flexGrow: 1,
-    justifyContent: 'center',
+    justifyContent: "center",
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.lg,
     paddingBottom: spacing.xxl,
   },
   hero: {
     marginBottom: spacing.lg,
-    alignItems: 'center',
+    alignItems: "center",
   },
   brandPill: {
     paddingVertical: spacing.xs + 2,
@@ -170,33 +182,33 @@ const styles = StyleSheet.create({
   heading: {
     ...typography.heading1,
     color: palette.textPrimary,
-    textAlign: 'center',
+    textAlign: "center",
     marginBottom: spacing.xs,
   },
   subheading: {
     ...typography.body,
     color: palette.textSecondary,
-    textAlign: 'center',
+    textAlign: "center",
     maxWidth: 320,
   },
   card: {
-    width: '100%',
+    width: "100%",
     maxWidth: 520,
-    alignSelf: 'center',
+    alignSelf: "center",
     backgroundColor: palette.surface,
-    borderRadius: r.xl,
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
     padding: spacing.lg,
-    ...shadow.card,
+    // ...shadow.card,
   },
   inputGroup: { marginBottom: spacing.sm },
-  input: { backgroundColor: '#FFFFFF' },
-  inputOutline: { borderRadius: r.lg },
+  input: { backgroundColor: "#FFFFFF" },
+  inputOutline: { borderRadius: r.sm },
   helper: { marginTop: -spacing.xs },
   btn: {
     marginTop: spacing.md,
-    borderRadius: r.lg,
+    borderRadius: r.md,
   },
   btnContent: { height: 54 },
   btnLabel: {
@@ -207,7 +219,7 @@ const styles = StyleSheet.create({
   footer: {
     marginTop: spacing.md,
     borderRadius: r.md,
-    alignSelf: 'center',
+    alignSelf: "center",
     paddingVertical: spacing.xs + 2,
     paddingHorizontal: spacing.sm,
   },

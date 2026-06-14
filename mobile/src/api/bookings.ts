@@ -18,17 +18,29 @@ export interface Transaction {
   created_at:     string;
 }
 
+export type PaymentMode   = 'DIRECT' | 'ESCROW';
+export type PaymentStatus = 'UNPAID' | 'MARKED_PAID';
+
 export type BookingStatus =
-  | 'PENDING_PAYMENT'
-  | 'AWAITING_KYC'
-  | 'FUNDS_HELD'
+  // DIRECT states
+  | 'REQUESTED'
+  | 'QUOTED'
+  | 'ACCEPTED'
+  | 'DECLINED'
+  | 'EXPIRED'
+  | 'NO_SHOW'
+  // Shared states
   | 'IN_PROGRESS'
   | 'DELIVERED'
   | 'COMPLETED'
   | 'DISPUTED'
-  | 'CHARGEBACK_PENDING'
+  | 'CANCELLED'
+  // ESCROW-only states (dormant in DIRECT mode)
+  | 'PENDING_PAYMENT'
+  | 'AWAITING_KYC'
+  | 'FUNDS_HELD'
   | 'DISBURSED'
-  | 'CANCELLED';
+  | 'CHARGEBACK_PENDING';
 
 export interface Commission {
   gross_amount:      number;
@@ -37,6 +49,8 @@ export interface Commission {
   vat:               number;
   net_to_provider:   number;
   tier_at_time:      number;
+  payment_mode:      PaymentMode;
+  collection_status: 'COLLECTED' | 'UNCOLLECTED';
   calculated_at:     string;
 }
 
@@ -53,29 +67,47 @@ export interface Dispute {
 
 export interface Booking {
   id:                      string;
+  payment_mode:            PaymentMode;
   status:                  BookingStatus;
+  payment_status:          PaymentStatus | null;
+  /** Final negotiated price (set when ACCEPTED). */
+  agreed_amount:           number | null;
   amount:                  number | null;
   buyer_protection_fee:    number;
   payout_eligible_at:      string | null;
+  /** Expiry deadline for REQUESTED state (DIRECT only). */
+  expires_at:              string | null;
   instant_payout_requested: boolean;
   scheduled_start:         string;
   scheduled_end:           string;
   completed_at:            string | null;
   disbursed_at:            string | null;
+  /** Internal coordinates — never rendered in the UI (v3.1 §4.1). */
   delivery_lat:            number | null;
   delivery_lng:            number | null;
+  /** Human-readable delivery label shown in the UI (v3.1 §4.2). */
+  delivery_location_label?:  string | null;
+  delivery_location_region?: string | null;
+  /** True when the customer has already left a review (v3 §7.1). */
+  has_review?: boolean;
+  /** ISO timestamp at which booking auto-confirms if customer does not (DELIVERED state). */
+  auto_release_at?: string | null;
   service: {
-    id:         string;
-    title:      string;
-    base_price: number;
+    id:             string;
+    title:          string;
+    base_price:     number;
+    category_name?: string;
+    category_icon?: string | null;
   };
   buyer: {
     id:    string;
     email: string;
   };
   provider: {
-    id:    string;
-    email: string;
+    id:            string;
+    email:         string;
+    display_name?: string;
+    trust_tier?:   number;
   };
   transactions?: Transaction[];
   commission?:   Commission | null;
@@ -109,27 +141,27 @@ export interface OpenDisputeParams {
   evidence?:       string[];
 }
 
-// §6.8 — incoming requests (New / Scheduled), each with a derived buyer
-// trust hint (§8 — qualitative only, never the raw risk score).
+// §6.8 — incoming requests (provider side)
 export type TrustHint = 'REPEAT_CLIENT' | 'TRUSTED' | 'NEW';
 
 export interface IncomingRequestEntry {
-  booking_id:       string;
-  status:           'FUNDS_HELD' | 'IN_PROGRESS';
-  service_title:    string | null;
-  pricing_model:    'FIXED' | 'HOURLY' | 'QUOTE' | null;
-  scheduled_start:  string | null;
-  scheduled_end:    string | null;
-  delivery_label:   string | null;
-  delivery_region:  string | null;
-  distance_km:      number | null;
-  gross_zmw:        number;
-  net_zmw:          number;
-  commission_rate:  number;
-  escrow_label:     string;
-  buyer_label:      string;
-  trust_hint:       TrustHint;
-  created_at:       string | null;
+  booking_id:      string;
+  payment_mode:    PaymentMode;
+  status:          'FUNDS_HELD' | 'IN_PROGRESS' | 'REQUESTED' | 'QUOTED' | 'ACCEPTED';
+  service_title:   string | null;
+  pricing_model:   'FIXED' | 'HOURLY' | 'QUOTE' | null;
+  scheduled_start: string | null;
+  scheduled_end:   string | null;
+  delivery_label:  string | null;
+  delivery_region: string | null;
+  distance_km:     number | null;
+  gross_zmw:       number;
+  net_zmw:         number;
+  commission_rate: number;
+  escrow_label:    string;
+  buyer_label:     string;
+  trust_hint:      TrustHint;
+  created_at:      string | null;
 }
 
 export interface IncomingRequests {
@@ -139,13 +171,37 @@ export interface IncomingRequests {
   scheduled: IncomingRequestEntry[];
 }
 
-// §6.1 — providers this buyer has completed bookings with (Home "Your providers" shelf)
 export interface MyProvider {
   id:           string;
   display_name: string;
   trust_tier:   number;
   r_raw:        number;
   v_reviews:    number;
+}
+
+// v3.2 §2.3 — Home "Book again" card
+export interface BookAgainCard {
+  booking_id:   string;
+  completed_at: string | null;
+  service: {
+    id:            string;
+    title:         string;
+    pricing_model: 'FIXED' | 'HOURLY' | 'QUOTE';
+    base_price:    number | null;
+    category_name: string;
+  };
+  provider: {
+    id:           string;
+    display_name: string | null;
+    avatar_url:   string | null;
+    trust_tier:   number;
+  };
+  delivery: {
+    label:  string | null;
+    region: string | null;
+    lat:    number | null;
+    lng:    number | null;
+  };
 }
 
 // ── API calls ──────────────────────────────────────────────────────────────
@@ -160,8 +216,29 @@ export const bookingsApi = {
   create: (params: CreateBookingParams) =>
     api.post<Booking>('/bookings', params),
 
+  // ESCROW: initiate MoMo pay-in
   pay: (id: string) =>
     api.post<Booking>(`/bookings/${id}/pay`, {}),
+
+  // DIRECT: provider accepts at listed price
+  accept: (id: string) =>
+    api.post<Booking>(`/bookings/${id}/accept`, {}),
+
+  // DIRECT: provider sends alternate-price quote
+  quote: (id: string, quotedAmount: number) =>
+    api.post<Booking>(`/bookings/${id}/quote`, { quoted_amount: quotedAmount }),
+
+  // DIRECT: buyer accepts provider's quote
+  acceptQuote: (id: string) =>
+    api.post<Booking>(`/bookings/${id}/accept-quote`, {}),
+
+  // DIRECT: provider declines
+  decline: (id: string) =>
+    api.post<Booking>(`/bookings/${id}/decline`, {}),
+
+  // DIRECT: record that direct payment was made
+  markPaid: (id: string) =>
+    api.post<Booking>(`/bookings/${id}/mark-paid`, {}),
 
   start: (id: string) =>
     api.post<Booking>(`/bookings/${id}/start`, {}),
@@ -178,6 +255,10 @@ export const bookingsApi = {
   cancel: (id: string) =>
     api.post<Booking>(`/bookings/${id}/cancel`, {}),
 
+  // Buyer leaves a rating (1–5) + optional comment for a completed booking
+  review: (id: string, rating: number, comment?: string) =>
+    api.post<Booking>(`/bookings/${id}/review`, { rating, comment }),
+
   instantPayout: (id: string) =>
     api.post<Booking>(`/bookings/${id}/instant-payout`, {}),
 
@@ -189,4 +270,7 @@ export const bookingsApi = {
 
   myProviders: () =>
     api.get<MyProvider[]>('/me/providers'),
+
+  bookAgain: () =>
+    api.get<BookAgainCard | null>('/me/book-again'),
 };

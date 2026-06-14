@@ -2,10 +2,10 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import React, { useEffect, useState } from 'react';
-import { Image, ScrollView, StyleSheet, View } from 'react-native';
+import { Image, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { ActivityIndicator, Button, Chip, HelperText, ProgressBar, Text, TextInput, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { DocType } from '../../api/kyc';
+import { DocType, KycDocument } from '../../api/kyc';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useKycStore } from '../../store/kycStore';
 import { palette, radius as r, shadow, spacing, typography } from '../../theme';
@@ -21,6 +21,15 @@ const DOC_TYPES: { value: DocType; label: string; icon: string }[] = [
 ];
 
 const TIER_LABELS = ['Unverified', 'Basic', 'Identified', 'Verified', 'Professional'];
+
+const DOC_LABEL: Record<string, string> = {
+  NRC: 'National Registration Card',
+  PASSPORT: 'Passport',
+  DRIVERS_LICENSE: "Driver's License",
+  PROOF_OF_ADDRESS: 'Proof of address',
+  CERTIFICATE: 'Certificate',
+  SELFIE: 'Selfie',
+};
 
 // ── Component ──────────────────────────────────────────────────────────────
 
@@ -46,6 +55,81 @@ export default function KycScreen({ navigation }: any) {
 
   const currentTier = status?.trust_tier ?? 0;
 
+  // Newest submission the provider should be aware of: needs-info, pending, or
+  // not-approved. (documents come newest-first from the API.)
+  const documents = status?.documents ?? [];
+  const attention = documents.find((d) =>
+    d.info_requested ||
+    ['SUBMITTED', 'MANUAL_REVIEW', 'AUTO_REJECTED', 'REJECTED', 'EXPIRED'].includes(d.status),
+  );
+
+  const resubmitFor = (doc: KycDocument) => {
+    if (doc.doc_type === 'PROOF_OF_ADDRESS') {
+      navigation.navigate('KycAddress');
+    } else {
+      setDocUri(null);
+      setDoc2SelfieUri(null);
+      setStep('tier2_doctype');
+    }
+  };
+
+  const renderReviewStatus = () => {
+    if (!attention) return null;
+    const label = DOC_LABEL[attention.doc_type] ?? 'Document';
+    const rejected = ['AUTO_REJECTED', 'REJECTED', 'EXPIRED'].includes(attention.status);
+
+    const cfg = attention.info_requested
+      ? {
+          icon: 'alert-circle-outline' as const,
+          color: palette.warning,
+          bg: palette.warningLight,
+          title: 'More information needed',
+          body: attention.review_note ||
+            'The reviewer needs additional details before they can verify this submission.',
+          action: 'Resubmit document',
+        }
+      : rejected
+        ? {
+            icon: 'close-circle-outline' as const,
+            color: palette.danger,
+            bg: palette.dangerLight,
+            title: 'Submission not approved',
+            body: attention.review_note ||
+              'Your document could not be verified. Please check it and submit again.',
+            action: 'Resubmit document',
+          }
+        : {
+            icon: 'clock-outline' as const,
+            color: palette.primary,
+            bg: palette.primaryLight,
+            title: 'Pending review',
+            body: "We're reviewing your documents. This usually takes up to 24 hours — we'll notify you once it's done.",
+            action: null as string | null,
+          };
+
+    return (
+      <View style={[styles.statusCard, { backgroundColor: cfg.bg, borderColor: cfg.color }]}>
+        <View style={styles.statusHeaderRow}>
+          <MaterialCommunityIcons name={cfg.icon} size={22} color={cfg.color} />
+          <Text style={[styles.statusTitle, { color: cfg.color }]}>{cfg.title}</Text>
+        </View>
+        <Text style={styles.statusDocLabel}>{label}</Text>
+        <Text style={styles.statusBody}>{cfg.body}</Text>
+        {cfg.action && (
+          <Button
+            mode="contained"
+            buttonColor={cfg.color}
+            onPress={() => resubmitFor(attention)}
+            style={styles.statusBtn}
+            compact
+          >
+            {cfg.action}
+          </Button>
+        )}
+      </View>
+    );
+  };
+
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   const pickImage = async (setter: (uri: string) => void) => {
@@ -57,6 +141,11 @@ export default function KycScreen({ navigation }: any) {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality: 0.85,
+      // iPhone photos are HEIC by default; the backend (and admin reviewer's
+      // <img> preview) only handle jpg/png/webp. "Compatible" makes iOS hand
+      // back the transcoded JPEG representation instead of the raw HEIC.
+      preferredAssetRepresentationMode:
+        ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
     });
     if (!result.canceled && result.assets[0]) {
       setter(result.assets[0].uri);
@@ -151,7 +240,12 @@ export default function KycScreen({ navigation }: any) {
   if (step === 'overview') {
     return (
       <SafeAreaView style={styles.safe}>
-        <ScrollView contentContainerStyle={styles.scroll}>
+        <ScrollView
+          contentContainerStyle={styles.scroll}
+          refreshControl={
+            <RefreshControl refreshing={loading} onRefresh={fetchStatus} tintColor={palette.primary} />
+          }
+        >
           <Text style={styles.heading}>Identity Verification</Text>
           <Text style={styles.sub}>
             Verify your identity to unlock earning on Sebenza. Higher tiers unlock larger bookings and better placement in search.
@@ -168,6 +262,9 @@ export default function KycScreen({ navigation }: any) {
               style={styles.tierBar}
             />
           </View>
+
+          {/* Latest review status — pending / needs-info / not approved */}
+          {renderReviewStatus()}
 
           {/* Tier 1 */}
           <TierCard
@@ -517,4 +614,17 @@ const styles = StyleSheet.create({
   // CTA
   cta:        { borderRadius: r.lg, marginTop: spacing.sm },
   ctaContent: { height: 54 },
+
+  // Review status banner
+  statusCard: {
+    borderRadius: r.xl,
+    borderWidth: 1,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  statusHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  statusTitle:     { ...typography.label, fontSize: 15 },
+  statusDocLabel:  { ...typography.bodySmall, color: palette.textSecondary, marginTop: 2 },
+  statusBody:      { ...typography.body, color: palette.textPrimary, marginTop: spacing.xs },
+  statusBtn:       { borderRadius: r.md, marginTop: spacing.md, alignSelf: 'flex-start' },
 });

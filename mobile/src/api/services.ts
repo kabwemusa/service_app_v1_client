@@ -39,7 +39,8 @@ export interface ServiceProvider {
   // Bayesian rating (v3 §7.1) — trust_score is NEVER exposed to customers
   r_raw:                   number;
   v_reviews:               number;
-  completion_rate:         number;
+  /** null = provider has no booking history yet — render "–", not 0%. */
+  completion_rate:         number | null;
   // Earned badges (v3 §9.2)
   badges:                  string[];
 }
@@ -67,6 +68,8 @@ export interface Service {
   // §5.1/§5.5 — QUOTE listings carry no price; the client shows "By quote".
   pricing_model:           PricingModel;
   base_price:              number | null;
+  // Platform payment mode a booking for this service would be created under (drives CTA copy).
+  payment_mode:            'DIRECT' | 'ESCROW';
   duration_estimate_mins:  number | null;
   status:                  ServiceStatus;
   is_pinned:               boolean;

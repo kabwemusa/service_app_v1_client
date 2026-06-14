@@ -1,14 +1,22 @@
-import { Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
-import React from 'react';
-import { ScrollView, StyleSheet, View } from 'react-native';
-import { Divider, SegmentedButtons, Text, TouchableRipple } from 'react-native-paper';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useAuthStore } from '../../store/authStore';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
+import React from "react";
+import { ScrollView, StyleSheet, View } from "react-native";
+import {
+  Divider,
+  SegmentedButtons,
+  Text,
+  TouchableRipple,
+} from "react-native-paper";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
+import { useAuthStore } from "../../store/authStore";
+import { palette, radius as r, shadow, spacing, typography } from "../../theme";
 
 interface MenuItemProps {
-  icon: React.ComponentProps<typeof Ionicons>['name'];
+  icon: React.ComponentProps<typeof Ionicons>["name"];
   label: string;
   onPress: () => void;
   danger?: boolean;
@@ -18,9 +26,19 @@ function MenuItem({ icon, label, onPress, danger }: MenuItemProps) {
   return (
     <TouchableRipple onPress={onPress} borderless style={styles.menuItem}>
       <View style={styles.menuItemInner}>
-        <Ionicons name={icon} size={20} color={danger ? palette.danger : palette.textSecondary} />
-        <Text style={[styles.menuLabel, danger && styles.menuLabelDanger]}>{label}</Text>
-        <Ionicons name="chevron-forward" size={16} color={palette.textDisabled} />
+        <Ionicons
+          name={icon}
+          size={20}
+          color={danger ? palette.danger : palette.textSecondary}
+        />
+        <Text style={[styles.menuLabel, danger && styles.menuLabelDanger]}>
+          {label}
+        </Text>
+        <Ionicons
+          name="chevron-forward"
+          size={16}
+          color={palette.textDisabled}
+        />
       </View>
     </TouchableRipple>
   );
@@ -33,17 +51,20 @@ export default function ProfileScreen({ navigation }: any) {
   // v3 §2.1 — `role: 'PROVIDER'` accounts can both buy and sell on the same
   // account; `activeRole` is purely a UI-mode toggle (brief §3) that decides
   // which 5-tab layout renders. `role` itself never changes here.
-  const canSwitchRoles = user?.role === 'PROVIDER';
-  const isProviderMode = canSwitchRoles && activeRole === 'PROVIDER';
+  const canSwitchRoles = user?.role === "PROVIDER";
+  const isProviderMode = canSwitchRoles && activeRole === "PROVIDER";
 
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 104 }]}
+        contentContainerStyle={[
+          styles.scroll,
+          { paddingBottom: insets.bottom + 104 },
+        ]}
       >
         <LinearGradient
-          colors={['#1E63E9', '#1D8A72']}
+          colors={[palette.primary, palette.primaryLight]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={styles.hero}
@@ -53,7 +74,11 @@ export default function ProfileScreen({ navigation }: any) {
           </View>
           <Text style={styles.nameText}>Your Account</Text>
           <Text style={styles.roleText}>
-            {canSwitchRoles ? `Customer & Provider · ${isProviderMode ? 'Provider mode' : 'Customer mode'}` : 'Customer'}
+            {canSwitchRoles
+              ? `Customer & Provider · ${
+                  isProviderMode ? "Provider mode" : "Customer mode"
+                }`
+              : "Customer"}
           </Text>
           {!!user?.email && <Text style={styles.emailText}>{user.email}</Text>}
         </LinearGradient>
@@ -65,16 +90,26 @@ export default function ProfileScreen({ navigation }: any) {
             <View style={[styles.card, styles.switchCard]}>
               <SegmentedButtons
                 value={activeRole}
-                onValueChange={(value) => setActiveRole(value as 'CUSTOMER' | 'PROVIDER')}
+                onValueChange={(value) =>
+                  setActiveRole(value as "CUSTOMER" | "PROVIDER")
+                }
                 buttons={[
-                  { value: 'CUSTOMER', label: 'Customer', icon: 'account-outline' },
-                  { value: 'PROVIDER', label: 'Provider',  icon: 'briefcase-outline' },
+                  {
+                    value: "CUSTOMER",
+                    label: "Customer",
+                    icon: "account-outline",
+                  },
+                  {
+                    value: "PROVIDER",
+                    label: "Provider",
+                    icon: "briefcase-outline",
+                  },
                 ]}
               />
               <Text style={styles.switchHint}>
                 {isProviderMode
-                  ? 'Showing your business tools — Hub, requests, services, and earnings.'
-                  : 'Showing the customer experience — browse, book, and manage your bookings.'}
+                  ? "Showing your business tools — Hub, requests, services, and earnings."
+                  : "Showing the customer experience — browse, book, and manage your bookings."}
               </Text>
             </View>
           </View>
@@ -84,9 +119,15 @@ export default function ProfileScreen({ navigation }: any) {
           <Text style={styles.sectionLabel}>Account</Text>
           <View style={styles.card}>
             <MenuItem
+              icon="person-circle-outline"
+              label="Edit Profile"
+              onPress={() => navigation.navigate("EditProfile")}
+            />
+            <Divider />
+            <MenuItem
               icon="location-outline"
               label="Saved Places"
-              onPress={() => navigation.navigate('SavedLocations')}
+              onPress={() => navigation.navigate("SavedLocations")}
             />
             {canSwitchRoles && (
               <>
@@ -94,7 +135,7 @@ export default function ProfileScreen({ navigation }: any) {
                 <MenuItem
                   icon="shield-checkmark-outline"
                   label="Identity Verification"
-                  onPress={() => navigation.navigate('Kyc')}
+                  onPress={() => navigation.navigate("Kyc")}
                 />
               </>
             )}
@@ -131,36 +172,36 @@ const styles = StyleSheet.create({
   scroll: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
 
   hero: {
-    borderRadius: r.xl,
+    borderRadius: r.sm,
     paddingVertical: spacing.xl,
     paddingHorizontal: spacing.lg,
-    alignItems: 'center',
+    alignItems: "center",
     marginBottom: spacing.lg,
-    ...shadow.card,
+    // ...shadow.card,
   },
   avatar: {
     width: 78,
     height: 78,
     borderRadius: r.full,
-    backgroundColor: '#FFFFFF33',
+    backgroundColor: "#FFFFFF33",
     borderWidth: 1,
-    borderColor: '#FFFFFF40',
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderColor: "#FFFFFF40",
+    alignItems: "center",
+    justifyContent: "center",
     marginBottom: spacing.sm,
   },
   nameText: {
     ...typography.heading3,
-    color: '#FFFFFF',
+    color: "#FFFFFF",
     marginBottom: 2,
   },
   roleText: {
     ...typography.bodySmall,
-    color: '#E9F5FF',
+    color: "#E9F5FF",
   },
   emailText: {
     ...typography.bodySmall,
-    color: '#D9EAFF',
+    color: "#D9EAFF",
     marginTop: 2,
   },
 
@@ -175,15 +216,20 @@ const styles = StyleSheet.create({
     borderRadius: r.lg,
     borderWidth: 1,
     borderColor: palette.border,
-    overflow: 'hidden',
+    overflow: "hidden",
     ...shadow.card,
   },
   switchCard: { padding: spacing.md, gap: spacing.sm },
-  switchHint: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12.5, lineHeight: 17 },
+  switchHint: {
+    ...typography.bodySmall,
+    color: palette.textSecondary,
+    fontSize: 12.5,
+    lineHeight: 17,
+  },
   menuItem: {},
   menuItemInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     padding: spacing.md,
     gap: spacing.md,
   },
@@ -192,6 +238,6 @@ const styles = StyleSheet.create({
   version: {
     ...typography.bodySmall,
     color: palette.textDisabled,
-    textAlign: 'center',
+    textAlign: "center",
   },
 });

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { ApiError } from '../api/errors';
 import { ProfilePayload, providerProfileApi, ProviderProfile, ProviderDashboard, ProviderEarnings } from '../api/providerProfile';
 
+
 function toApiError(e: unknown): ApiError {
   if (e instanceof ApiError) return e;
   return new ApiError((e as any)?.message ?? 'Something went wrong.', 'SERVER_ERROR');
@@ -21,6 +22,8 @@ interface ProfileState {
   uploadKyc:            (uri: string) => Promise<void>;
   uploadPortfolioImage: (uri: string) => Promise<void>;
   deletePortfolioImage: (path: string) => Promise<void>;
+  /** Toggle Available/Away — optimistic update with rollback on error. */
+  toggleAcceptingBookings: (accepting: boolean) => Promise<void>;
   clearError:    () => void;
   reset:         () => void;
 }
@@ -127,6 +130,22 @@ export const useProfileStore = create<ProfileState>((set) => ({
     } catch (e) {
       set({ error: toApiError(e) });
       throw e;
+    }
+  },
+
+  toggleAcceptingBookings: async (accepting) => {
+    // Optimistic update so the switch feels instant
+    set(state => ({
+      dashboard: state.dashboard ? { ...state.dashboard, accepting_bookings: accepting } : null,
+    }));
+    try {
+      await providerProfileApi.toggleAcceptingBookings(accepting);
+    } catch (e) {
+      // Rollback on failure
+      set(state => ({
+        dashboard: state.dashboard ? { ...state.dashboard, accepting_bookings: !accepting } : null,
+        error: toApiError(e),
+      }));
     }
   },
 }));

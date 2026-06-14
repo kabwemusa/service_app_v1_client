@@ -2,6 +2,8 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
   ScrollView,
   StyleSheet,
   TouchableOpacity,
@@ -85,7 +87,7 @@ export function LocationSearch({ value, onChange, error }: Props) {
       } finally {
         setSearching(false);
       }
-    }, 450);
+    }, 250);
   };
 
   const pick = (item: PlaceCandidate) => {
@@ -124,7 +126,11 @@ export function LocationSearch({ value, onChange, error }: Props) {
   };
 
   return (
-    <View>
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 72 : 0}
+      style={styles.root}
+    >
       <View style={styles.inputRow}>
         {/* While the precision buffer is running, replace the input with a
             skeleton so the user knows something is happening without seeing
@@ -222,13 +228,17 @@ export function LocationSearch({ value, onChange, error }: Props) {
 
       {!!gpsError && <Text style={styles.errorText}>{gpsError}</Text>}
       {!!error    && <Text style={styles.errorText}>{error}</Text>}
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
+  root: {
+    zIndex: 20,
+    elevation: 20,
+  },
   inputRow: {
     flexDirection: 'row',
     gap:           spacing.xs,
@@ -279,9 +289,12 @@ const styles = StyleSheet.create({
     borderColor:     palette.border,
     overflow:        'hidden',
     ...shadow.card,
+    // Dropdown must float above sibling content — override the card shadow's elevation
+    zIndex:          30,
+    elevation:       30,
   },
   dropdownList: {
-    maxHeight: 216,
+    maxHeight: 260,
   },
   suggestion: {
     flexDirection:  'row',

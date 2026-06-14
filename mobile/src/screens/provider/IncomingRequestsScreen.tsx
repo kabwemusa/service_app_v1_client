@@ -1,16 +1,18 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { FlatList, StyleSheet, View } from 'react-native';
-import { Chip, ProgressBar, SegmentedButtons, Text, TouchableRipple } from 'react-native-paper';
+import { Button, Chip, Dialog, Portal, ProgressBar, SegmentedButtons, Text, TextInput, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { IncomingRequestEntry, TrustHint } from '../../api/bookings';
+import { ApiError } from '../../api/errors';
+import { ProviderRequestFeedEntry, serviceRequestsApi } from '../../api/serviceRequests';
 import { CardSkeleton } from '../../components/ui/SkeletonBlock';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useBookingStore } from '../../store/bookingStore';
 import { palette, radius as r, shadow, spacing, typography } from '../../theme';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
-type TabKey = 'new' | 'scheduled';
+type TabKey = 'new' | 'scheduled' | 'leads';
 
 // §8 — discreet, qualitative buyer trust hint. "New customer" is deliberately
 // neutral (never a warning colour): v3 §10.2 already blocks risky buyers
@@ -42,6 +44,7 @@ function formatScheduled(iso: string | null): string {
 function RequestCard({ entry, onPress }: { entry: IncomingRequestEntry; onPress: () => void }) {
   const hint = TRUST_HINT_META[entry.trust_hint];
   const locationLabel = entry.delivery_label ?? entry.delivery_region ?? 'Location on file';
+  const isDirect = entry.payment_mode === 'DIRECT';
 
   return (
     <TouchableRipple onPress={onPress} borderless style={styles.cardWrap}>
@@ -80,7 +83,11 @@ function RequestCard({ entry, onPress }: { entry: IncomingRequestEntry; onPress:
 
         <View style={styles.netRow}>
           <Text style={styles.netText} numberOfLines={1}>
-            You keep <Text style={styles.netStrong}>ZMW {entry.net_zmw.toFixed(0)}</Text> of ZMW {entry.gross_zmw.toFixed(0)}
+            {isDirect ? (
+              <>You’ll be paid <Text style={styles.netStrong}>ZMW {entry.gross_zmw.toFixed(0)}</Text> directly</>
+            ) : (
+              <>You keep <Text style={styles.netStrong}>ZMW {entry.net_zmw.toFixed(0)}</Text> of ZMW {entry.gross_zmw.toFixed(0)}</>
+            )}
           </Text>
           {entry.pricing_model === 'QUOTE' && (
             <Chip compact mode="flat" style={styles.quoteChip} textStyle={styles.quoteChipText}>By quote</Chip>
@@ -88,12 +95,112 @@ function RequestCard({ entry, onPress }: { entry: IncomingRequestEntry; onPress:
         </View>
 
         <View style={styles.escrowRow}>
-          <Ionicons name="lock-closed-outline" size={13} color={palette.success} />
+          <Ionicons
+            name={isDirect ? 'cash-outline' : 'lock-closed-outline'}
+            size={13}
+            color={palette.success}
+          />
           <Text style={styles.escrowText} numberOfLines={1}>{entry.escrow_label}</Text>
           <Ionicons name="chevron-forward" size={16} color={palette.textDisabled} />
         </View>
       </View>
     </TouchableRipple>
+  );
+}
+
+/** Minutes left on the 30-minute response deadline — drives the urgency pill. */
+function deadlineLabel(respondBy: string): { text: string; expired: boolean } {
+  const diff = new Date(respondBy).getTime() - Date.now();
+  if (diff <= 0) return { text: 'Deadline passed', expired: true };
+  const m = Math.ceil(diff / 60_000);
+  return { text: m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m to reply` : `${m}m to reply`, expired: false };
+}
+
+function formatWindow(startIso: string, endIso: string): string {
+  const start = new Date(startIso);
+  const end   = new Date(endIso);
+  const day   = start.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  const time  = (d: Date) => d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  return `${day} · ${time(start)}–${time(end)}`;
+}
+
+/** v3.2 §6 — one broadcast job lead: §6.8 card layout plus budget + window. */
+function LeadCard({
+  entry, onAccept, onQuote,
+}: {
+  entry: ProviderRequestFeedEntry;
+  onAccept: () => void;
+  onQuote: () => void;
+}) {
+  const deadline  = deadlineLabel(entry.respond_by);
+  const responded = entry.my_response != null;
+  const canAccept = entry.service.base_price != null && entry.service.pricing_model !== 'QUOTE';
+
+  return (
+    <View style={styles.card}>
+      <View style={styles.cardTop}>
+        <View style={[styles.avatar, { backgroundColor: palette.warningLight }]}>
+          <Ionicons name="megaphone-outline" size={16} color={palette.warning} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.buyerName} numberOfLines={1}>{entry.category_name} request</Text>
+          {entry.budget_zmw != null && (
+            <Text style={styles.leadBudget}>Budget ZMW {entry.budget_zmw.toFixed(0)}</Text>
+          )}
+        </View>
+        {!responded && (
+          <View style={[styles.timerPill, deadline.expired && { backgroundColor: '#EFEFEF' }]}>
+            <Ionicons name="time-outline" size={12} color={deadline.expired ? palette.textDisabled : palette.warning} />
+            <Text style={[styles.timerText, !deadline.expired && { color: palette.warning }]}>{deadline.text}</Text>
+          </View>
+        )}
+      </View>
+
+      <Text style={styles.leadDescription} numberOfLines={3}>{entry.description}</Text>
+
+      <View style={styles.metaRow}>
+        <Ionicons name="calendar-outline" size={14} color={palette.textSecondary} />
+        <Text style={styles.metaText} numberOfLines={1}>{formatWindow(entry.window_start, entry.window_end)}</Text>
+      </View>
+      <View style={styles.metaRow}>
+        <Ionicons name="location-outline" size={14} color={palette.textSecondary} />
+        <Text style={styles.metaText} numberOfLines={1}>
+          {entry.delivery_label ?? entry.delivery_region ?? 'Location on request'}
+        </Text>
+      </View>
+
+      {responded ? (
+        <View style={styles.leadResponded}>
+          <Ionicons name="checkmark-circle" size={14} color={palette.success} />
+          <Text style={styles.leadRespondedText}>
+            You {entry.my_response!.type === 'ACCEPT' ? 'accepted at' : 'quoted'} ZMW {entry.my_response!.price_zmw.toFixed(0)} — waiting on the customer
+          </Text>
+        </View>
+      ) : (
+        <View style={styles.leadActions}>
+          {canAccept && (
+            <Button
+              mode="contained"
+              compact
+              onPress={onAccept}
+              style={styles.leadAcceptBtn}
+              contentStyle={{ paddingHorizontal: spacing.sm }}
+            >
+              Accept · ZMW {entry.service.base_price!.toFixed(0)}
+            </Button>
+          )}
+          <Button
+            mode="outlined"
+            compact
+            onPress={onQuote}
+            style={styles.leadQuoteBtn}
+            contentStyle={{ paddingHorizontal: spacing.sm }}
+          >
+            Send quote
+          </Button>
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -103,12 +210,41 @@ export default function IncomingRequestsScreen({ navigation }: any) {
     incomingRequests, incomingLoading, incomingError,
     fetchIncomingRequests, clearIncomingError,
   } = useBookingStore();
-  const { showError } = useSnackbar();
+  const { showError, showSuccess } = useSnackbar();
   const insets = useSafeAreaInsets();
+
+  // v3.2 §6 — broadcast job leads (post-a-request feed)
+  const [leads, setLeads]             = useState<ProviderRequestFeedEntry[]>([]);
+  const [quoteTarget, setQuoteTarget] = useState<ProviderRequestFeedEntry | null>(null);
+  const [quotePrice, setQuotePrice]   = useState('');
+  const [responding, setResponding]   = useState(false);
+
+  const fetchLeads = useCallback(() => {
+    serviceRequestsApi.providerFeed().then(setLeads).catch(() => {});
+  }, []);
 
   useEffect(() => {
     fetchIncomingRequests();
+    fetchLeads();
   }, []);
+
+  const respond = async (entry: ProviderRequestFeedEntry, type: 'ACCEPT' | 'QUOTE', priceZmw?: number) => {
+    setResponding(true);
+    try {
+      await serviceRequestsApi.respond(entry.request_id, {
+        type,
+        ...(type === 'QUOTE' ? { price_zmw: priceZmw } : {}),
+      });
+      showSuccess(type === 'ACCEPT' ? 'Accepted — the customer has been notified.' : 'Quote sent.');
+      setQuoteTarget(null);
+      setQuotePrice('');
+      fetchLeads();
+    } catch (e) {
+      showError(e instanceof ApiError ? e.message : 'Could not send your response.');
+    } finally {
+      setResponding(false);
+    }
+  };
 
   useEffect(() => {
     if (incomingError) {
@@ -117,10 +253,21 @@ export default function IncomingRequestsScreen({ navigation }: any) {
     }
   }, [incomingError]);
 
+  // Platform payment mode — inferred from loaded entries (defaults to DIRECT, the pilot default).
+  const platformMode: 'DIRECT' | 'ESCROW' =
+    incomingRequests
+      ? ([...incomingRequests.new, ...incomingRequests.scheduled][0]?.payment_mode ?? 'DIRECT')
+      : 'DIRECT';
+  const isDirect = platformMode === 'DIRECT';
+
   const Header = () => (
     <View style={styles.header}>
       <Text style={styles.title}>Requests</Text>
-      <Text style={styles.subtitle}>Funded jobs waiting on you — accepted automatically once escrow is in place.</Text>
+      <Text style={styles.subtitle}>
+        {isDirect
+          ? 'New booking requests waiting on you — accept, send a quote, or decline.'
+          : 'Funded jobs waiting on you — accepted automatically once escrow is in place.'}
+      </Text>
     </View>
   );
 
@@ -145,14 +292,15 @@ export default function IncomingRequestsScreen({ navigation }: any) {
 
   const { weekly, response_nudge, new: newRequests, scheduled } = incomingRequests;
   const weeklyProgress = weekly.weekly_cap_zmw ? Math.min(weekly.this_week_zmw / weekly.weekly_cap_zmw, 1) : 1;
-  const list = tab === 'new' ? newRequests : scheduled;
+  const isLeads = tab === 'leads';
+  const list = tab === 'new' ? newRequests : tab === 'scheduled' ? scheduled : [];
 
   return (
     <SafeAreaView style={styles.safe}>
       <Header />
       <FlatList
-        data={list}
-        keyExtractor={(item) => item.booking_id}
+        data={isLeads ? (leads as unknown as IncomingRequestEntry[]) : list}
+        keyExtractor={(item: any) => isLeads ? item.request_id : item.booking_id}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 120 }]}
         ListHeaderComponent={(
@@ -183,19 +331,30 @@ export default function IncomingRequestsScreen({ navigation }: any) {
               </View>
             )}
 
-            {/* New / Scheduled tabs */}
+            {/* New / Scheduled / Job leads tabs */}
             <SegmentedButtons
               value={tab}
               onValueChange={(v) => setTab(v as TabKey)}
               buttons={[
                 { value: 'new',       label: `New (${newRequests.length})` },
                 { value: 'scheduled', label: `Scheduled (${scheduled.length})` },
+                { value: 'leads',     label: `Leads (${leads.length})` },
               ]}
               style={styles.segmented}
             />
           </View>
         )}
-        renderItem={({ item }) => (
+        renderItem={({ item }) => isLeads ? (
+          <LeadCard
+            entry={item as unknown as ProviderRequestFeedEntry}
+            onAccept={() => respond(item as unknown as ProviderRequestFeedEntry, 'ACCEPT')}
+            onQuote={() => {
+              const lead = item as unknown as ProviderRequestFeedEntry;
+              setQuoteTarget(lead);
+              setQuotePrice(lead.budget_zmw != null ? String(lead.budget_zmw) : '');
+            }}
+          />
+        ) : (
           <RequestCard
             entry={item}
             onPress={() => navigation.navigate('BookingDetail', { bookingId: item.booking_id })}
@@ -204,12 +363,24 @@ export default function IncomingRequestsScreen({ navigation }: any) {
         ItemSeparatorComponent={() => <View style={{ height: spacing.sm }} />}
         ListEmptyComponent={(
           <View style={styles.empty}>
-            <Ionicons name={tab === 'new' ? 'mail-open-outline' : 'calendar-outline'} size={40} color={palette.textDisabled} />
-            <Text style={styles.emptyTitle}>{tab === 'new' ? 'No new requests' : 'Nothing scheduled'}</Text>
+            <Ionicons
+              name={tab === 'new' ? 'mail-open-outline' : tab === 'scheduled' ? 'calendar-outline' : 'megaphone-outline'}
+              size={40}
+              color={palette.textDisabled}
+            />
+            <Text style={styles.emptyTitle}>
+              {tab === 'new' ? 'No new requests' : tab === 'scheduled' ? 'Nothing scheduled' : 'No job leads right now'}
+            </Text>
             <Text style={styles.emptyBody}>
               {tab === 'new'
-                ? 'Funded bookings waiting for you to start will land here.'
-                : 'Jobs you’ve started will show up here until they’re delivered.'}
+                ? (isDirect
+                    ? 'New booking requests waiting for your response will land here.'
+                    : 'Funded bookings waiting for you to start will land here.')
+                : tab === 'scheduled'
+                  ? (isDirect
+                      ? 'Bookings you’ve accepted or started will show up here until they’re completed.'
+                      : 'Jobs you’ve started will show up here until they’re delivered.')
+                  : 'When a customer posts a request that matches your services and area, it lands here — reply within 30 minutes to win the job.'}
             </Text>
           </View>
         )}
@@ -220,6 +391,41 @@ export default function IncomingRequestsScreen({ navigation }: any) {
           </Text>
         )}
       />
+
+      {/* Quote dialog — §5.5 QUOTE semantics on a broadcast lead */}
+      <Portal>
+        <Dialog visible={quoteTarget != null} onDismiss={() => setQuoteTarget(null)}>
+          <Dialog.Title>Send a quote</Dialog.Title>
+          <Dialog.Content>
+            <Text style={styles.quoteDialogHint} numberOfLines={2}>
+              {quoteTarget?.description}
+            </Text>
+            <TextInput
+              mode="outlined"
+              keyboardType="numeric"
+              value={quotePrice}
+              onChangeText={(t) => setQuotePrice(t.replace(/[^0-9.]/g, ''))}
+              left={<TextInput.Affix text="ZMW" />}
+              placeholder="Your price"
+              autoFocus
+            />
+            {quoteTarget?.budget_zmw != null && (
+              <Text style={styles.quoteDialogBudget}>Customer budget: ZMW {quoteTarget.budget_zmw.toFixed(0)}</Text>
+            )}
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => setQuoteTarget(null)}>Cancel</Button>
+            <Button
+              mode="contained"
+              loading={responding}
+              disabled={responding || quotePrice.trim() === '' || Number(quotePrice) <= 0}
+              onPress={() => quoteTarget && respond(quoteTarget, 'QUOTE', Number(quotePrice))}
+            >
+              Send quote
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
     </SafeAreaView>
   );
 }
@@ -246,6 +452,17 @@ const styles = StyleSheet.create({
     ...shadow.card,
   },
   rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+
+  // ── Job leads (v3.2 §6) ──────────────────────────────────────
+  leadBudget:        { ...typography.bodySmall, color: palette.success, fontSize: 12, marginTop: 2 },
+  leadDescription:   { ...typography.body, color: palette.textPrimary, fontSize: 13, lineHeight: 19, marginVertical: spacing.xs },
+  leadActions:       { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
+  leadAcceptBtn:     { borderRadius: r.full, flexShrink: 1 },
+  leadQuoteBtn:      { borderRadius: r.full },
+  leadResponded:     { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginTop: spacing.sm },
+  leadRespondedText: { ...typography.bodySmall, color: palette.success, fontSize: 12, flex: 1 },
+  quoteDialogHint:   { ...typography.bodySmall, color: palette.textSecondary, marginBottom: spacing.sm },
+  quoteDialogBudget: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12, marginTop: spacing.xs },
   sectionLabel: { ...typography.label, color: palette.textSecondary },
   cardBody: { ...typography.bodySmall, color: palette.textSecondary, marginTop: 2 },
   weeklyValue: { ...typography.heading3, color: palette.primary },

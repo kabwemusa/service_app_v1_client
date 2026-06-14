@@ -15,6 +15,10 @@ export interface KycDocument {
   id: string;
   doc_type: string;
   status: DocStatus;
+  // true when an admin asked for more information (item awaits the applicant)
+  info_requested: boolean;
+  // applicant-facing note: the admin's "needs info" message or rejection reason
+  review_note: string | null;
   confidence_score: number | null;
   submitted_at: string;
   reviewed_at: string | null;

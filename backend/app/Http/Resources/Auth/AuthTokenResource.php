@@ -21,6 +21,7 @@ class AuthTokenResource extends JsonResource
             'user'          => [
                 'id'              => $this->resource['user']->id,
                 'email'           => $this->resource['user']->email,
+                'phone'           => $this->resource['user']->phone,
                 'role'            => $this->resource['user']->role,
                 'is_verified'     => $this->resource['user']->is_verified,
                 'completion_rate' => $this->resource['user']->completion_rate,

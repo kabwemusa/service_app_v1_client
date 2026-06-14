@@ -97,7 +97,7 @@ export default function EarningsScreen({ navigation }: any) {
       )}
       <View style={styles.headerText}>
         <Text style={styles.title}>Earnings</Text>
-        <Text style={styles.subtitle}>Weekly cap, payouts, and your commission history.</Text>
+        <Text style={styles.subtitle}>Your weekly cap, earnings, and job history.</Text>
       </View>
     </View>
   );
@@ -122,6 +122,7 @@ export default function EarningsScreen({ navigation }: any) {
   }
 
   const { tier, summary, next_payout, instant_payout, recent } = earnings;
+  const isDirect = earnings.payment_mode === 'DIRECT';
   const weeklyProgress = summary.weekly_cap_zmw ? Math.min(summary.this_week_zmw / summary.weekly_cap_zmw, 1) : 1;
   const feePct = (instant_payout.fee_rate * 100).toFixed(0);
 
@@ -136,7 +137,7 @@ export default function EarningsScreen({ navigation }: any) {
         ListHeaderComponent={(
           <View style={styles.listHeader}>
             <View style={styles.tileRow}>
-              <SummaryTile label="This week" value={`ZMW ${summary.this_week_zmw.toFixed(0)}`} hint={summary.weekly_cap_zmw != null ? `of ZMW ${summary.weekly_cap_zmw} cap` : 'No weekly cap'} />
+              <SummaryTile label={isDirect ? 'Paid to you this week' : 'This week'} value={`ZMW ${summary.this_week_zmw.toFixed(0)}`} hint={isDirect ? 'paid directly by customers' : (summary.weekly_cap_zmw != null ? `of ZMW ${summary.weekly_cap_zmw} cap` : 'No weekly cap')} />
               <SummaryTile label="This month" value={`ZMW ${summary.this_month_zmw.toFixed(0)}`} />
             </View>
             {summary.weekly_cap_zmw != null && (
@@ -157,41 +158,57 @@ export default function EarningsScreen({ navigation }: any) {
               <Text style={styles.lifetimeValue}>ZMW {summary.lifetime_zmw.toFixed(0)}</Text>
             </View>
 
-            <View style={styles.card}>
-              <Text style={styles.sectionLabel}>Next payout</Text>
-              {next_payout ? (
-                <>
-                  <Text style={styles.lifetimeValue}>ZMW {next_payout.amount_zmw.toFixed(0)}</Text>
-                  <Text style={styles.cardBody}>{payoutCountdown(next_payout.eligible_at)} · {tier.payout_hold_hours}h hold after job completion</Text>
-                </>
-              ) : (
-                <Text style={styles.cardBody}>No payouts pending right now — completed jobs will appear here.</Text>
-              )}
-            </View>
-
-            <View style={[styles.card, styles.instantRow]}>
-              <View style={[styles.instantIcon, { backgroundColor: instant_payout.eligible ? palette.warningLight : palette.border }]}>
-                <Ionicons name="flash-outline" size={20} color={instant_payout.eligible ? palette.warning : palette.textDisabled} />
+            {isDirect ? (
+              <View style={[styles.card, styles.instantRow]}>
+                <View style={[styles.instantIcon, { backgroundColor: palette.successLight }]}>
+                  <Ionicons name="cash-outline" size={20} color={palette.success} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.cardTitle}>Paid directly</Text>
+                  <Text style={styles.cardBody}>
+                    Customers pay you directly for each job — there are no platform payouts to wait for.
+                  </Text>
+                </View>
               </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.cardTitle}>Instant payout</Text>
-                <Text style={styles.cardBody}>
-                  {instant_payout.eligible
-                    ? `Cash out completed jobs immediately for a ${feePct}% fee — skip the ${tier.payout_hold_hours}h hold.`
-                    : `Reach Tier 3 to unlock instant payouts (${feePct}% fee, skips the standard hold).`}
-                </Text>
-              </View>
-              <Chip
-                compact
-                mode="flat"
-                style={{ backgroundColor: instant_payout.eligible ? palette.successLight : palette.border }}
-                textStyle={{ fontSize: 11, color: instant_payout.eligible ? palette.success : palette.textSecondary }}
-              >
-                {instant_payout.eligible ? 'Eligible' : 'Locked'}
-              </Chip>
-            </View>
+            ) : (
+              <>
+                <View style={styles.card}>
+                  <Text style={styles.sectionLabel}>Next payout</Text>
+                  {next_payout ? (
+                    <>
+                      <Text style={styles.lifetimeValue}>ZMW {next_payout.amount_zmw.toFixed(0)}</Text>
+                      <Text style={styles.cardBody}>{payoutCountdown(next_payout.eligible_at)} · {tier.payout_hold_hours}h hold after job completion</Text>
+                    </>
+                  ) : (
+                    <Text style={styles.cardBody}>No payouts pending right now — completed jobs will appear here.</Text>
+                  )}
+                </View>
 
-            <Text style={styles.sectionLabel}>Recent commissions</Text>
+                <View style={[styles.card, styles.instantRow]}>
+                  <View style={[styles.instantIcon, { backgroundColor: instant_payout.eligible ? palette.warningLight : palette.border }]}>
+                    <Ionicons name="flash-outline" size={20} color={instant_payout.eligible ? palette.warning : palette.textDisabled} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardTitle}>Instant payout</Text>
+                    <Text style={styles.cardBody}>
+                      {instant_payout.eligible
+                        ? `Cash out completed jobs immediately for a ${feePct}% fee — skip the ${tier.payout_hold_hours}h hold.`
+                        : `Reach Tier 3 to unlock instant payouts (${feePct}% fee, skips the standard hold).`}
+                    </Text>
+                  </View>
+                  <Chip
+                    compact
+                    mode="flat"
+                    style={{ backgroundColor: instant_payout.eligible ? palette.successLight : palette.border }}
+                    textStyle={{ fontSize: 11, color: instant_payout.eligible ? palette.success : palette.textSecondary }}
+                  >
+                    {instant_payout.eligible ? 'Eligible' : 'Locked'}
+                  </Chip>
+                </View>
+              </>
+            )}
+
+            <Text style={styles.sectionLabel}>{isDirect ? 'Recent jobs' : 'Recent commissions'}</Text>
           </View>
         )}
         renderItem={({ item }) => <CommissionRow entry={item} />}
