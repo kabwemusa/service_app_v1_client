@@ -8,7 +8,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { DocType, KycDocument } from '../../api/kyc';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useKycStore } from '../../store/kycStore';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { palette, radius as r, spacing, typography } from '../../theme';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -42,6 +42,8 @@ export default function KycScreen({ navigation }: any) {
   const [selfieUri, setSelfieUri] = useState<string | null>(null);
   const [docType, setDocType]     = useState<DocType>('NRC');
   const [docUri, setDocUri]       = useState<string | null>(null);
+  const [docBackUri, setDocBackUri] = useState<string | null>(null);
+  const [hasTwoSides, setHasTwoSides] = useState(true);
   const [doc2SelfieUri, setDoc2SelfieUri] = useState<string | null>(null);
 
   useEffect(() => { fetchStatus(); }, []);
@@ -68,6 +70,8 @@ export default function KycScreen({ navigation }: any) {
       navigation.navigate('KycAddress');
     } else {
       setDocUri(null);
+      setDocBackUri(null);
+      setHasTwoSides(true);
       setDoc2SelfieUri(null);
       setStep('tier2_doctype');
     }
@@ -183,7 +187,7 @@ export default function KycScreen({ navigation }: any) {
   const handleSubmitTier2 = async () => {
     if (!docUri || !doc2SelfieUri) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    const ok = await submitDocument(docType, docUri, doc2SelfieUri);
+    const ok = await submitDocument(docType, docUri, doc2SelfieUri, hasTwoSides ? docBackUri : null);
     if (ok) {
       showSuccess('Document submitted. We\'ll notify you once verified.');
       setStep('done');
@@ -420,25 +424,77 @@ export default function KycScreen({ navigation }: any) {
     );
   }
 
-  // ── Tier 2: document image ────────────────────────────────────────────────
+  // ── Tier 2: document image (front + optional back) ────────────────────────
   if (step === 'tier2_doc') {
     const selected = DOC_TYPES.find((d) => d.value === docType)!;
+    const canContinue = docUri && (!hasTwoSides || docBackUri);
     return (
       <SafeAreaView style={styles.safe}>
         <ScrollView contentContainerStyle={styles.scroll}>
           <StepHeader step={2} total={3} title={`Upload your ${selected.label}`} onBack={() => setStep('tier2_doctype')} />
           <Text style={styles.sub}>Make sure all text is clearly visible. No glare or shadows.</Text>
+
+          {/* Toggle: single copy vs front & back */}
+          <View style={styles.uploadToggle}>
+            <TouchableRipple
+              onPress={() => { setHasTwoSides(false); setDocBackUri(null); }}
+              style={[styles.toggleOption, !hasTwoSides && styles.toggleActive]}
+              borderless
+            >
+              <View style={styles.toggleInner}>
+                <MaterialCommunityIcons
+                  name="file-document-outline"
+                  size={20}
+                  color={!hasTwoSides ? palette.primary : palette.textSecondary}
+                />
+                <Text style={[styles.toggleText, !hasTwoSides && styles.toggleTextActive]}>Single copy</Text>
+              </View>
+            </TouchableRipple>
+            <TouchableRipple
+              onPress={() => setHasTwoSides(true)}
+              style={[styles.toggleOption, hasTwoSides && styles.toggleActive]}
+              borderless
+            >
+              <View style={styles.toggleInner}>
+                <MaterialCommunityIcons
+                  name="file-document-multiple-outline"
+                  size={20}
+                  color={hasTwoSides ? palette.primary : palette.textSecondary}
+                />
+                <Text style={[styles.toggleText, hasTwoSides && styles.toggleTextActive]}>Front & back</Text>
+              </View>
+            </TouchableRipple>
+          </View>
+
+          {/* Front side (or the single copy) */}
+          <Text style={styles.photoLabel}>{hasTwoSides ? 'Front side' : `${selected.label}`}</Text>
           <View style={styles.card}>
             {renderPhotoButton(
               docUri,
-              `${selected.label} photo`,
+              hasTwoSides ? 'Front of your ID' : `${selected.label} photo`,
               () => takePhoto(setDocUri),
               () => pickImage(setDocUri),
             )}
           </View>
+
+          {/* Back side */}
+          {hasTwoSides && (
+            <>
+              <Text style={styles.photoLabel}>Back side</Text>
+              <View style={styles.card}>
+                {renderPhotoButton(
+                  docBackUri,
+                  'Back of your ID',
+                  () => takePhoto(setDocBackUri),
+                  () => pickImage(setDocBackUri),
+                )}
+              </View>
+            </>
+          )}
+
           <Button
             mode="contained"
-            disabled={!docUri}
+            disabled={!canContinue}
             onPress={() => setStep('tier2_selfie')}
             style={styles.cta}
             contentStyle={styles.ctaContent}
@@ -550,12 +606,11 @@ const styles = StyleSheet.create({
 
   card: {
     backgroundColor: palette.surface,
-    borderRadius: r.xl,
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
     padding: spacing.md,
     marginBottom: spacing.md,
-    ...shadow.card,
   },
 
   // Tier overview
@@ -566,12 +621,11 @@ const styles = StyleSheet.create({
 
   tierCard: {
     backgroundColor: palette.surface,
-    borderRadius: r.xl,
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
     marginBottom: spacing.sm,
     overflow: 'hidden',
-    ...shadow.card,
   },
   tierCardDone:     { borderColor: palette.success, backgroundColor: '#F0FFF4' },
   tierCardDisabled: { opacity: 0.5 },
@@ -592,14 +646,55 @@ const styles = StyleSheet.create({
   // Photo upload
   photoArea:          { gap: spacing.sm },
   photoPlaceholder:   {
-    height: 180, borderRadius: r.lg, borderWidth: 2, borderStyle: 'dashed',
+    height: 180, borderRadius: r.sm, borderWidth: 2, borderStyle: 'dashed',
     borderColor: palette.border, alignItems: 'center', justifyContent: 'center', gap: spacing.xs,
   },
   photoPlaceholderText: { ...typography.bodySmall, color: palette.textSecondary },
-  photoPreviewWrap:     { borderRadius: r.lg, overflow: 'hidden' },
-  photoPreview:         { width: '100%', height: 200, borderRadius: r.lg },
+  photoPreviewWrap:     { borderRadius: r.sm, overflow: 'hidden' },
+  photoPreview:         { width: '100%', height: 200, borderRadius: r.sm },
   photoBtnRow:          { flexDirection: 'row', gap: spacing.sm },
   photoBtn:             { flex: 1, borderRadius: r.md },
+
+  // Upload toggle (single / front & back)
+  uploadToggle: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  toggleOption: {
+    flex: 1,
+    borderRadius: r.sm,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
+    overflow: 'hidden',
+  },
+  toggleActive: {
+    borderColor: palette.primary,
+    backgroundColor: palette.primaryLight,
+  },
+  toggleInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    paddingVertical: spacing.sm + 2,
+    paddingHorizontal: spacing.sm,
+  },
+  toggleText: {
+    ...typography.label,
+    fontSize: 13,
+    color: palette.textSecondary,
+  },
+  toggleTextActive: {
+    color: palette.primary,
+  },
+  photoLabel: {
+    ...typography.label,
+    fontSize: 13,
+    color: palette.textSecondary,
+    marginBottom: spacing.xs,
+  },
 
   // Doc type
   docTypeRow:       { flexDirection: 'row', borderRadius: r.md, marginBottom: spacing.xs, overflow: 'hidden' },
@@ -609,15 +704,15 @@ const styles = StyleSheet.create({
 
   // Input
   input:       { backgroundColor: '#FFFFFF' },
-  inputOutline:{ borderRadius: r.lg },
+  inputOutline:{ borderRadius: r.sm },
 
   // CTA
-  cta:        { borderRadius: r.lg, marginTop: spacing.sm },
+  cta:        { borderRadius: r.sm, marginTop: spacing.sm },
   ctaContent: { height: 54 },
 
   // Review status banner
   statusCard: {
-    borderRadius: r.xl,
+    borderRadius: r.sm,
     borderWidth: 1,
     padding: spacing.md,
     marginBottom: spacing.md,

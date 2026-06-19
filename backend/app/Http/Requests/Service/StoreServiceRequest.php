@@ -3,6 +3,7 @@
 namespace App\Http\Requests\Service;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class StoreServiceRequest extends FormRequest
 {
@@ -19,10 +20,15 @@ class StoreServiceRequest extends FormRequest
             'description'             => ['sometimes', 'nullable', 'string', 'max:1000'],
             // §5.1: FIXED/HOURLY carry a rate; QUOTE hides price and routes through "Send quote".
             'pricing_model'           => ['required', 'string', 'in:FIXED,HOURLY,QUOTE'],
+            // A DRAFT may be saved without a price (§5.5 / publish-validation model);
+            // price is only *required* when the listing is published ACTIVE under FIXED/HOURLY.
             'base_price'              => [
                 'nullable', 'numeric', 'min:0.01', 'max:99999.99',
-                'required_if:pricing_model,FIXED,HOURLY',
                 'prohibited_if:pricing_model,QUOTE',
+                Rule::requiredIf(fn () =>
+                    $this->input('status') === 'ACTIVE'
+                    && in_array($this->input('pricing_model'), ['FIXED', 'HOURLY'], true)
+                ),
             ],
             'duration_estimate_mins'  => ['nullable', 'integer', 'min:1', 'max:1440'],
             'status'                  => ['sometimes', 'string', 'in:DRAFT,ACTIVE,PAUSED,HIDDEN'],

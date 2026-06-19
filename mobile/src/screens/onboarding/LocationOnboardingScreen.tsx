@@ -16,7 +16,7 @@ import { locationApi, PlaceCandidate } from '../../api/location';
 import { useHighAccuracyLocation } from '../../hooks/useHighAccuracyLocation';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useLocationStore } from '../../store/locationStore';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { palette, radius as r, spacing, typography } from '../../theme';
 
 /**
  * v3.1 §4.5-A — primary location capture, gated in before Home. Two entry points,
@@ -276,13 +276,12 @@ const styles = StyleSheet.create({
     maxWidth: 520,
     alignSelf: 'center',
     backgroundColor: palette.surface,
-    borderRadius: r.xl,
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
     padding: spacing.lg,
-    ...shadow.card,
   },
-  btn: { borderRadius: r.lg },
+  btn: { borderRadius: r.sm },
   btnContent: { height: 54 },
   btnLabel: { ...typography.label, fontSize: 16, letterSpacing: 0.2 },
   btnSecondary: { marginTop: spacing.xs },
@@ -294,12 +293,12 @@ const styles = StyleSheet.create({
 
   inputGroup: { marginBottom: spacing.xs },
   input: { backgroundColor: '#FFFFFF' },
-  inputOutline: { borderRadius: r.lg },
+  inputOutline: { borderRadius: r.sm },
 
   dropdown: {
     marginTop: spacing.xs,
     backgroundColor: palette.surface,
-    borderRadius: r.lg,
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
     overflow: 'hidden',
@@ -338,7 +337,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     gap: spacing.sm,
     backgroundColor: palette.primaryLight,
-    borderRadius: r.lg,
+    borderRadius: r.sm,
     padding: spacing.md,
     marginBottom: spacing.lg,
   },

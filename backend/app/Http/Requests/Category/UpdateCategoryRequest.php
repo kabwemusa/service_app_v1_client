@@ -29,8 +29,12 @@ class UpdateCategoryRequest extends FormRequest
             'icon'          => ['sometimes', 'nullable', 'string', 'max:100'],
             'is_active'     => ['sometimes', 'boolean'],
             'display_order' => ['sometimes', 'integer', 'min:0'],
-            // commission_band may be updated but must not be blanked out
-            'commission_band' => ['sometimes', 'required', 'string', 'max:50'],
+            // commission_band may be updated but must not be blanked out once set.
+            // Changing it additionally requires categories.set_band (enforced in controller).
+            'commission_band'    => ['sometimes', 'nullable', 'string', 'max:50'],
+            'commission_rates'   => ['sometimes', 'nullable', 'array'],
+            'commission_rates.*' => ['numeric', 'min:0', 'max:1'],
+            'reason'             => ['sometimes', 'string', 'min:10', 'max:1000'],
         ];
     }
 

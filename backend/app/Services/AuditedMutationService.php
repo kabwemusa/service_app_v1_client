@@ -55,7 +55,7 @@ class AuditedMutationService
         AdminUser $actor,
         string $action,
         string $targetType,
-        string $targetId,
+        string|null $targetId,
         string $reason,
         array $metadata,
         callable $mutation,
@@ -71,14 +71,20 @@ class AuditedMutationService
             // 1. Execute the business mutation first so any exception rolls back cleanly
             $result = $mutation();
 
-            // 2. Write the audit entry in the same transaction
+            // 2. Resolve target ID: if caller passed null, derive from the returned model
+            $resolvedTargetId = $targetId;
+            if ($resolvedTargetId === null && $result instanceof \Illuminate\Database\Eloquent\Model) {
+                $resolvedTargetId = (string) $result->getKey();
+            }
+
+            // 3. Write the audit entry in the same transaction
             DB::table('admin_audit_log')->insert([
                 'id'             => Str::uuid()->toString(),
                 'actor_admin_id' => $actor->id,
                 'actor_role'     => $actor->role ?? 'unknown',
                 'action'         => $action,
                 'target_type'    => $targetType,
-                'target_id'      => $targetId,
+                'target_id'      => $resolvedTargetId ?? 'unknown',
                 'reason'         => $reason,
                 'metadata'       => json_encode($metadata, JSON_THROW_ON_ERROR),
                 'ip'             => request()->ip() ?? '0.0.0.0',
@@ -88,6 +94,38 @@ class AuditedMutationService
 
             return $result;
         });
+    }
+
+    /**
+     * Record an audit entry for a NON-mutating but still-sensitive event — e.g.
+     * a PII reveal — where there is no state change and no operator-supplied
+     * reason. The reason is a fixed system string so the append-only log still
+     * captures who saw what, when, and from where.
+     *
+     * Unlike perform(), this does not open a transaction or run a mutation; it is
+     * a single insert. Use perform() for anything that changes state.
+     */
+    public function log(
+        AdminUser $actor,
+        string $action,
+        string $targetType,
+        string $targetId,
+        string $reason,
+        array $metadata = [],
+    ): void {
+        DB::table('admin_audit_log')->insert([
+            'id'             => Str::uuid()->toString(),
+            'actor_admin_id' => $actor->id,
+            'actor_role'     => $actor->role ?? 'unknown',
+            'action'         => $action,
+            'target_type'    => $targetType,
+            'target_id'      => $targetId,
+            'reason'         => $reason,
+            'metadata'       => json_encode($metadata, JSON_THROW_ON_ERROR),
+            'ip'             => request()->ip() ?? '0.0.0.0',
+            'user_agent'     => substr(request()->userAgent() ?? '', 0, 500),
+            'created_at'     => now(),
+        ]);
     }
 
     /**

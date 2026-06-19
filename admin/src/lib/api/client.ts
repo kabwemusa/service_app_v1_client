@@ -56,6 +56,14 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   if (!res.ok) {
     let err: ApiError = { message: `HTTP ${res.status}` }
     try { err = await res.json() } catch { /* use default */ }
+
+    // JWT expired or invalidated — clear cookie and redirect to login
+    if (res.status === 401 && typeof document !== 'undefined') {
+      document.cookie = `${ADMIN_TOKEN_COOKIE}=; path=/; max-age=0`
+      window.location.href = '/login?reason=expired'
+      // Throw anyway so the caller's catch block doesn't process a stale result
+    }
+
     throw new ApiResponseError(res.status, err)
   }
 

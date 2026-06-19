@@ -70,6 +70,9 @@ export interface Booking {
   payment_mode:            PaymentMode;
   status:                  BookingStatus;
   payment_status:          PaymentStatus | null;
+  /** Two-party DIRECT settlement — each side independently confirms (null = not yet). */
+  provider_marked_paid_at?: string | null;
+  customer_marked_paid_at?: string | null;
   /** Final negotiated price (set when ACCEPTED). */
   agreed_amount:           number | null;
   amount:                  number | null;
@@ -93,21 +96,34 @@ export interface Booking {
   /** ISO timestamp at which booking auto-confirms if customer does not (DELIVERED state). */
   auto_release_at?: string | null;
   service: {
-    id:             string;
-    title:          string;
-    base_price:     number;
-    category_name?: string;
-    category_icon?: string | null;
+    id:              string;
+    title:           string;
+    pricing_model?:  'FIXED' | 'HOURLY' | 'QUOTE';
+    base_price:      number;
+    category_name?:  string;
+    category_icon?:  string | null;
   };
+  notes?: string | null;
   buyer: {
     id:    string;
     email: string;
+    /** Privacy-safe display label (never legal name). */
+    name?:       string | null;
+    /** Qualitative trust hint (§10.2) — never a numeric score. */
+    trust_hint?: TrustHint;
   };
   provider: {
     id:            string;
     email:         string;
     display_name?: string;
+    /** Public profile photo — never the KYC selfie. */
+    avatar_url?:   string | null;
     trust_tier?:   number;
+    /** Bayesian rating (§7.1) — null until first review. Never a trust_score. */
+    rating?:       number | null;
+    reviews?:      number;
+    /** DIRECT mobile-money details — present only for the buyer on an active booking (gated, not public). */
+    payment?: { momo_provider: 'MTN' | 'AIRTEL' | 'ZAMTEL' | null; momo_number: string | null } | null;
   };
   transactions?: Transaction[];
   commission?:   Commission | null;
@@ -133,6 +149,10 @@ export interface CreateBookingParams {
   delivery_location_label:   string;
   delivery_location_region?: string | null;
   delivery_location_source:  'DEVICE' | 'SEARCH' | 'SAVED';
+  /** Selected service add-on ids carried from the booking sheet (§5.3). */
+  addon_ids?:                number[];
+  /** Optional free-text note (used by QUOTE requests). */
+  notes?:                    string;
 }
 
 export interface OpenDisputeParams {
@@ -273,4 +293,8 @@ export const bookingsApi = {
 
   bookAgain: () =>
     api.get<BookAgainCard | null>('/me/book-again'),
+
+  /** Fetch booked time slots for a service's provider (next 14 days). */
+  bookedSlots: (serviceId: string) =>
+    api.get<{ slots: { start: string; end: string }[] }>(`/services/${serviceId}/booked-slots`),
 };

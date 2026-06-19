@@ -18,7 +18,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { locationApi, PlaceCandidate, SavedLocation } from '../../api/location';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useLocationStore } from '../../store/locationStore';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { palette, radius as r, spacing, typography } from '../../theme';
 
 const QUICK_LABELS = ['Home', 'Work', 'Gym', 'Other'];
 
@@ -401,7 +401,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.sm,
     backgroundColor: palette.surface,
-    borderRadius: r.lg,
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
     padding: spacing.md,
@@ -439,7 +439,7 @@ const styles = StyleSheet.create({
     borderTopColor: palette.border,
     backgroundColor: palette.background,
   },
-  addBtn: { borderRadius: r.lg },
+  addBtn: { borderRadius: r.sm },
   addBtnContent: { height: 50 },
   addBtnLabel: { ...typography.label, fontSize: 15 },
 
@@ -449,10 +449,9 @@ const styles = StyleSheet.create({
   modalKav: { justifyContent: 'flex-end' },
   modalSheet: {
     backgroundColor: palette.surface,
-    borderTopLeftRadius: r.xl,
-    borderTopRightRadius: r.xl,
+    borderTopLeftRadius: r.sm,
+    borderTopRightRadius: r.sm,
     maxHeight: '85%',
-    ...shadow.modal,
   },
   handle: {
     alignSelf: 'center', width: 36, height: 4, borderRadius: r.full,
@@ -467,7 +466,7 @@ const styles = StyleSheet.create({
   modalBody: { padding: spacing.lg },
 
   input: { backgroundColor: '#FFFFFF', marginBottom: spacing.sm },
-  inputOutline: { borderRadius: r.lg },
+  inputOutline: { borderRadius: r.sm },
 
   suggestion: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.sm + 2 },
   suggestionLabel:  { ...typography.label, color: palette.textPrimary, fontSize: 14 },
@@ -477,7 +476,7 @@ const styles = StyleSheet.create({
 
   pickedPlace: {
     flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm,
-    backgroundColor: palette.primaryLight, borderRadius: r.lg,
+    backgroundColor: palette.primaryLight, borderRadius: r.sm,
     padding: spacing.md, marginBottom: spacing.lg,
   },
   pickedLabel:  { ...typography.label, color: palette.textPrimary, fontSize: 15 },
@@ -499,8 +498,8 @@ const styles = StyleSheet.create({
   primaryRow: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
     marginTop: spacing.md, marginBottom: spacing.lg,
-    backgroundColor: palette.background, borderRadius: r.lg, padding: spacing.md,
+    backgroundColor: palette.background, borderRadius: r.sm, padding: spacing.md,
   },
 
-  saveBtn: { borderRadius: r.lg, marginTop: spacing.xs },
+  saveBtn: { borderRadius: r.sm, marginTop: spacing.xs },
 });

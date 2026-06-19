@@ -17,7 +17,8 @@ import {
 } from 'react-native';
 import { Text, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BrowseServiceCard } from '../../components/browse/BrowseServiceCard';
+import { BookingSheet } from '../../components/booking/BookingSheet';
+import { RankedServiceCard, searchResultToCard } from '../../components/discovery/RankedServiceCard';
 import { FiltersSheet } from '../../components/browse/FiltersSheet';
 import { SortSheet } from '../../components/browse/SortSheet';
 import { LocationPickerSheet } from '../../components/location/LocationPickerSheet';
@@ -130,6 +131,8 @@ export default function BrowseScreen({ navigation, route }: any) {
   const [sortVisible,     setSortVisible]     = useState(false);
   const [locationVisible, setLocationVisible] = useState(false);
   const [isOffline,       setIsOffline]       = useState(false);
+  // Booking modal opened in-place by a card's Book button (no route change).
+  const [bookingFor,      setBookingFor]      = useState<SearchResult | null>(null);
 
   const queryDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -506,11 +509,12 @@ export default function BrowseScreen({ navigation, route }: any) {
             paddingBottom:     insets.bottom + 112,
           }}
           renderItem={({ item }) => (
-            <BrowseServiceCard
-              data={item}
+            <RankedServiceCard
+              data={searchResultToCard(item)}
               saved={savedIds.has(item.id)}
               onPress={() => navigation.navigate('ServiceDetail', { serviceId: item.id })}
-              onSave={() => handleSave(item.id)}
+              onBook={() => setBookingFor(item)}
+              onToggleSave={() => handleSave(item.id)}
             />
           )}
           ListFooterComponent={
@@ -546,6 +550,24 @@ export default function BrowseScreen({ navigation, route }: any) {
         onClose={() => setLocationVisible(false)}
         onSelect={handlePrimarySelect}
         title="Show services near"
+      />
+
+      {/* Booking modal — opened in-place by a card's Book button */}
+      <BookingSheet
+        visible={!!bookingFor}
+        onClose={() => setBookingFor(null)}
+        serviceId={bookingFor?.id ?? ''}
+        serviceTitle={bookingFor?.title ?? ''}
+        basePrice={bookingFor?.base_price ?? 0}
+        pricingModel={bookingFor?.pricing_model}
+        paymentMode={bookingFor?.payment_mode}
+        categoryId={bookingFor?.category?.id}
+        categoryIcon={bookingFor?.category?.icon}
+        providerName={bookingFor?.provider?.display_name}
+        onBooked={(bookingId) => {
+          setBookingFor(null);
+          navigation.navigate('BookingDetail', { bookingId });
+        }}
       />
     </SafeAreaView>
   );
@@ -759,7 +781,7 @@ const styles = StyleSheet.create({
     paddingTop:        spacing.sm,
     gap:               spacing.sm,
   },
-  skeleton: { height: 112, borderRadius: r.lg },
+  skeleton: { height: 112, borderRadius: r.sm },
 
   // Empty state
   emptyState: {

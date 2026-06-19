@@ -59,7 +59,9 @@ class ServiceService
      */
     public function listMine(User $provider): LengthAwarePaginator
     {
-        return Service::with(['category', 'inclusions', 'addons'])
+        return Service::with(['category', 'inclusions', 'addons', 'photos'])
+            // §6.7 list — surface a genuine "N booked" stat on each card (completed jobs only).
+            ->withCount(['bookings as bookings_count' => fn ($q) => $q->where('status', 'COMPLETED')])
             ->selectRaw("
                 services.*,
                 ST_Y(service_location::geometry) AS latitude,

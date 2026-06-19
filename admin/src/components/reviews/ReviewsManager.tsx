@@ -1,0 +1,335 @@
+'use client'
+
+import { useMemo, useState, useEffect, useCallback } from 'react'
+import Link from 'next/link'
+import { useQuery } from '@tanstack/react-query'
+import type { ColumnDef } from '@tanstack/react-table'
+import { Star, AlertTriangle, ExternalLink, ShieldCheck } from 'lucide-react'
+import { DataTable } from '@/components/ui/DataTable'
+import { FilterBar } from '@/components/ui/FilterBar'
+import { DetailPanel } from '@/components/ui/DetailPanel'
+import { StatusPill } from '@/components/ui/StatusPill'
+import { cn, fmtRelative } from '@/lib/utils'
+import {
+  reviewsApi,
+  STATUS_LABEL,
+  STATUS_VARIANT,
+  FLAG_TYPE_OPTIONS,
+  flagLabel,
+  type ReviewRow,
+  type ReviewFlag,
+} from '@/lib/api/reviews'
+import { ReviewDetail } from '@/components/reviews/ReviewDetail'
+
+type Tab = 'needs_review' | 'all'
+
+const RATING_OPTIONS = [5, 4, 3, 2, 1].map((r) => ({ value: String(r), label: `${r} star${r === 1 ? '' : 's'}` }))
+
+function readParam(key: string): string | null {
+  if (typeof window === 'undefined') return null
+  return new URLSearchParams(window.location.search).get(key)
+}
+
+function writeReviewParam(id: string | null) {
+  if (typeof window === 'undefined') return
+  const url = new URL(window.location.href)
+  if (id) url.searchParams.set('review', id)
+  else url.searchParams.delete('review')
+  window.history.replaceState(null, '', url.toString())
+}
+
+export function ReviewsManager() {
+  const [tab, setTab] = useState<Tab>('needs_review')
+  const [page, setPage] = useState(1)
+  const [search, setSearch] = useState('')
+  const [rating, setRating] = useState('')
+  const [flagType, setFlagType] = useState('')
+  const [provider, setProvider] = useState('')
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  // Deep-links: ?review= opens a record; ?provider= scopes to one provider's
+  // reviews (e.g. from the Users module).
+  useEffect(() => {
+    const rev = readParam('review')
+    const prov = readParam('provider')
+    if (rev) setSelectedId(rev)
+    if (prov) {
+      setProvider(prov)
+      setTab('all')
+    }
+  }, [])
+
+  const select = useCallback((id: string | null) => {
+    setSelectedId(id)
+    writeReviewParam(id)
+  }, [])
+
+  const params = useMemo(
+    () => ({
+      tab,
+      page,
+      search,
+      rating: tab === 'all' ? rating : '',
+      flag_type: tab === 'all' ? flagType : '',
+      provider,
+    }),
+    [tab, page, search, rating, flagType, provider],
+  )
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['reviews', params],
+    queryFn: () => reviewsApi.list(params),
+  })
+
+  const switchTab = useCallback((t: Tab) => {
+    setTab(t)
+    setPage(1)
+  }, [])
+
+  const columns = useMemo<ColumnDef<ReviewRow>[]>(
+    () => [
+      {
+        id: 'review',
+        header: 'Review',
+        enableSorting: false,
+        cell: ({ row }) => {
+          const r = row.original
+          return (
+            <div className="min-w-0 max-w-sm">
+              <div className="flex items-center gap-1.5">
+                <Stars rating={r.rating} />
+                {r.verified_booking && (
+                  <span
+                    className="inline-flex items-center gap-0.5 rounded-full border border-teal-200 bg-teal-50 px-1.5 py-px text-[10px] font-medium text-teal-700 dark:border-teal-800 dark:bg-teal-900/20 dark:text-teal-400"
+                    title="From a completed booking (§12)"
+                  >
+                    <ShieldCheck className="size-2.5" aria-hidden="true" /> Verified booking
+                  </span>
+                )}
+              </div>
+              <p className="mt-0.5 truncate text-slate-600 dark:text-slate-300">
+                {r.snippet || <span className="text-slate-400">No comment</span>}
+              </p>
+            </div>
+          )
+        },
+      },
+      {
+        id: 'reviewer',
+        header: 'Reviewer',
+        enableSorting: false,
+        cell: ({ row }) => <UserLink id={row.original.reviewer.id} name={row.original.reviewer.name} />,
+      },
+      {
+        id: 'provider',
+        header: 'Provider reviewed',
+        enableSorting: false,
+        cell: ({ row }) => <UserLink id={row.original.provider.id} name={row.original.provider.name} />,
+      },
+      {
+        id: 'status',
+        header: 'Status',
+        enableSorting: false,
+        cell: ({ row }) => (
+          <StatusPill label={STATUS_LABEL[row.original.status]} variant={STATUS_VARIANT[row.original.status]} />
+        ),
+      },
+      {
+        id: 'flags',
+        header: 'Flags',
+        enableSorting: false,
+        cell: ({ row }) => <FlagCells flags={row.original.flags} />,
+      },
+      {
+        id: 'age',
+        header: 'Age',
+        enableSorting: false,
+        cell: ({ row }) => (
+          <span className="whitespace-nowrap text-xs text-slate-500 dark:text-slate-400">
+            {fmtRelative(row.original.created_at)}
+          </span>
+        ),
+      },
+      {
+        id: 'action',
+        header: '',
+        enableSorting: false,
+        cell: ({ row }) => (
+          <button
+            type="button"
+            onClick={() => select(row.original.id)}
+            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
+            aria-label="Review this entry"
+          >
+            Review
+          </button>
+        ),
+      },
+    ],
+    [select],
+  )
+
+  function resetPageThen<T>(setter: (v: T) => void) {
+    return (v: T) => {
+      setter(v)
+      setPage(1)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h1 className="flex items-center gap-2 text-lg font-medium text-slate-900 dark:text-slate-100">
+          <Star className="size-5 text-teal-600" />
+          Reviews
+        </h1>
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Moderate the reviews that feed provider ratings. Reported, auto-flagged (profanity, personal
+          info, links), and pattern-flagged (review spikes) reviews surface first. Removing a review
+          recomputes the provider’s rating.
+        </p>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-slate-200 dark:border-slate-700" role="tablist" aria-label="Review views">
+        <TabButton active={tab === 'needs_review'} onClick={() => switchTab('needs_review')}>
+          Needs review
+        </TabButton>
+        <TabButton active={tab === 'all'} onClick={() => switchTab('all')}>
+          All reviews
+        </TabButton>
+      </div>
+
+      <FilterBar
+        search={search}
+        onSearchChange={resetPageThen(setSearch)}
+        searchPlaceholder="Search by comment, reviewer or provider…"
+        filters={
+          tab === 'all'
+            ? [
+                {
+                  key: 'rating',
+                  label: 'All ratings',
+                  value: rating,
+                  options: RATING_OPTIONS,
+                  onChange: resetPageThen(setRating),
+                },
+                {
+                  key: 'flag_type',
+                  label: 'All flags',
+                  value: flagType,
+                  options: FLAG_TYPE_OPTIONS,
+                  onChange: resetPageThen(setFlagType),
+                },
+              ]
+            : []
+        }
+      />
+
+      {provider && (
+        <div className="flex items-center gap-2 text-xs">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-teal-200 bg-teal-50 px-2.5 py-1 font-medium text-teal-700 dark:border-teal-800 dark:bg-teal-900/20 dark:text-teal-400">
+            Filtered to one provider
+            <button
+              type="button"
+              onClick={() => resetPageThen(setProvider)('')}
+              className="hover:text-teal-900 dark:hover:text-teal-200"
+              aria-label="Clear provider filter"
+            >
+              ✕
+            </button>
+          </span>
+        </div>
+      )}
+
+      <DataTable
+        data={data?.data ?? []}
+        columns={columns}
+        isLoading={isLoading}
+        emptyMessage={
+          tab === 'needs_review'
+            ? 'Nothing in the review queue — no flagged reviews right now.'
+            : 'No reviews match these filters'
+        }
+        totalRows={data?.meta.total}
+        currentPage={page}
+        pageSize={data?.meta.per_page ?? 20}
+        onPageChange={setPage}
+      />
+
+      <DetailPanel open={!!selectedId} onClose={() => select(null)} width="xl" title="Review moderation">
+        {selectedId && <ReviewDetail reviewId={selectedId} />}
+      </DetailPanel>
+    </div>
+  )
+}
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className={cn(
+        '-mb-px border-b-2 px-4 py-2 text-sm font-medium transition-colors',
+        active
+          ? 'border-teal-600 text-teal-700 dark:border-teal-400 dark:text-teal-400'
+          : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200',
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
+export function Stars({ rating }: { rating: number }) {
+  return (
+    <span className="inline-flex items-center gap-0.5 whitespace-nowrap" aria-label={`${rating} out of 5 stars`}>
+      {[1, 2, 3, 4, 5].map((i) => (
+        <Star
+          key={i}
+          className={cn('size-3.5', i <= Math.round(rating) ? 'fill-amber-400 text-amber-400' : 'text-slate-300 dark:text-slate-600')}
+          aria-hidden="true"
+        />
+      ))}
+      <span className="ml-1 text-xs font-medium text-slate-600 dark:text-slate-400">{rating.toFixed(1)}</span>
+    </span>
+  )
+}
+
+function UserLink({ id, name }: { id: string | null; name: string }) {
+  if (!id) return <span className="text-slate-500">{name}</span>
+  return (
+    <Link
+      href={`/users?user=${id}`}
+      className="inline-flex items-center gap-1 text-slate-600 hover:text-teal-600 hover:underline dark:text-slate-300 dark:hover:text-teal-400"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <span className="max-w-28 truncate">{name}</span>
+      <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
+    </Link>
+  )
+}
+
+// Flag reasons rendered as TEXT chips (not colour alone) for a11y.
+function FlagCells({ flags }: { flags: ReviewFlag[] }) {
+  if (flags.length === 0) return <span className="text-slate-400">—</span>
+  const reasons = Array.from(new Set(flags.map((f) => f.reason)))
+  const shown = reasons.slice(0, 2)
+  const extra = reasons.length - shown.length
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {shown.map((reason) => (
+        <span
+          key={reason}
+          className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-px text-[11px] font-medium text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400"
+        >
+          <AlertTriangle className="size-2.5" aria-hidden="true" />
+          {flagLabel(reason)}
+        </span>
+      ))}
+      {extra > 0 && <span className="text-[11px] text-slate-400">+{extra}</span>}
+    </div>
+  )
+}

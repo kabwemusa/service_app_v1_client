@@ -4,15 +4,26 @@ namespace App\Services;
 
 use App\Enums\ErrorCode;
 use App\Enums\TrustTier;
+use App\Events\BookingAccepted;
+use App\Events\BookingCompleted;
+use App\Events\BookingDeclined;
+use App\Events\BookingDelivered;
+use App\Events\BookingQuoted;
+use App\Events\BookingRequested;
+use App\Events\BookingStarted;
+use App\Events\PaymentMarked;
+use App\Events\ReviewCreated;
 use App\Exceptions\Api\ApiException;
 use App\Exceptions\Api\ForbiddenException;
 use App\Exceptions\Api\NotFoundException;
+use App\Jobs\ExpireBookingJob;
 use App\Models\Booking;
 use App\Models\Commission;
 use App\Models\Dispute;
 use App\Models\ProviderProfile;
 use App\Models\Review;
 use App\Models\Service;
+use App\Models\ServiceAddon;
 use App\Models\Transaction;
 use App\Models\User;
 use App\Services\Ranking\PersonalizationService;
@@ -36,12 +47,13 @@ use Illuminate\Support\Facades\Log;
 class BookingService
 {
     public function __construct(
-        private readonly BookingConflictService  $conflict,
-        private readonly PaymentService          $payment,
-        private readonly CommissionService       $commission,
-        private readonly InsuranceReserveService $reserve,
-        private readonly PersonalizationService  $personalization,
-        private readonly BookingStateMachine     $machine,
+        private readonly BookingConflictService   $conflict,
+        private readonly PaymentService           $payment,
+        private readonly CommissionService        $commission,
+        private readonly InsuranceReserveService  $reserve,
+        private readonly PersonalizationService   $personalization,
+        private readonly BookingStateMachine      $machine,
+        private readonly NotificationDispatcher   $notifications,
     ) {}
 
     // ── Create ───────────────────────────────────────────────────────────────
@@ -75,9 +87,31 @@ class BookingService
             throw new ApiException(ErrorCode::TIER_EXCEEDED, 'This provider has not completed identity verification yet.');
         }
 
-        $bookingAmount = (float) $service->base_price;
-        $tier          = TrustTier::from($profile->trust_tier);
-        $cap           = $tier->jobCapZmw();
+        // Compute the correct booking amount based on pricing model + add-ons.
+        $basePrice = (float) $service->base_price;
+
+        if ($service->pricing_model === 'HOURLY') {
+            $start    = new \DateTime($data['scheduled_start']);
+            $end      = new \DateTime($data['scheduled_end']);
+            $diffSecs = $end->getTimestamp() - $start->getTimestamp();
+            $hours    = max($diffSecs / 3600, 0);
+            $serviceCost = $basePrice * $hours;
+        } else {
+            $serviceCost = $basePrice;
+        }
+
+        $addonTotal = 0.0;
+        $addonIds   = $data['addon_ids'] ?? [];
+        if (! empty($addonIds)) {
+            $addonTotal = (float) ServiceAddon::where('service_id', $service->id)
+                ->whereIn('id', $addonIds)
+                ->sum('price');
+        }
+
+        $bookingAmount = round($serviceCost + $addonTotal, 2);
+
+        $tier = TrustTier::from($profile->trust_tier);
+        $cap  = $tier->jobCapZmw();
 
         if ($cap !== null && $bookingAmount > $cap) {
             throw new ApiException(
@@ -108,83 +142,106 @@ class BookingService
     private function createDirect(User $buyer, User $provider, Service $service, array $data, float $amount): Booking
     {
         $expiresAt = now()->addHours(config('booking.response_window_hours', 24));
+        $addonIds  = ! empty($data['addon_ids']) ? json_encode(array_map('intval', $data['addon_ids'])) : null;
+        $notes     = isset($data['notes']) && trim($data['notes']) !== '' ? trim($data['notes']) : null;
 
-        $id = DB::selectOne("
-            INSERT INTO bookings
-                (id, buyer_id, provider_id, service_id,
-                 amount, buyer_protection_fee,
-                 payment_mode, status, expires_at,
-                 scheduled_start, scheduled_end,
-                 delivery_location,
-                 delivery_location_label, delivery_location_region, delivery_location_source,
-                 created_at, updated_at)
-            VALUES
-                (gen_random_uuid(), ?, ?, ?,
-                 ?, 0,
-                 'DIRECT', 'REQUESTED', ?::timestamptz,
-                 ?::timestamptz, ?::timestamptz,
-                 ST_GeogFromText('POINT(' || ? || ' ' || ? || ')'),
-                 ?, ?, ?,
-                 NOW(), NOW())
-            RETURNING id
-        ", [
-            $buyer->id, $provider->id, $service->id,
-            $amount,
-            $expiresAt->toIso8601String(),
-            $data['scheduled_start'],
-            $data['scheduled_end'],
-            $data['delivery_lng'],
-            $data['delivery_lat'],
-            $data['delivery_location_label']  ?? null,
-            $data['delivery_location_region'] ?? null,
-            $data['delivery_location_source'] ?? null,
-        ])->id;
+        $booking = DB::transaction(function () use ($buyer, $provider, $service, $data, $amount, $expiresAt, $addonIds, $notes) {
+            $id = DB::selectOne("
+                INSERT INTO bookings
+                    (id, buyer_id, provider_id, service_id,
+                     amount, buyer_protection_fee,
+                     payment_mode, status, expires_at,
+                     scheduled_start, scheduled_end,
+                     delivery_location,
+                     delivery_location_label, delivery_location_region, delivery_location_source,
+                     notes, selected_addon_ids,
+                     created_at, updated_at)
+                VALUES
+                    (gen_random_uuid(), ?, ?, ?,
+                     ?, 0,
+                     'DIRECT', 'REQUESTED', ?::timestamptz,
+                     ?::timestamptz, ?::timestamptz,
+                     ST_GeogFromText('POINT(' || ? || ' ' || ? || ')'),
+                     ?, ?, ?,
+                     ?, ?::jsonb,
+                     NOW(), NOW())
+                RETURNING id
+            ", [
+                $buyer->id, $provider->id, $service->id,
+                $amount,
+                $expiresAt->toIso8601String(),
+                $data['scheduled_start'],
+                $data['scheduled_end'],
+                $data['delivery_lng'],
+                $data['delivery_lat'],
+                $data['delivery_location_label']  ?? null,
+                $data['delivery_location_region'] ?? null,
+                $data['delivery_location_source'] ?? null,
+                $notes,
+                $addonIds,
+            ])->id;
 
-        return $this->findOrFail($id, $buyer);
+            return $this->findOrFail($id, $buyer);
+        });
+
+        // Side effects AFTER commit — failures here never orphan the booking
+        $this->notify(new BookingRequested($booking, $this->buyerLabel($buyer)));
+        ExpireBookingJob::dispatch($booking->id)
+            ->delay(now()->addHours(config('booking.response_window_hours', 24)));
+
+        return $booking;
     }
 
     private function createEscrow(User $buyer, User $provider, Service $service, array $data, float $amount): Booking
     {
         $protectionFee = $this->commission->buyerProtectionFee($amount, $buyer->id, $provider->id);
+        $addonIds      = ! empty($data['addon_ids']) ? json_encode(array_map('intval', $data['addon_ids'])) : null;
+        $notes         = isset($data['notes']) && trim($data['notes']) !== '' ? trim($data['notes']) : null;
 
-        $id = DB::selectOne("
-            INSERT INTO bookings
-                (id, buyer_id, provider_id, service_id,
-                 amount, buyer_protection_fee,
-                 payment_mode, status,
-                 scheduled_start, scheduled_end,
-                 delivery_location,
-                 delivery_location_label, delivery_location_region, delivery_location_source,
-                 created_at, updated_at)
-            VALUES
-                (gen_random_uuid(), ?, ?, ?,
-                 ?, ?,
-                 'ESCROW', 'PENDING_PAYMENT',
-                 ?::timestamptz, ?::timestamptz,
-                 ST_GeogFromText('POINT(' || ? || ' ' || ? || ')'),
-                 ?, ?, ?,
-                 NOW(), NOW())
-            RETURNING id
-        ", [
-            $buyer->id, $provider->id, $service->id,
-            $amount, $protectionFee,
-            $data['scheduled_start'],
-            $data['scheduled_end'],
-            $data['delivery_lng'],
-            $data['delivery_lat'],
-            $data['delivery_location_label']  ?? null,
-            $data['delivery_location_region'] ?? null,
-            $data['delivery_location_source'] ?? null,
-        ])->id;
+        return DB::transaction(function () use ($buyer, $provider, $service, $data, $amount, $protectionFee, $addonIds, $notes) {
+            $id = DB::selectOne("
+                INSERT INTO bookings
+                    (id, buyer_id, provider_id, service_id,
+                     amount, buyer_protection_fee,
+                     payment_mode, status,
+                     scheduled_start, scheduled_end,
+                     delivery_location,
+                     delivery_location_label, delivery_location_region, delivery_location_source,
+                     notes, selected_addon_ids,
+                     created_at, updated_at)
+                VALUES
+                    (gen_random_uuid(), ?, ?, ?,
+                     ?, ?,
+                     'ESCROW', 'PENDING_PAYMENT',
+                     ?::timestamptz, ?::timestamptz,
+                     ST_GeogFromText('POINT(' || ? || ' ' || ? || ')'),
+                     ?, ?, ?,
+                     ?, ?::jsonb,
+                     NOW(), NOW())
+                RETURNING id
+            ", [
+                $buyer->id, $provider->id, $service->id,
+                $amount, $protectionFee,
+                $data['scheduled_start'],
+                $data['scheduled_end'],
+                $data['delivery_lng'],
+                $data['delivery_lat'],
+                $data['delivery_location_label']  ?? null,
+                $data['delivery_location_region'] ?? null,
+                $data['delivery_location_source'] ?? null,
+                $notes,
+                $addonIds,
+            ])->id;
 
-        return $this->findOrFail($id, $buyer);
+            return $this->findOrFail($id, $buyer);
+        });
     }
 
     // ── List ─────────────────────────────────────────────────────────────────
 
     public function list(User $user): LengthAwarePaginator
     {
-        return Booking::with(['service', 'buyer', 'provider', 'review'])
+        return Booking::with(['service.category', 'buyer', 'provider.providerProfile', 'review'])
             ->where(function ($q) use ($user) {
                 $q->where('buyer_id', $user->id)
                   ->orWhere('provider_id', $user->id);
@@ -323,7 +380,9 @@ class BookingService
             'agreed_amount' => $booking->agreed_amount ?? $booking->amount,
         ]);
 
-        return $this->findOrFail($id, $provider);
+        $result = $this->findOrFail($id, $provider);
+        $this->notify(new BookingAccepted($result));
+        return $result;
     }
 
     /**
@@ -346,7 +405,9 @@ class BookingService
             'agreed_amount' => $proposedAmount,
         ]);
 
-        return $this->findOrFail($id, $provider);
+        $result = $this->findOrFail($id, $provider);
+        $this->notify(new BookingQuoted($result));
+        return $result;
     }
 
     /**
@@ -374,19 +435,28 @@ class BookingService
 
         $booking->update(['status' => 'DECLINED']);
 
-        return $this->findOrFail($id, $provider);
+        $result = $this->findOrFail($id, $provider);
+        $this->notify(new BookingDeclined($result));
+        return $result;
     }
 
     /**
      * Record that direct payment was made/received (DIRECT mode only).
-     * Both buyer and provider may call this; it is purely informational.
+     *
+     * Two-party + informational: each side confirms independently. A single tap
+     * only records the calling party's confirmation (provider_marked_paid_at OR
+     * customer_marked_paid_at); the booking is "fully settled" only when BOTH are
+     * set. `payment_status` keeps its legacy "at least one side marked" meaning so
+     * other surfaces (customer bookings list) are unaffected. No money moves.
      */
     public function markPaid(string $id, User $user): Booking
     {
         $booking = Booking::find($id);
         if (! $booking) throw new NotFoundException('Booking');
 
-        if ($booking->buyer_id !== $user->id && $booking->provider_id !== $user->id) {
+        $isProvider = $booking->provider_id === $user->id;
+        $isBuyer    = $booking->buyer_id === $user->id;
+        if (! $isProvider && ! $isBuyer) {
             throw new ForbiddenException('You are not party to this booking.');
         }
 
@@ -400,9 +470,13 @@ class BookingService
             'payment_status'    => 'MARKED_PAID',
             'payment_marked_by' => $user->id,
             'payment_marked_at' => now(),
+            // Record only the calling party's side — never both from one tap.
+            $isProvider ? 'provider_marked_paid_at' : 'customer_marked_paid_at' => now(),
         ]);
 
-        return $this->findOrFail($id, $user);
+        $result = $this->findOrFail($id, $user);
+        $this->notify(new PaymentMarked($result, $isProvider ? 'provider' : 'customer'));
+        return $result;
     }
 
     /**
@@ -440,7 +514,9 @@ class BookingService
         $booking = $this->loadAndAuthorize($id, $provider, 'provider_id');
         $this->machine->assertTransition($booking, 'IN_PROGRESS');
         $booking->update(['status' => 'IN_PROGRESS']);
-        return $this->findOrFail($id, $provider);
+        $result = $this->findOrFail($id, $provider);
+        $this->notify(new BookingStarted($result));
+        return $result;
     }
 
     /**
@@ -451,7 +527,9 @@ class BookingService
         $booking = $this->loadAndAuthorize($id, $provider, 'provider_id');
         $this->machine->assertTransition($booking, 'DELIVERED');
         $booking->update(['status' => 'DELIVERED']);
-        return $this->findOrFail($id, $provider);
+        $result = $this->findOrFail($id, $provider);
+        $this->notify(new BookingDelivered($result));
+        return $result;
     }
 
     /**
@@ -479,7 +557,9 @@ class BookingService
             });
 
             $this->personalization->invalidate($booking->buyer_id);
-            return $this->findOrFail($id, $buyer);
+            $result = $this->findOrFail($id, $buyer);
+            $this->notify(new BookingCompleted($result));
+            return $result;
         }
 
         // ESCROW: payout hold logic
@@ -501,6 +581,7 @@ class BookingService
         });
 
         $this->personalization->invalidate($booking->buyer_id);
+        $this->notify(new BookingCompleted($booking));
 
         if ($eligibleAt->isPast()) {
             $this->payment->initiatePayout($booking->fresh()->load('service', 'provider'));
@@ -531,7 +612,7 @@ class BookingService
             );
         }
 
-        Review::create([
+        $review = Review::create([
             'booking_id'  => $booking->id,
             'reviewer_id' => $buyer->id,
             'reviewee_id' => $booking->provider_id,
@@ -539,6 +620,7 @@ class BookingService
             'comment'     => $comment !== null && trim($comment) !== '' ? trim($comment) : null,
         ]);
 
+        $this->notify(new ReviewCreated($review));
         $this->personalization->invalidate($buyer->id);
 
         return $this->findOrFail($id, $buyer);
@@ -711,7 +793,21 @@ class BookingService
         $booking->delivery_lat = $row->delivery_lat !== null ? (float) $row->delivery_lat : null;
         $booking->delivery_lng = $row->delivery_lng !== null ? (float) $row->delivery_lng : null;
 
-        return $booking->load(['service', 'buyer', 'provider', 'transactions', 'commission', 'dispute', 'review']);
+        $booking->load(['service.category', 'buyer', 'provider.providerProfile', 'transactions', 'commission', 'dispute', 'review']);
+
+        // Provider-facing, qualitative buyer trust hint (§10.2) + privacy-safe label.
+        $booking->setAttribute('buyer_trust_hint', $this->trustHint($booking->buyer, $booking->provider_id));
+        $booking->setAttribute('buyer_label',      $this->buyerLabel($booking->buyer));
+
+        // Auto-confirm deadline while DELIVERED (DELIVERED→COMPLETED after autoconfirm_hours).
+        $booking->setAttribute(
+            'auto_release_at',
+            $booking->status === 'DELIVERED' && $booking->updated_at
+                ? $booking->updated_at->copy()->addHours((int) config('booking.autoconfirm_hours', 24))->toISOString()
+                : null,
+        );
+
+        return $booking;
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -748,6 +844,18 @@ class BookingService
                 ErrorCode::VALIDATION_ERROR,
                 'This action is only available for DIRECT mode bookings.',
             );
+        }
+    }
+
+    /** Fire a notification without letting failures crash the business operation. */
+    private function notify(\App\Events\NotifiableEvent $event): void
+    {
+        try {
+            $this->notifications->dispatch($event);
+        } catch (\Throwable $e) {
+            Log::error('BookingService: notification failed', [
+                'type' => $event->notificationType(), 'error' => $e->getMessage(),
+            ]);
         }
     }
 

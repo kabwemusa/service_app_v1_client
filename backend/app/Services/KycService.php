@@ -73,17 +73,19 @@ class KycService
      * Dispatches VerifyIdentityDocumentJob which runs the full pipeline.
      */
     public function submitDocument(
-        User         $user,
-        UploadedFile $documentImage,
-        UploadedFile $selfieImage,
-        string       $docType,
+        User          $user,
+        UploadedFile  $documentImage,
+        UploadedFile  $selfieImage,
+        string        $docType,
+        ?UploadedFile $documentBackImage = null,
     ): IdentityDocument {
         $this->requireProviderProfile($user);
         $this->requireTierAtLeast($user, TrustTier::BASIC);
 
-        // Persist both files so the async job can access them
-        $docPath    = $documentImage->store("kyc/{$user->id}/docs", 'local');
-        $selfiePath = $selfieImage->store("kyc/{$user->id}/selfies", 'local');
+        // Persist files so the async job can access them
+        $docPath     = $documentImage->store("kyc/{$user->id}/docs", 'local');
+        $docBackPath = $documentBackImage?->store("kyc/{$user->id}/docs", 'local');
+        $selfiePath  = $selfieImage->store("kyc/{$user->id}/selfies", 'local');
 
         // Resubmission: reuse the existing open document (don't create a
         // duplicate) so the admin sees one record with the full progression.
@@ -98,7 +100,7 @@ class KycService
                 'status'              => DocStatus::MANUAL_REVIEW->value, // back to the human queue
                 'confidence_score'    => null,
                 'doc_number_hash'     => null,
-                'extracted_fields'    => ['selfie_path' => $selfiePath],
+                'extracted_fields'    => array_filter(['selfie_path' => $selfiePath, 'doc_back_path' => $docBackPath]),
                 'review_notes'        => null,
                 'reviewed_at'         => null,
                 'reviewer_admin_id'   => null,

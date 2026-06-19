@@ -8,26 +8,22 @@ export const spacing = {
 } as const;
 
 export const radius = {
-  sm: 10,
-  md: 14,
+  // Canonical content-container radius (v3.1 §2 — small, ≤8px). `sm` is the
+  // ONLY radius a Card/Divider/container should use.
+  sm: 8,
+  md: 14,   // pills, sheets, FAB — NOT content cards
   lg: 20,
   xl: 28,
   full: 9999,
 } as const;
 
+/**
+ * v3.1 §2: "flat white cards … No drop shadows, no glow." The design language is
+ * shadowless, so these tokens are intentionally empty — `...shadow.card` spreads
+ * nothing. Kept (rather than deleted) so the many existing call sites stay valid
+ * while guaranteeing zero elevation renders anywhere. Do not add shadow values here.
+ */
 export const shadow = {
-  card: {
-    shadowColor: "#0F172A",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.08,
-    shadowRadius: 16,
-    elevation: 6,
-  },
-  modal: {
-    shadowColor: "#0F172A",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 24,
-    elevation: 12,
-  },
+  card:  {},
+  modal: {},
 } as const;

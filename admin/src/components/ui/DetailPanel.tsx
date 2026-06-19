@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -95,7 +95,7 @@ export function DetailPanel({
       <div
         ref={panelRef}
         className={cn(
-          'relative ml-auto flex h-full w-full flex-col bg-white shadow-xl',
+          'relative ml-auto flex h-full w-full flex-col bg-white',
           'dark:bg-slate-900',
           WIDTH_CLASSES[width],
         )}

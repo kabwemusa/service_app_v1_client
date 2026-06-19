@@ -68,6 +68,7 @@ export interface VerificationSubmission {
 
 export type ArtifactKind =
   | 'id_document'
+  | 'id_document_back'
   | 'selfie'
   | 'proof_of_address'
   | 'certificate'

@@ -407,9 +407,12 @@ class SearchService
                 pp.trust_tier,
                 pp.service_radius_km,
                 pp.response_time_p50_mins,
+                COALESCE(NULLIF(pp.base_location_label, ''), u.primary_location_label) AS base_location_label,
                 pp.response_rate_7d,
                 pp.cancellation_rate_30d,
                 (ps.provider_id IS NOT NULL)        AS has_promo_slot,
+                (SELECT array_to_json(COALESCE(array_agg(sp.path ORDER BY sp.display_order), '{}'))
+                 FROM service_photos sp WHERE sp.service_id = s.id LIMIT 1) AS photo_urls,
                 cat.name  AS category_name,
                 cat.id    AS cat_id,
                 cat.icon  AS cat_icon,

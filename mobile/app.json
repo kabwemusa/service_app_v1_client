@@ -41,6 +41,15 @@
         {
           "locationWhenInUsePermission": "Allow Sebenza to use your location to find trusted providers nearby."
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#7B1A3A",
+          "defaultChannel": "default",
+          "sounds": []
+        }
       ]
     ]
   }

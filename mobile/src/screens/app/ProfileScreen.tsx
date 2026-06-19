@@ -13,7 +13,7 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import { useAuthStore } from "../../store/authStore";
-import { palette, radius as r, shadow, spacing, typography } from "../../theme";
+import { palette, radius as r, spacing, typography } from "../../theme";
 
 interface MenuItemProps {
   icon: React.ComponentProps<typeof Ionicons>["name"];
@@ -177,7 +177,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     alignItems: "center",
     marginBottom: spacing.lg,
-    // ...shadow.card,
+
   },
   avatar: {
     width: 78,
@@ -213,11 +213,10 @@ const styles = StyleSheet.create({
   },
   card: {
     backgroundColor: palette.surface,
-    borderRadius: r.lg,
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
     overflow: "hidden",
-    ...shadow.card,
   },
   switchCard: { padding: spacing.md, gap: spacing.sm },
   switchHint: {

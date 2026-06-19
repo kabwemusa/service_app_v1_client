@@ -1,17 +1,17 @@
 import {
-  PlusJakartaSans_400Regular,
-  PlusJakartaSans_500Medium,
-  PlusJakartaSans_600SemiBold,
-  PlusJakartaSans_700Bold,
-  PlusJakartaSans_800ExtraBold,
+  DMSans_400Regular,
+  DMSans_500Medium,
+  DMSans_600SemiBold,
+  DMSans_700Bold,
+  DMSans_800ExtraBold,
   useFonts,
-} from "@expo-google-fonts/plus-jakarta-sans";
+} from "@expo-google-fonts/dm-sans";
 import { Ionicons } from "@expo/vector-icons";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
-import React, { useEffect } from "react";
+import React, { useEffect, useRef } from "react";
 import { View } from "react-native";
 import { PaperProvider } from "react-native-paper";
 import { SkeletonBlock } from "./src/components/ui/SkeletonBlock";
@@ -32,17 +32,23 @@ import ProfileScreen from "./src/screens/app/ProfileScreen";
 import SavedLocationsScreen from "./src/screens/app/SavedLocationsScreen";
 import SearchScreen from "./src/screens/app/SearchScreen";
 import ServiceDetailScreen from "./src/screens/app/ServiceDetailScreen";
+import NotificationsScreen from "./src/screens/app/NotificationsScreen";
+import NotificationSettingsScreen from "./src/screens/app/NotificationSettingsScreen";
+import AllReviewsScreen from "./src/screens/provider/AllReviewsScreen";
 import CreateServiceScreen from "./src/screens/provider/CreateServiceScreen";
 import EarningsScreen from "./src/screens/provider/EarningsScreen";
 import HubScreen from "./src/screens/provider/HubScreen";
 import IncomingRequestsScreen from "./src/screens/provider/IncomingRequestsScreen";
 import MyServicesScreen from "./src/screens/provider/MyServicesScreen";
+import ProviderAccountScreen from "./src/screens/provider/ProviderAccountScreen";
+import ProviderBookingDetailScreen from "./src/screens/provider/ProviderBookingDetailScreen";
 import ProviderProfileEditScreen from "./src/screens/provider/ProviderProfileEditScreen";
 import ProviderProfileScreen from "./src/screens/provider/ProviderProfileScreen";
 import ProviderSetupScreen from "./src/screens/provider/ProviderSetupScreen";
-import ServicePhotosScreen from "./src/screens/provider/ServicePhotosScreen";
+import { usePushNotifications } from "./src/hooks/usePushNotifications";
 import { useAuthStore } from "./src/store/authStore";
 import { useLocationStore } from "./src/store/locationStore";
+import { useNotificationStore } from "./src/store/notificationStore";
 import { appTheme, palette, shadow, spacing } from "./src/theme";
 import {
   SafeAreaProvider,
@@ -82,6 +88,9 @@ function HomeStackNavigator() {
         name="ProviderProfile"
         component={ProviderProfileScreen}
       />
+      <HomeStack.Screen name="AllReviews" component={AllReviewsScreen} />
+      <HomeStack.Screen name="Notifications" component={NotificationsScreen} />
+      <HomeStack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
     </HomeStack.Navigator>
   );
 }
@@ -103,7 +112,10 @@ function SearchStackNavigator() {
         name="ProviderProfile"
         component={ProviderProfileScreen}
       />
+      <SearchStack.Screen name="AllReviews" component={AllReviewsScreen} />
       <SearchStack.Screen name="BrowseMain" component={BrowseScreen} />
+      <SearchStack.Screen name="Notifications" component={NotificationsScreen} />
+      <SearchStack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
     </SearchStack.Navigator>
   );
 }
@@ -116,6 +128,8 @@ function BookingsStackNavigator() {
         name="BookingDetail"
         component={BookingDetailScreen}
       />
+      <BookingsStack.Screen name="Notifications" component={NotificationsScreen} />
+      <BookingsStack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
     </BookingsStack.Navigator>
   );
 }
@@ -130,6 +144,8 @@ function CustomerProfileStackNavigator() {
         name="SavedLocations"
         component={SavedLocationsScreen}
       />
+      <CustProfileStack.Screen name="Notifications" component={NotificationsScreen} />
+      <CustProfileStack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
     </CustProfileStack.Navigator>
   );
 }
@@ -149,6 +165,8 @@ function HubStackNavigator() {
       {/* Verification lives in the Hub flow too — the §9.1 checklist and the
           tier-unlock card both deep-link here. */}
       <HubStack.Screen name="Kyc" component={KycScreen} />
+      <HubStack.Screen name="Notifications" component={NotificationsScreen} />
+      <HubStack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
     </HubStack.Navigator>
   );
 }
@@ -160,10 +178,13 @@ function RequestsStackNavigator() {
         name="RequestsMain"
         component={IncomingRequestsScreen}
       />
+      {/* Provider booking detail — its own redesigned screen (customer keeps BookingDetailScreen). */}
       <RequestsStack.Screen
         name="BookingDetail"
-        component={BookingDetailScreen}
+        component={ProviderBookingDetailScreen}
       />
+      <RequestsStack.Screen name="Notifications" component={NotificationsScreen} />
+      <RequestsStack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
     </RequestsStack.Navigator>
   );
 }
@@ -172,14 +193,13 @@ function ServicesStackNavigator() {
   return (
     <ServicesStack.Navigator screenOptions={{ headerShown: false }}>
       <ServicesStack.Screen name="ServicesMain" component={MyServicesScreen} />
+      {/* Single tabbed editor — photos live in a tab, not a separate route. */}
       <ServicesStack.Screen
         name="CreateService"
         component={CreateServiceScreen}
       />
-      <ServicesStack.Screen
-        name="ServicePhotos"
-        component={ServicePhotosScreen}
-      />
+      <ServicesStack.Screen name="Notifications" component={NotificationsScreen} />
+      <ServicesStack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
     </ServicesStack.Navigator>
   );
 }
@@ -188,6 +208,8 @@ function EarningsStackNavigator() {
   return (
     <EarningsStack.Navigator screenOptions={{ headerShown: false }}>
       <EarningsStack.Screen name="EarningsMain" component={EarningsScreen} />
+      <EarningsStack.Screen name="Notifications" component={NotificationsScreen} />
+      <EarningsStack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
     </EarningsStack.Navigator>
   );
 }
@@ -195,13 +217,19 @@ function EarningsStackNavigator() {
 function ProviderProfileStackNavigator() {
   return (
     <ProvProfileStack.Navigator screenOptions={{ headerShown: false }}>
-      <ProvProfileStack.Screen name="ProfileMain" component={ProfileScreen} />
-      <ProvProfileStack.Screen name="EditProfile" component={EditProfileScreen} />
+      {/* Provider's own Profile + Account screen (customer keeps app/ProfileScreen). */}
+      <ProvProfileStack.Screen name="ProfileMain" component={ProviderAccountScreen} />
+      <ProvProfileStack.Screen name="ProviderProfileEdit" component={ProviderProfileEditScreen} />
+      {/* Public profile, for "Preview as customer". */}
+      <ProvProfileStack.Screen name="ProviderProfile" component={ProviderProfileScreen} />
+      <ProvProfileStack.Screen name="AllReviews" component={AllReviewsScreen} />
       <ProvProfileStack.Screen name="Kyc" component={KycScreen} />
       <ProvProfileStack.Screen
         name="SavedLocations"
         component={SavedLocationsScreen}
       />
+      <ProvProfileStack.Screen name="Notifications" component={NotificationsScreen} />
+      <ProvProfileStack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
     </ProvProfileStack.Navigator>
   );
 }
@@ -213,6 +241,20 @@ function AppTabs() {
   const { activeRole } = useAuthStore();
   const isProvider = activeRole === "PROVIDER";
   const tabBarReserve = 20 + spacing.md + insets.bottom;
+
+  const fetchUnread = useNotificationStore((s) => s.fetchUnreadCount);
+  const syncClock = useNotificationStore((s) => s.syncClock);
+  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+
+  // OS-level push notifications (like WhatsApp)
+  usePushNotifications();
+
+  useEffect(() => {
+    fetchUnread();
+    syncClock();
+    pollRef.current = setInterval(fetchUnread, 60_000);
+    return () => clearInterval(pollRef.current);
+  }, []);
 
   // const tabBarStyle = {
   //   backgroundColor: "#ffffff",
@@ -271,38 +313,55 @@ function AppTabs() {
       backgroundColor: palette.background,
     },
     tabBarLabelStyle: {
-      fontFamily: "PlusJakartaSans_500Medium",
+      fontFamily: "DMSans_500Medium",
       fontSize: 12,
       marginBottom: 2,
     },
   };
 
+  const providerIcons: Record<string, [React.ComponentProps<typeof Ionicons>["name"], React.ComponentProps<typeof Ionicons>["name"]]> = {
+    Hub:      ["grid-outline",      "grid"],
+    Requests: ["mail-outline",      "mail"],
+    Services: ["construct-outline", "construct"],
+    Earnings: ["cash-outline",      "cash"],
+    Profile:  ["person-outline",    "person"],
+  };
+
+  const customerIcons: Record<string, [React.ComponentProps<typeof Ionicons>["name"], React.ComponentProps<typeof Ionicons>["name"]]> = {
+    Home:     ["home-outline",     "home"],
+    Search:   ["search-outline",   "search"],
+    Bookings: ["calendar-outline", "calendar"],
+    Profile:  ["person-outline",   "person"],
+  };
+
+  const renderTabIcon = (
+    iconMap: typeof providerIcons,
+  ) => ({ route }: { route: { name: string } }) => ({
+    ...sharedOptions,
+    tabBarIcon: ({ color, size, focused }: { color: string; size: number; focused: boolean }) => {
+      const pair = iconMap[route.name] ?? ["ellipse-outline", "ellipse"];
+      const iconName = focused ? pair[1] : pair[0];
+      return (
+        <View style={{ alignItems: "center", justifyContent: "center" }}>
+          {focused && (
+            <View style={{
+              position: "absolute",
+              top: -2,
+              width: 32,
+              height: 32,
+              borderRadius: 16,
+              backgroundColor: palette.primaryLight,
+            }} />
+          )}
+          <Ionicons name={iconName} size={size} color={color} />
+        </View>
+      );
+    },
+  });
+
   if (isProvider) {
     return (
-      <Tab.Navigator
-        screenOptions={({ route }) => ({
-          ...sharedOptions,
-          tabBarIcon: ({ color, size }) => {
-            const icons: Record<
-              string,
-              React.ComponentProps<typeof Ionicons>["name"]
-            > = {
-              Hub: "grid-outline",
-              Requests: "mail-outline",
-              Services: "construct-outline",
-              Earnings: "cash-outline",
-              Profile: "person-outline",
-            };
-            return (
-              <Ionicons
-                name={icons[route.name] ?? "ellipse-outline"}
-                size={size}
-                color={color}
-              />
-            );
-          },
-        })}
-      >
+      <Tab.Navigator screenOptions={renderTabIcon(providerIcons)}>
         <Tab.Screen name="Hub" component={HubStackNavigator} />
         <Tab.Screen name="Requests" component={RequestsStackNavigator} />
         <Tab.Screen name="Services" component={ServicesStackNavigator} />
@@ -313,29 +372,7 @@ function AppTabs() {
   }
 
   return (
-    <Tab.Navigator
-      screenOptions={({ route }) => ({
-        ...sharedOptions,
-        tabBarIcon: ({ color, size }) => {
-          const icons: Record<
-            string,
-            React.ComponentProps<typeof Ionicons>["name"]
-          > = {
-            Home: "home-outline",
-            Search: "search-outline",
-            Bookings: "calendar-outline",
-            Profile: "person-outline",
-          };
-          return (
-            <Ionicons
-              name={icons[route.name] ?? "ellipse-outline"}
-              size={size}
-              color={color}
-            />
-          );
-        },
-      })}
-    >
+    <Tab.Navigator screenOptions={renderTabIcon(customerIcons)}>
       <Tab.Screen name="Home" component={HomeStackNavigator} />
       <Tab.Screen name="Search" component={SearchStackNavigator} />
       <Tab.Screen name="Bookings" component={BookingsStackNavigator} />
@@ -348,11 +385,11 @@ function AppTabs() {
 
 export default function App() {
   const [fontsLoaded] = useFonts({
-    PlusJakartaSans_400Regular,
-    PlusJakartaSans_500Medium,
-    PlusJakartaSans_600SemiBold,
-    PlusJakartaSans_700Bold,
-    PlusJakartaSans_800ExtraBold,
+    DMSans_400Regular,
+    DMSans_500Medium,
+    DMSans_600SemiBold,
+    DMSans_700Bold,
+    DMSans_800ExtraBold,
   });
 
   const { step, hydrate, logout } = useAuthStore();

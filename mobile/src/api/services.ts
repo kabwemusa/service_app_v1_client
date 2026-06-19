@@ -41,6 +41,8 @@ export interface ServiceProvider {
   v_reviews:               number;
   /** null = provider has no booking history yet — render "–", not 0%. */
   completion_rate:         number | null;
+  // Portfolio: previous-work photos (storage paths — render via storageUrl)
+  portfolio_images:        string[];
   // Earned badges (v3 §9.2)
   badges:                  string[];
 }
@@ -73,6 +75,8 @@ export interface Service {
   duration_estimate_mins:  number | null;
   status:                  ServiceStatus;
   is_pinned:               boolean;
+  // Completed-booking count — only populated on the provider's own list (listMine).
+  bookings_count?:         number | null;
   latitude:    number | null;
   longitude:   number | null;
   distance_km: number | null;
@@ -150,6 +154,10 @@ export const servicesApi = {
 
   deletePhoto: (serviceId: string, photoId: number) =>
     api.delete<null>(`/provider/services/${serviceId}/photos/${photoId}`),
+
+  // Persist gallery order — index 0 is the cover (§5.4).
+  reorderPhotos: (serviceId: string, photoIds: number[]) =>
+    api.put<ServicePhoto[]>(`/provider/services/${serviceId}/photos/order`, { photo_ids: photoIds }),
 
   commissionPreview: (categoryId: number, price: number) =>
     api.get<CommissionPreview>('/provider/services/commission-preview', {

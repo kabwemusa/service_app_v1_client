@@ -1,56 +1,255 @@
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
-import React, { useEffect, useState } from 'react';
-import { Image, ScrollView, StyleSheet, View } from 'react-native';
-import { Chip, Text, TouchableRipple } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { SkeletonBlock } from '../../components/ui/SkeletonBlock';
-import { MarkdownView } from '../../components/ui/MarkdownView';
-import { EARNED_BADGE_META, VettingBadge } from '../../components/discovery/VettingBadge';
-import { PublicProviderProfile, PublicReview, providersApi } from '../../api/providers';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Dimensions, FlatList, Modal, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { Text, TouchableRipple } from 'react-native-paper';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { storageUrl } from '../../api/client';
 import { ApiError } from '../../api/errors';
+import { PublicProviderProfile, PublicReview, PublicService, providersApi } from '../../api/providers';
+import { BookingSheet } from '../../components/booking/BookingSheet';
+import { EARNED_BADGE_META, VettingBadge } from '../../components/discovery/VettingBadge';
+import {
+  RankedCardData,
+  RankedServiceCard,
+} from '../../components/discovery/RankedServiceCard';
+import { MarkdownView } from '../../components/ui/MarkdownView';
+import { SkeletonBlock } from '../../components/ui/SkeletonBlock';
+import { TabItem, Tabs } from '../../components/ui/Tabs';
 import { useSnackbar } from '../../providers/SnackbarProvider';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { palette, radius as r, spacing, typography } from '../../theme';
+import { fontFamily } from '../../theme/typography';
 
-const DAYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'] as const;
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+const HAIRLINE = StyleSheet.hairlineWidth;
+
+const LANG_LABELS: Record<string, string> = { en: 'English', ny: 'Nyanja', bem: 'Bemba', ton: 'Tonga' };
+
+function resolveImg(path: string | null): string | null {
+  if (!path) return null;
+  return path.startsWith('http') ? path : storageUrl(path);
+}
+
+function initialsOf(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0].toUpperCase())
+    .join('') || '?';
+}
+
+function fmtResponse(mins: number | null): string {
+  if (mins == null) return '–';
+  if (mins < 60) return `${mins}m`;
+  return `${Math.round(mins / 60)}h`;
+}
+
+// Map a slim PublicService onto the canonical RankedServiceCard shape. Provider
+// trust signals come from the profile so the shared card renders faithfully;
+// distance is null (no coordinates), completed_job_count null (no rising-star on
+// a provider's own page), DIRECT-mode pilot.
+function publicServiceToCard(svc: PublicService, profile: PublicProviderProfile): RankedCardData {
+  return {
+    id:            svc.id,
+    title:         svc.title,
+    pricing_model: svc.pricing_model,
+    base_price:    svc.base_price,
+    payment_mode:  'DIRECT',
+    category:      { id: svc.category.id, name: svc.category.name, icon: null },
+    photoPath:     null,
+    distance_km:   null,
+    placement:     'organic',
+    completed_job_count: null,
+    provider: {
+      display_name:           profile.display_name,
+      avatar_url:             resolveImg(profile.avatar_url),
+      r_raw:                  profile.r_raw,
+      v_reviews:              profile.v_reviews,
+      trust_tier:             profile.trust_tier,
+      response_time_p50_mins: profile.response_time_p50_mins,
+    },
+  };
+}
+
+type TabKey = 'services' | 'about' | 'reviews';
+const REVIEW_PREVIEW = 5;
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+
+// ── Full-screen image lightbox ────────────────────────────────────────────────
+
+function WorksLightbox({
+  images,
+  startIndex,
+  visible,
+  onClose,
+}: {
+  images: string[];   // fully resolved URIs
+  startIndex: number;
+  visible: boolean;
+  onClose: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const listRef = useRef<FlatList>(null);
+  const [current, setCurrent] = useState(startIndex);
+
+  // Sync index and scroll position each time the lightbox opens
+  useEffect(() => {
+    if (!visible) return;
+    setCurrent(startIndex);
+    // FlatList needs one tick to mount before scrollToIndex works
+    const t = setTimeout(() => {
+      listRef.current?.scrollToIndex({ index: startIndex, animated: false });
+    }, 30);
+    return () => clearTimeout(t);
+  }, [visible, startIndex]);
+
+  return (
+    <Modal
+      visible={visible}
+      transparent={false}
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={onClose}
+      accessibilityViewIsModal
+    >
+      <View style={lbStyles.root}>
+        {/* Header: counter + close */}
+        <View style={[lbStyles.header, { paddingTop: insets.top + spacing.xs }]}>
+          <Text style={lbStyles.counter}>{current + 1} / {images.length}</Text>
+          <TouchableOpacity
+            onPress={onClose}
+            style={lbStyles.closeBtn}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+          >
+            <Ionicons name="close" size={22} color="#fff" />
+          </TouchableOpacity>
+        </View>
+
+        {/* Paginated full-screen image strip */}
+        <FlatList
+          ref={listRef}
+          data={images}
+          keyExtractor={(uri) => uri}
+          horizontal
+          pagingEnabled
+          showsHorizontalScrollIndicator={false}
+          initialScrollIndex={startIndex}
+          getItemLayout={(_, index) => ({
+            length: SCREEN_W,
+            offset: SCREEN_W * index,
+            index,
+          })}
+          onMomentumScrollEnd={(e) => {
+            setCurrent(Math.round(e.nativeEvent.contentOffset.x / SCREEN_W));
+          }}
+          renderItem={({ item: uri }) => (
+            <View style={lbStyles.slide}>
+              <Image
+                source={{ uri }}
+                style={lbStyles.fullImg}
+                contentFit="contain"
+                cachePolicy="memory-disk"
+                accessibilityLabel="Work photo"
+              />
+            </View>
+          )}
+        />
+      </View>
+    </Modal>
+  );
+}
+
+const lbStyles = StyleSheet.create({
+  root:     { flex: 1, backgroundColor: '#000' },
+  header:   {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.sm,
+  },
+  counter:  { fontFamily: fontFamily.medium, fontSize: 14, color: '#fff' },
+  closeBtn: {
+    width: 40, height: 40, borderRadius: r.full,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  slide:    { width: SCREEN_W, height: SCREEN_H, justifyContent: 'center' },
+  fullImg:  { width: SCREEN_W, height: SCREEN_H },
+});
+
+// ── Screen ────────────────────────────────────────────────────────────────────
 
 export default function ProviderProfileScreen({ route, navigation }: any) {
   const { providerId } = route.params as { providerId: string };
-  const [profile, setProfile] = useState<PublicProviderProfile | null>(null);
-  const [loading, setLoading] = useState(true);
   const { showError } = useSnackbar();
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      try {
-        const data = await providersApi.getProfile(providerId);
-        setProfile(data);
-      } catch (e) {
-        showError(e instanceof ApiError ? e.message : 'Failed to load profile.');
-        navigation.goBack();
-      } finally {
-        setLoading(false);
+  const [profile,  setProfile]  = useState<PublicProviderProfile | null>(null);
+  const [loading,  setLoading]  = useState(true);
+  const [offline,  setOffline]  = useState(false);
+  const [tab,      setTab]      = useState<TabKey>('services');
+  const [showAllReviews, setShowAllReviews] = useState(false);
+  const [bookingFor, setBookingFor] = useState<PublicService | null>(null);
+  const [lbImages, setLbImages] = useState<string[]>([]);
+  const [lbIndex, setLbIndex] = useState(0);
+  const [lbOpen, setLbOpen] = useState(false);
+
+  const scrollRef  = useRef<ScrollView>(null);
+  const headerH    = useRef(0);
+
+  const load = useCallback(async () => {
+    try {
+      const data = await providersApi.getProfile(providerId);
+      setProfile(data);
+      setOffline(false);
+    } catch (e) {
+      const apiErr = e instanceof ApiError ? e : null;
+      const isNetwork = apiErr?.message?.toLowerCase().includes('network');
+      // Keep the last-good profile visible behind an offline notice; only bail
+      // out to an error state when we have nothing cached to show.
+      if (isNetwork && profile) {
+        setOffline(true);
+      } else {
+        showError(apiErr?.message ?? 'Failed to load profile.');
+        if (!profile) navigation.goBack();
       }
-    })();
+    } finally {
+      setLoading(false);
+    }
+  }, [providerId, profile, navigation, showError]);
+
+  useEffect(() => {
+    setLoading(true);
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providerId]);
 
-  if (loading || !profile) {
+  // Tab switch resets scroll back to the (sticky) tab strip.
+  const onTabChange = (key: string) => {
+    Haptics.selectionAsync();
+    setTab(key as TabKey);
+    setShowAllReviews(false);
+    scrollRef.current?.scrollTo({ y: headerH.current, animated: false });
+  };
+
+  if (loading && !profile) {
     return (
-      <SafeAreaView style={styles.safe}>
+      <SafeAreaView style={styles.safe} edges={['top']}>
         <ProfileSkeleton />
       </SafeAreaView>
     );
   }
+  if (!profile) return <SafeAreaView style={styles.safe} edges={['top']} />;
 
-  // null = no history yet (backend v3.2 §4.1) — show "–", never a fake 0%
-  const completionLabel = profile.completion_rate != null
-    ? `${Math.round(profile.completion_rate * 100)}%`
-    : '–';
-  const matrix = profile.profile.availability_matrix;
   const displayName = profile.display_name ?? 'Provider';
+  const avatar      = resolveImg(profile.avatar_url);
+  const cover       = resolveImg(profile.cover_image_url);
+  const isVerified  = profile.trust_tier >= 2;
 
   // Badges: provider-featured first, then the rest of what they've earned.
   const featured = profile.highlights?.featured_badges ?? [];
@@ -59,214 +258,410 @@ export default function ProviderProfileScreen({ route, navigation }: any) {
     ...(profile.earned_badges ?? []).filter((b) => !featured.includes(b)),
   ];
 
-  // Portfolio: featured photos first, then the rest.
-  const featuredPhotos = profile.highlights?.featured_photo_keys ?? [];
-  const portfolio = [
-    ...featuredPhotos,
-    ...(profile.portfolio_images ?? []).filter((p) => !featuredPhotos.includes(p)),
+  // Services: pinned/highlighted first, then the rest (active only — backend).
+  const services = [...(profile.services ?? [])].sort(
+    (a, b) => Number(b.is_pinned) - Number(a.is_pinned),
+  );
+
+  const tabs: TabItem[] = [
+    { key: 'services', label: 'Services', count: services.length },
+    { key: 'about',    label: 'About' },
+    { key: 'reviews',  label: 'Reviews', count: profile.v_reviews },
   ];
 
-  const sinceLabel = profile.year_started ? `Since ${profile.year_started}` : null;
-  const languagesLabel = (profile.languages ?? []).length > 0
-    ? profile.languages.map((c) => ({ en: 'English', ny: 'Nyanja', bem: 'Bemba', ton: 'Tonga' }[c] ?? c)).join(' · ')
-    : null;
-
   return (
-    <SafeAreaView style={styles.safe}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-        {/* Hero gradient */}
-        <LinearGradient
-          colors={['#7B1A3A', '#C2476A']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.hero}
-        >
-          <TouchableRipple
-            onPress={() => navigation.goBack()}
-            borderless
-            style={styles.backBtn}
-          >
-            <Ionicons name="arrow-back" size={20} color="#FFFFFF" />
-          </TouchableRipple>
-
-          <View style={styles.avatarRing}>
-            {profile.avatar_url ? (
-              <Image
-                source={{ uri: profile.avatar_url.startsWith('http') ? profile.avatar_url : storageUrl(profile.avatar_url) }}
-                style={styles.avatarImage}
-                accessibilityRole="image"
-                accessibilityLabel={`${displayName}'s profile photo`}
-              />
-            ) : (
-              <MaterialCommunityIcons name="account" size={44} color={palette.primary} />
-            )}
-          </View>
-          <Text style={styles.heroName}>{displayName}</Text>
-          <VettingBadge trustTier={profile.trust_tier} size="sm" />
-          {(sinceLabel || profile.base_location_label) && (
-            <Text style={styles.heroMeta}>
-              {[profile.base_location_label, sinceLabel].filter(Boolean).join(' · ')}
-            </Text>
-          )}
-        </LinearGradient>
-
-        {/* Earned & featured badges */}
-        {badges.length > 0 && (
-          <View style={styles.badgeRow}>
-            {badges.map((key) => {
-              const meta = EARNED_BADGE_META[key];
-              if (!meta) return null;
-              return (
-                <View key={key} style={[styles.badgeChip, { borderColor: meta.color }]}>
-                  <Ionicons name={meta.icon as any} size={12} color={meta.color} />
-                  <Text style={[styles.badgeChipText, { color: meta.color }]}>{meta.label}</Text>
-                </View>
-              );
-            })}
-          </View>
-        )}
-
-        {/* Stats strip */}
-        <View style={styles.statsStrip}>
-          <StatCell icon="star" iconColor={palette.warning} value={profile.r_raw.toFixed(1)} label="Rating" />
-          <View style={styles.statDivider} />
-          <StatCell icon="comment-multiple-outline" iconColor={palette.primary} value={String(profile.v_reviews)} label="Reviews" />
-          <View style={styles.statDivider} />
-          <StatCell icon="check-circle-outline" iconColor={palette.success} value={completionLabel} label="Completion" />
-          <View style={styles.statDivider} />
-          <StatCell icon="briefcase-check-outline" iconColor={palette.secondary} value={String(profile.jobs_done ?? 0)} label="Jobs done" />
+    <SafeAreaView style={styles.safe} edges={['top']}>
+      {offline && (
+        <View style={styles.offlineBar}>
+          <Ionicons name="cloud-offline-outline" size={14} color={palette.warning} />
+          <Text style={styles.offlineTxt}>Offline — showing saved profile</Text>
         </View>
+      )}
 
-        <View style={styles.body}>
-          {/* Bio */}
-          {!!profile.bio && (
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>About</Text>
-              <View style={styles.card}>
-                <MarkdownView>{profile.bio}</MarkdownView>
-              </View>
+      <ScrollView
+        ref={scrollRef}
+        showsVerticalScrollIndicator={false}
+        stickyHeaderIndices={[1]}
+        contentContainerStyle={{ paddingBottom: spacing.xxl }}
+      >
+        {/* ── [0] Persistent header ───────────────────────────────── */}
+        <View onLayout={(e) => { headerH.current = e.nativeEvent.layout.height; }}>
+          {/* Cover band (flat — image or solid tint, no gradient/shadow) */}
+          <View style={styles.cover}>
+            {cover && (
+              <Image source={{ uri: cover }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} />
+            )}
+            <TouchableOpacity
+              style={styles.backBtn}
+              onPress={() => navigation.goBack()}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Go back"
+            >
+              <Ionicons name="chevron-back" size={22} color={palette.textPrimary} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Identity */}
+          <View style={styles.identity}>
+            {/* Public profile photo — prominent, circular, initials fallback.
+                Never the private KYC selfie (avatar_url is the public photo). */}
+            <View style={styles.avatarRing}>
+              {avatar ? (
+                <Image
+                  source={{ uri: avatar }}
+                  style={styles.avatar}
+                  contentFit="cover"
+                  transition={150}
+                  accessibilityLabel={`${displayName}'s profile photo`}
+                />
+              ) : (
+                <View style={[styles.avatar, styles.avatarFallback]}>
+                  <Text style={styles.avatarInitials}>{initialsOf(displayName)}</Text>
+                </View>
+              )}
             </View>
-          )}
 
-          {/* Languages */}
-          {languagesLabel && (
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Languages</Text>
-              <View style={styles.card}>
-                <Text style={styles.languagesText}>{languagesLabel}</Text>
-              </View>
+            <View style={styles.nameRow}>
+              <Text style={styles.name} numberOfLines={1}>{displayName}</Text>
+              {isVerified && (
+                <Ionicons name="checkmark-circle" size={18} color={palette.success} accessibilityLabel="Verified provider" />
+              )}
             </View>
-          )}
 
-          {/* Portfolio — the provider's work, featured photos first */}
-          {portfolio.length > 0 && (
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Portfolio ({portfolio.length})</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.portfolioRow}>
-                {portfolio.map((path) => (
-                  <Image
-                    key={path}
-                    source={{ uri: path.startsWith('http') ? path : storageUrl(path) }}
-                    style={styles.portfolioImage}
-                    accessibilityRole="image"
-                    accessibilityLabel="Portfolio photo"
-                  />
-                ))}
-              </ScrollView>
+            <View style={styles.tierRow}>
+              <VettingBadge trustTier={profile.trust_tier} size="md" />
+              {!!profile.base_location_label && (
+                <View style={styles.locRow}>
+                  <Ionicons name="location-outline" size={13} color={palette.textSecondary} />
+                  <Text style={styles.locTxt} numberOfLines={1}>{profile.base_location_label}</Text>
+                </View>
+              )}
             </View>
-          )}
 
-          {/* Availability */}
-          {matrix && (
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Availability</Text>
-              <View style={[styles.card, styles.availGrid]}>
-                {DAYS.map((day) => {
-                  const slots = matrix[day] ?? [];
-                  const active = slots.length > 0;
+            {/* Trust stats — value + label as text (never colour alone) */}
+            <View style={styles.stats}>
+              <Stat
+                value={profile.v_reviews > 0 ? profile.r_raw.toFixed(1) : '–'}
+                sub={profile.v_reviews > 0 ? `(${profile.v_reviews})` : undefined}
+                label="Rating"
+              />
+              <View style={styles.statDivider} />
+              <Stat value={fmtResponse(profile.response_time_p50_mins)} label="Replies in" />
+              <View style={styles.statDivider} />
+              <Stat
+                value={profile.repeat_client_rate != null ? `${Math.round(profile.repeat_client_rate * 100)}%` : '–'}
+                label="Repeat clients"
+              />
+              <View style={styles.statDivider} />
+              <Stat value={yearsActive(profile.year_started)} label="Years active" />
+            </View>
+
+            {/* Earned badges (§9.2) */}
+            {badges.length > 0 && (
+              <View style={styles.badgeRow}>
+                {badges.map((key) => {
+                  const meta = EARNED_BADGE_META[key];
+                  if (!meta) return null;
                   return (
-                    <View key={day} style={[styles.dayCell, active && styles.dayCellActive]}>
-                      <Text style={[styles.dayLabel, active && styles.dayLabelActive]}>{day}</Text>
-                      {active ? (
-                        slots.map((slot, i) => (
-                          <Text key={i} style={styles.slotText}>{slot.start}–{slot.end}</Text>
-                        ))
-                      ) : (
-                        <Text style={styles.offText}>Off</Text>
-                      )}
+                    <View key={key} style={styles.badgeChip} accessibilityLabel={`Badge: ${meta.label}`}>
+                      <Ionicons name={meta.icon as any} size={12} color={meta.color} />
+                      <Text style={styles.badgeChipTxt}>{meta.label}</Text>
                     </View>
                   );
                 })}
               </View>
-            </View>
-          )}
-
-          {/* Services */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Services ({profile.services.length})</Text>
-            {profile.services.length === 0 ? (
-              <View style={styles.emptyBox}>
-                <MaterialCommunityIcons name="briefcase-outline" size={36} color={palette.textDisabled} />
-                <Text style={styles.emptyText}>No active services listed.</Text>
-              </View>
-            ) : (
-              profile.services.map((svc) => (
-                <TouchableRipple
-                  key={svc.id}
-                  onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    navigation.navigate('ServiceDetail', { serviceId: svc.id });
-                  }}
-                  borderless
-                  style={styles.svcCard}
-                >
-                  <View style={styles.svcInner}>
-                    <View style={styles.svcLeft}>
-                      <View style={styles.svcTitleRow}>
-                        {svc.is_pinned && (
-                          <MaterialCommunityIcons name="pin" size={14} color={palette.primary} accessibilityLabel="Pinned by provider" />
-                        )}
-                        <Text style={styles.svcTitle} numberOfLines={2}>{svc.title}</Text>
-                      </View>
-                      <Chip compact style={styles.svcChip} textStyle={styles.svcChipText}>
-                        {svc.category.name}
-                      </Chip>
-                    </View>
-                    <View style={styles.svcRight}>
-                      <Text style={styles.svcPrice}>
-                        {svc.pricing_model === 'QUOTE' || svc.base_price == null
-                          ? 'By quote'
-                          : `ZMW ${svc.base_price.toFixed(0)}`}
-                      </Text>
-                      <MaterialCommunityIcons name="chevron-right" size={18} color={palette.textDisabled} />
-                    </View>
-                  </View>
-                </TouchableRipple>
-              ))
             )}
           </View>
+        </View>
 
-          {/* Reviews */}
-          {profile.reviews.length > 0 && (
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Reviews ({profile.reviews.length})</Text>
-              {profile.reviews.map((rev) => (
-                <ReviewCard key={rev.id} review={rev} />
-              ))}
-            </View>
+        {/* ── [1] Sticky tab strip ────────────────────────────────── */}
+        <View style={styles.tabsWrap}>
+          <Tabs items={tabs} activeKey={tab} onChange={onTabChange} />
+        </View>
+
+        {/* ── [2] Tab content ─────────────────────────────────────── */}
+        <View style={styles.content}>
+          {tab === 'services' && (
+            <ServicesTab
+              services={services}
+              profile={profile}
+              onOpen={(id) => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                navigation.navigate('ServiceDetail', { serviceId: id });
+              }}
+              onBook={(svc) => setBookingFor(svc)}
+            />
+          )}
+          {tab === 'about'    && (
+            <AboutTab
+              profile={profile}
+              onImagePress={(imgs, idx) => { setLbImages(imgs); setLbIndex(idx); setLbOpen(true); }}
+            />
+          )}
+          {tab === 'reviews'  && (
+            <ReviewsTab
+              profile={profile}
+              showAll={showAllReviews}
+              onSeeAll={() => navigation.navigate('AllReviews', {
+                providerId:   profile.id,
+                providerName: profile.display_name,
+                avatarUrl:    profile.avatar_url,
+                trustTier:    profile.trust_tier,
+              })}
+            />
           )}
         </View>
       </ScrollView>
+
+      <WorksLightbox
+        images={lbImages}
+        startIndex={lbIndex}
+        visible={lbOpen}
+        onClose={() => setLbOpen(false)}
+      />
+
+      {/* Booking modal (DIRECT → "Request booking") */}
+      <BookingSheet
+        visible={!!bookingFor}
+        onClose={() => setBookingFor(null)}
+        serviceId={bookingFor?.id ?? ''}
+        serviceTitle={bookingFor?.title ?? ''}
+        basePrice={bookingFor?.base_price ?? 0}
+        pricingModel={bookingFor?.pricing_model}
+        paymentMode="DIRECT"
+        availabilityMatrix={profile.profile.availability_matrix}
+        categoryId={bookingFor?.category.id}
+        providerName={profile.display_name}
+        onBooked={(bookingId) => {
+          setBookingFor(null);
+          navigation.navigate('BookingDetail', { bookingId });
+        }}
+      />
     </SafeAreaView>
   );
 }
 
-function StatCell({ icon, iconColor, value, label }: { icon: string; iconColor: string; value: string; label: string }) {
+function yearsActive(yearStarted: number | null): string {
+  if (!yearStarted) return '–';
+  const yrs = new Date().getFullYear() - yearStarted;
+  if (yrs <= 0) return 'New';
+  return `${yrs}y`;
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+
+function ServicesTab({
+  services, profile, onOpen, onBook,
+}: {
+  services: PublicService[];
+  profile:  PublicProviderProfile;
+  onOpen:   (id: string) => void;
+  onBook:   (svc: PublicService) => void;
+}) {
+  if (services.length === 0) {
+    return (
+      <View style={styles.empty}>
+        <Ionicons name="briefcase-outline" size={36} color={palette.textDisabled} />
+        <Text style={styles.emptyTxt}>No active services listed yet.</Text>
+      </View>
+    );
+  }
   return (
-    <View style={styles.statCell}>
-      <MaterialCommunityIcons name={icon as any} size={18} color={iconColor} />
-      <Text style={styles.statValue}>{value}</Text>
+    <View>
+      {services.map((svc) => (
+        <RankedServiceCard
+          key={svc.id}
+          data={publicServiceToCard(svc, profile)}
+          saved={false}
+          onPress={() => onOpen(svc.id)}
+          onBook={() => onBook(svc)}
+          onToggleSave={() => {}}
+        />
+      ))}
+    </View>
+  );
+}
+
+function AboutTab({ profile, onImagePress }: {
+  profile: PublicProviderProfile;
+  onImagePress: (images: string[], index: number) => void;
+}) {
+  const languages = (profile.languages ?? []).map((c) => LANG_LABELS[c] ?? c);
+  const rawPortfolio = [
+    ...(profile.highlights?.featured_photo_keys ?? []),
+    ...(profile.portfolio_images ?? []).filter(
+      (p) => !(profile.highlights?.featured_photo_keys ?? []).includes(p),
+    ),
+  ];
+  // Pre-resolve to full URIs so the lightbox receives ready-to-use strings
+  const portfolio = rawPortfolio.map((p) => resolveImg(p) ?? p);
+  const isVerified = profile.trust_tier >= 2;
+
+  return (
+    <View>
+      {/* Bio */}
+      {!!profile.bio && (
+        <Section title="About">
+          <MarkdownView>{profile.bio}</MarkdownView>
+        </Section>
+      )}
+
+      {/* Languages */}
+      {languages.length > 0 && (
+        <Section title="Languages">
+          <View style={styles.chipWrap}>
+            {languages.map((l) => (
+              <View key={l} style={styles.langChip}>
+                <Text style={styles.langChipTxt}>{l}</Text>
+              </View>
+            ))}
+          </View>
+        </Section>
+      )}
+
+      {/* Verified credentials (Govt ID marker; certifications not in public payload) */}
+      {isVerified && (
+        <Section title="Verified credentials">
+          <View style={styles.credBlock}>
+            <Ionicons name="shield-checkmark" size={18} color={palette.success} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.credTitle}>Government ID verified</Text>
+              <Text style={styles.credSub}>Identity confirmed by our team</Text>
+            </View>
+          </View>
+        </Section>
+      )}
+
+      {/* Portfolio carousel — bleeds edge-to-edge */}
+      {portfolio.length > 0 && (
+        <View style={styles.portfolioSection}>
+          <Text style={styles.sectionTitle}>Work done ({portfolio.length})</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.portfolioCarousel}
+            style={styles.portfolioCarouselOuter}
+          >
+            {portfolio.map((uri, idx) => (
+              <TouchableOpacity
+                key={`${uri}-${idx}`}
+                onPress={() => onImagePress(portfolio, idx)}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel={`View work photo ${idx + 1} of ${portfolio.length}`}
+              >
+                <Image
+                  source={{ uri: uri || undefined }}
+                  style={styles.portfolioThumb}
+                  contentFit="cover"
+                  cachePolicy="memory-disk"
+                  transition={150}
+                />
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
+      {!profile.bio && languages.length === 0 && !isVerified && portfolio.length === 0 && (
+        <View style={styles.empty}>
+          <Ionicons name="information-circle-outline" size={36} color={palette.textDisabled} />
+          <Text style={styles.emptyTxt}>This provider hasn’t added details yet.</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+function ReviewsTab({
+  profile, showAll, onSeeAll,
+}: {
+  profile:  PublicProviderProfile;
+  showAll:  boolean;
+  onSeeAll: () => void;
+}) {
+  const reviews = profile.reviews ?? [];
+  const loaded  = reviews.length;
+  // Star distribution computed from the loaded reviews (§7.1 display).
+  const dist = [5, 4, 3, 2, 1].map((star) => ({
+    star,
+    count: reviews.filter((rv) => Math.round(rv.rating) === star).length,
+  }));
+  const shown = showAll ? reviews : reviews.slice(0, REVIEW_PREVIEW);
+
+  return (
+    <View>
+      {/* Overall — stats always shown, even with zero reviews */}
+      <View style={styles.overall}>
+        <View style={styles.overallLeft}>
+          <Text style={styles.overallScore}>{profile.v_reviews > 0 ? profile.r_raw.toFixed(1) : '–'}</Text>
+          <View style={styles.starsRow} accessibilityLabel={`${profile.r_raw.toFixed(1)} out of 5`}>
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Ionicons
+                key={i}
+                name={i < Math.round(profile.r_raw) && profile.v_reviews > 0 ? 'star' : 'star-outline'}
+                size={13}
+                color={i < Math.round(profile.r_raw) && profile.v_reviews > 0 ? palette.warning : palette.textDisabled}
+              />
+            ))}
+          </View>
+          <Text style={styles.overallCount}>{profile.v_reviews} {profile.v_reviews === 1 ? 'review' : 'reviews'}</Text>
+        </View>
+        <View style={styles.dist}>
+          {dist.map((d) => (
+            <View key={d.star} style={styles.distRow}>
+              <Text style={styles.distStar}>{d.star}</Text>
+              <Ionicons name="star" size={10} color={palette.textDisabled} />
+              <View style={styles.distTrack}>
+                <View style={[styles.distFill, { width: `${loaded ? (d.count / loaded) * 100 : 0}%` }]} />
+              </View>
+              <Text style={styles.distCount}>{d.count}</Text>
+            </View>
+          ))}
+        </View>
+      </View>
+
+      <View style={styles.divider} />
+
+      {loaded === 0 ? (
+        <View style={styles.empty}>
+          <Ionicons name="chatbubble-ellipses-outline" size={36} color={palette.textDisabled} />
+          <Text style={styles.emptyTxt}>No reviews yet</Text>
+        </View>
+      ) : (
+        <>
+          {shown.map((rev) => <ReviewCard key={rev.id} review={rev} />)}
+          {!showAll && profile.v_reviews > REVIEW_PREVIEW && (
+            <TouchableRipple onPress={onSeeAll} borderless style={styles.seeAll} accessibilityRole="button">
+              <Text style={styles.seeAllTxt}>See all {profile.v_reviews} reviews</Text>
+            </TouchableRipple>
+          )}
+        </>
+      )}
+    </View>
+  );
+}
+
+// ── Small pieces ────────────────────────────────────────────────────────────────
+
+function Stat({ value, sub, label }: { value: string; sub?: string; label: string }) {
+  return (
+    <View style={styles.statCell} accessibilityLabel={`${label}: ${value}${sub ? ` ${sub}` : ''}`}>
+      <View style={styles.statValueRow}>
+        <Text style={styles.statValue}>{value}</Text>
+        {!!sub && <Text style={styles.statSub}>{sub}</Text>}
+      </View>
       <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      {children}
     </View>
   );
 }
@@ -279,206 +674,237 @@ function ReviewCard({ review }: { review: PublicReview }) {
       <View style={styles.reviewHeader}>
         <View style={styles.reviewerRow}>
           <View style={styles.reviewerAvatar}>
-            <MaterialCommunityIcons name="account" size={16} color={palette.textSecondary} />
+            <Text style={styles.reviewerInitials}>{initialsOf(review.reviewer.name)}</Text>
           </View>
           <Text style={styles.reviewerName}>{review.reviewer.name}</Text>
         </View>
         <Text style={styles.reviewDate}>{date}</Text>
       </View>
-      <View style={styles.starsRow}>
+      <View style={styles.starsRow} accessibilityLabel={`${stars} out of 5 stars`}>
         {Array.from({ length: 5 }).map((_, i) => (
-          <MaterialCommunityIcons
-            key={i}
-            name={i < stars ? 'star' : 'star-outline'}
-            size={14}
-            color={i < stars ? palette.warning : palette.textDisabled}
-          />
+          <Ionicons key={i} name={i < stars ? 'star' : 'star-outline'} size={13} color={i < stars ? palette.warning : palette.textDisabled} />
         ))}
       </View>
-      {!!review.comment && (
-        <Text style={styles.reviewComment}>{review.comment}</Text>
-      )}
+      {!!review.comment && <Text style={styles.reviewComment}>{review.comment}</Text>}
     </View>
   );
 }
 
 function ProfileSkeleton() {
   return (
-    <View style={styles.skeletonWrap}>
-      <SkeletonBlock width="100%" height={180} radius={0} style={{ marginBottom: spacing.md }} />
-      <SkeletonBlock width="60%" height={20} style={{ alignSelf: 'center', marginBottom: spacing.xs }} />
-      <SkeletonBlock width="40%" height={14} style={{ alignSelf: 'center', marginBottom: spacing.xl }} />
-      <SkeletonBlock width="100%" height={80} radius={r.lg} style={{ marginBottom: spacing.md }} />
-      <SkeletonBlock width="100%" height={120} radius={r.lg} />
+    <View>
+      <View style={styles.cover} />
+      <View style={styles.identity}>
+        <View style={[styles.avatarRing, { marginTop: -56 }]}>
+          <SkeletonBlock width={88} height={88} radius={r.full} />
+        </View>
+        <SkeletonBlock width="55%" height={22} style={{ marginTop: spacing.sm, alignSelf: 'center' }} />
+        <SkeletonBlock width="40%" height={14} style={{ marginTop: spacing.sm, alignSelf: 'center' }} />
+        <SkeletonBlock width="100%" height={64} radius={r.sm} style={{ marginTop: spacing.md }} />
+      </View>
+      <View style={styles.content}>
+        {[1, 2, 3].map((k) => (
+          <SkeletonBlock key={k} width="100%" height={92} radius={r.sm} style={{ marginBottom: spacing.sm }} />
+        ))}
+      </View>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  safe:         { flex: 1, backgroundColor: palette.background },
-  scrollContent:{ paddingBottom: spacing.xxl },
+// ── Styles ────────────────────────────────────────────────────────────────────
 
-  hero: {
-    paddingTop: spacing.md,
-    paddingBottom: spacing.xl,
-    paddingHorizontal: spacing.lg,
-    alignItems: 'center',
+const AVATAR = 88;
+
+const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: palette.background },
+
+  offlineBar: {
+    flexDirection:   'row',
+    alignItems:      'center',
+    justifyContent:  'center',
+    gap:             spacing.xs,
+    backgroundColor: palette.warningLight,
+    paddingVertical: spacing.xs,
+  },
+  offlineTxt: { fontFamily: fontFamily.regular, fontSize: 12, color: palette.warning },
+
+  // Cover band — flat tint (or image), no gradient, no shadow
+  cover: {
+    height:          104,
+    backgroundColor: palette.primaryLight,
+    overflow:        'hidden',
   },
   backBtn: {
-    position: 'absolute',
-    top: spacing.md,
-    left: spacing.md,
-    width: 38,
-    height: 38,
-    borderRadius: r.full,
-    backgroundColor: '#FFFFFF22',
-    alignItems: 'center',
-    justifyContent: 'center',
+    position:        'absolute',
+    top:             spacing.sm,
+    left:            spacing.sm,
+    width:           40,
+    height:          40,
+    borderRadius:    r.full,
+    backgroundColor: palette.surface,
+    borderWidth:     HAIRLINE,
+    borderColor:     palette.border,
+    alignItems:      'center',
+    justifyContent:  'center',
+  },
+
+  // Identity block
+  identity: {
+    paddingHorizontal: spacing.lg,
+    paddingBottom:     spacing.md,
+    borderBottomWidth: HAIRLINE,
+    borderBottomColor: palette.border,
+    backgroundColor:   palette.surface,
   },
   avatarRing: {
-    width: 84,
-    height: 84,
-    borderRadius: 42,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: spacing.xl,
-    marginBottom: spacing.sm,
-    ...shadow.card,
+    width:           AVATAR + 6,
+    height:          AVATAR + 6,
+    borderRadius:    r.full,
+    backgroundColor: palette.surface,
+    borderWidth:     HAIRLINE,
+    borderColor:     palette.border,
+    alignItems:      'center',
+    justifyContent:  'center',
+    marginTop:       -((AVATAR + 6) / 2),
   },
-  heroName: {
-    ...typography.heading2,
-    color: '#FFFFFF',
-    marginBottom: spacing.xs,
-  },
-  avatarImage: {
-    width: 84,
-    height: 84,
-    borderRadius: 42,
-  },
-  heroMeta: {
-    ...typography.bodySmall,
-    color: '#FFFFFFCC',
-    fontSize: 12,
-    marginTop: spacing.xs,
-  },
+  avatar: { width: AVATAR, height: AVATAR, borderRadius: r.full },
+  avatarFallback: { backgroundColor: palette.primaryLight, alignItems: 'center', justifyContent: 'center' },
+  avatarInitials: { fontFamily: fontFamily.bold, fontSize: 28, color: palette.primary },
 
-  badgeRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.xs,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginTop: spacing.sm },
+  name:    { ...typography.heading2, color: palette.textPrimary, flexShrink: 1 },
+
+  tierRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.xs, flexWrap: 'wrap' },
+  locRow:  { flexDirection: 'row', alignItems: 'center', gap: 3, flexShrink: 1 },
+  locTxt:  { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12, flexShrink: 1 },
+
+  // Trust stats
+  stats: {
+    flexDirection:   'row',
+    alignItems:      'stretch',
+    marginTop:       spacing.md,
+    borderWidth:     HAIRLINE,
+    borderColor:     palette.border,
+    borderRadius:    r.sm,
+    backgroundColor: palette.background,
   },
+  statCell:     { flex: 1, alignItems: 'center', paddingVertical: spacing.sm, gap: 2 },
+  statValueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 2 },
+  statValue:    { fontFamily: fontFamily.bold, fontSize: 15, color: palette.textPrimary },
+  statSub:      { fontFamily: fontFamily.regular, fontSize: 11, color: palette.textSecondary },
+  statLabel:    { fontFamily: fontFamily.regular, fontSize: 10, color: palette.textSecondary },
+  statDivider:  { width: HAIRLINE, backgroundColor: palette.border, marginVertical: spacing.sm },
+
+  // Earned badges
+  badgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, marginTop: spacing.md },
   badgeChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    borderWidth: 1.5,
-    borderRadius: r.full,
+    flexDirection:     'row',
+    alignItems:        'center',
+    gap:               4,
+    borderWidth:       HAIRLINE,
+    borderColor:       palette.border,
+    borderRadius:      r.full,
     paddingHorizontal: spacing.sm,
-    paddingVertical: 4,
-    backgroundColor: palette.surface,
+    paddingVertical:   4,
+    backgroundColor:   palette.surface,
   },
-  badgeChipText: { fontFamily: 'PlusJakartaSans_600SemiBold', fontSize: 11 },
+  badgeChipTxt: { fontFamily: fontFamily.medium, fontSize: 11, color: palette.textPrimary },
 
-  languagesText: { ...typography.body, color: palette.textSecondary },
+  // Tabs strip (sticky)
+  tabsWrap: { backgroundColor: palette.surface },
 
-  portfolioRow: { gap: spacing.sm, paddingRight: spacing.lg },
-  portfolioImage: {
-    width: 140,
-    height: 105,
-    borderRadius: r.lg,
-    backgroundColor: palette.border,
-  },
-
-  statsStrip: {
-    flexDirection: 'row',
-    backgroundColor: palette.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: palette.border,
-    ...shadow.card,
-  },
-  statCell:    { flex: 1, alignItems: 'center', paddingVertical: spacing.md, gap: 2 },
-  statDivider: { width: 1, backgroundColor: palette.border, marginVertical: spacing.sm },
-  statValue:   { ...typography.heading3, color: palette.textPrimary, fontSize: 16 },
-  statLabel:   { ...typography.bodySmall, color: palette.textSecondary, fontSize: 10 },
-
-  body: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg },
+  // Tab content
+  content: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
 
   section:      { marginBottom: spacing.lg },
-  sectionTitle: { ...typography.heading3, color: palette.textPrimary, marginBottom: spacing.sm },
+  sectionTitle: { fontFamily: fontFamily.semiBold, fontSize: 15, color: palette.textPrimary, marginBottom: spacing.sm },
 
-  card: {
-    backgroundColor: palette.surface,
-    borderRadius: r.lg,
-    borderWidth: 1,
-    borderColor: palette.border,
-    padding: spacing.md,
-    ...shadow.card,
+  divider: { height: HAIRLINE, backgroundColor: palette.border, marginVertical: spacing.md },
+
+  // Languages
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
+  langChip: {
+    borderWidth:       HAIRLINE,
+    borderColor:       palette.border,
+    borderRadius:      r.full,
+    paddingHorizontal: spacing.md,
+    paddingVertical:   6,
+    backgroundColor:   palette.surface,
   },
+  langChipTxt: { fontFamily: fontFamily.regular, fontSize: 13, color: palette.textPrimary },
 
-  availGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+  // Verified credentials
+  credBlock: {
+    flexDirection:   'row',
+    alignItems:      'center',
+    gap:             spacing.sm,
+    borderWidth:     HAIRLINE,
+    borderColor:     palette.border,
+    borderRadius:    r.sm,
+    backgroundColor: palette.surface,
+    padding:         spacing.md,
+  },
+  credTitle: { fontFamily: fontFamily.medium, fontSize: 14, color: palette.textPrimary },
+  credSub:   { fontFamily: fontFamily.regular, fontSize: 12, color: palette.textSecondary, marginTop: 1 },
+
+  // Portfolio carousel (edge-to-edge)
+  portfolioSection: { marginBottom: spacing.lg },
+  portfolioCarouselOuter: {
+    marginHorizontal: -spacing.lg,
+    marginTop: spacing.sm,
+  },
+  portfolioCarousel: {
+    paddingHorizontal: spacing.lg,
     gap: spacing.xs,
-    padding: spacing.sm,
   },
-  dayCell: {
-    flex: 1,
-    minWidth: 44,
-    backgroundColor: palette.border,
-    borderRadius: r.md,
-    padding: spacing.xs,
-    alignItems: 'center',
+  portfolioThumb: {
+    width:           160,
+    height:          160,
+    borderRadius:    r.sm,
+    backgroundColor: palette.skeleton,
+    borderWidth:     2,
+    borderColor:     '#FFFFFF',
   },
-  dayCellActive:  { backgroundColor: palette.primaryLight },
-  dayLabel:       { ...typography.label, color: palette.textSecondary, fontSize: 11, marginBottom: 2 },
-  dayLabelActive: { color: palette.primary },
-  slotText:       { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 9, color: palette.textSecondary, textAlign: 'center' },
-  offText:        { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 10, color: palette.textDisabled },
 
-  svcCard: {
-    backgroundColor: palette.surface,
-    borderRadius: r.lg,
-    borderWidth: 1,
-    borderColor: palette.border,
-    marginBottom: spacing.xs,
-    overflow: 'hidden',
-    ...shadow.card,
-  },
-  svcInner:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: spacing.md },
-  svcLeft:    { flex: 1, marginRight: spacing.sm },
-  svcRight:   { alignItems: 'flex-end' },
-  svcTitleRow:{ flexDirection: 'row', alignItems: 'center', gap: 4 },
-  svcTitle:   { ...typography.label, color: palette.textPrimary, fontSize: 14, marginBottom: spacing.xs, flexShrink: 1 },
-  svcChip:    { alignSelf: 'flex-start', height: 24, backgroundColor: palette.primaryLight },
-  svcChipText:{ ...typography.bodySmall, color: palette.primary, fontSize: 11 },
-  svcPrice:   { ...typography.label, color: palette.primary, fontSize: 15 },
+  // Reviews — overall
+  overall: { flexDirection: 'row', gap: spacing.lg, alignItems: 'center' },
+  overallLeft: { alignItems: 'center', gap: 3, minWidth: 84 },
+  overallScore: { fontFamily: fontFamily.extraBold, fontSize: 34, color: palette.textPrimary },
+  overallCount: { fontFamily: fontFamily.regular, fontSize: 12, color: palette.textSecondary },
+  starsRow: { flexDirection: 'row', gap: 2 },
 
-  emptyBox:  { alignItems: 'center', paddingVertical: spacing.xl },
-  emptyText: { ...typography.body, color: palette.textSecondary, marginTop: spacing.sm },
+  dist: { flex: 1, gap: 4 },
+  distRow:   { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  distStar:  { fontFamily: fontFamily.regular, fontSize: 11, color: palette.textSecondary, width: 8 },
+  distTrack: { flex: 1, height: 6, borderRadius: r.full, backgroundColor: palette.skeleton, overflow: 'hidden' },
+  distFill:  { height: '100%', borderRadius: r.full, backgroundColor: palette.warning },
+  distCount: { fontFamily: fontFamily.regular, fontSize: 11, color: palette.textSecondary, width: 18, textAlign: 'right' },
 
+  // Review cards
   reviewCard: {
+    borderWidth:     HAIRLINE,
+    borderColor:     palette.border,
+    borderRadius:    r.sm,
     backgroundColor: palette.surface,
-    borderRadius: r.lg,
-    borderWidth: 1,
-    borderColor: palette.border,
-    padding: spacing.md,
-    marginBottom: spacing.sm,
-    ...shadow.card,
+    padding:         spacing.md,
+    marginBottom:    spacing.sm,
   },
-  reviewHeader:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.xs },
-  reviewerRow:   { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
-  reviewerAvatar:{
-    width: 28, height: 28, borderRadius: 14,
+  reviewHeader:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.xs },
+  reviewerRow:    { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  reviewerAvatar: {
+    width: 28, height: 28, borderRadius: r.full,
     backgroundColor: palette.primaryLight,
     alignItems: 'center', justifyContent: 'center',
   },
-  reviewerName:  { ...typography.label, color: palette.textPrimary, fontSize: 13 },
-  reviewDate:    { ...typography.bodySmall, color: palette.textDisabled },
-  starsRow:      { flexDirection: 'row', gap: 2, marginBottom: spacing.xs },
-  reviewComment: { ...typography.body, color: palette.textSecondary, fontSize: 13 },
+  reviewerInitials: { fontFamily: fontFamily.semiBold, fontSize: 11, color: palette.primary },
+  reviewerName:  { fontFamily: fontFamily.medium, fontSize: 13, color: palette.textPrimary },
+  reviewDate:    { fontFamily: fontFamily.regular, fontSize: 12, color: palette.textDisabled },
+  reviewComment: { fontFamily: fontFamily.regular, fontSize: 13, color: palette.textSecondary, lineHeight: 19, marginTop: spacing.xs },
 
-  skeletonWrap: { padding: spacing.lg },
+  seeAll:    { alignSelf: 'center', paddingVertical: spacing.sm, paddingHorizontal: spacing.md, minHeight: 44, justifyContent: 'center' },
+  seeAllTxt: { fontFamily: fontFamily.semiBold, fontSize: 14, color: palette.primary },
+
+  // Empty
+  empty:    { alignItems: 'center', paddingVertical: spacing.xxl, gap: spacing.sm },
+  emptyTxt: { fontFamily: fontFamily.regular, fontSize: 14, color: palette.textSecondary },
 });

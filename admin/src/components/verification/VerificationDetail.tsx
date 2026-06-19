@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useQueryClient, useMutation } from '@tanstack/react-query'
 import {
@@ -33,7 +33,7 @@ import { VerificationTimeline } from '@/components/verification/VerificationTime
 
 const AUDIT_TARGET_TYPE = 'verification_submission'
 
-// Empty decision payload — the audited-mutation wrapper appends { reason }.
+// Empty decision payload â€” the audited-mutation wrapper appends { reason }.
 // No artifact data ever enters this payload.
 type DecisionPayload = Record<string, never>
 
@@ -60,7 +60,7 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
     queryClient.invalidateQueries({ queryKey: ['verification', detail.id] })
   }
 
-  // ── Claim / assignment (not a state decision → no reason required) ──────────
+  // â”€â”€ Claim / assignment (not a state decision â†’ no reason required) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const claimMutation = useMutation({
     mutationFn: () => verificationApi.claim(detail.id),
     onSuccess: () => {
@@ -70,7 +70,7 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
     onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not claim submission.'),
   })
 
-  // ── Decisions — all via the audited-mutation wrapper ────────────────────────
+  // â”€â”€ Decisions â€” all via the audited-mutation wrapper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const approve = useAuditedMutation<DecisionPayload, Detail>({
     capability: 'write:verification',
     audit: {
@@ -115,7 +115,7 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
     return (
       <div className="space-y-4">
         {Array.from({ length: 4 }).map((_, i) => (
-          <div key={i} className="h-24 animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800" />
+          <div key={i} className="h-24 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800" />
         ))}
       </div>
     )
@@ -123,9 +123,9 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
 
   return (
     <div className="space-y-6">
-      {/* ── Applicant summary ──────────────────────────────────────────────── */}
+      {/* â”€â”€ Applicant summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <section className="flex items-start gap-3">
-        {/* Initials avatar — NEVER the KYC selfie */}
+        {/* Initials avatar â€” NEVER the KYC selfie */}
         <Avatar name={applicant.display_name} size="lg" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -191,19 +191,19 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
       <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
         <BadgeCheck className="size-3.5 shrink-0 text-slate-400" />
         <span>{typeLabel}</span>
-        <span aria-hidden="true">·</span>
+        <span aria-hidden="true">Â·</span>
         <Clock className="size-3.5 shrink-0 text-slate-400" />
         <span>Submitted {fmtRelative(detail.submitted_at)}</span>
       </div>
 
-      {/* ── Progression timeline ───────────────────────────────────────────── */}
+      {/* â”€â”€ Progression timeline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <VerificationTimeline events={detail.timeline ?? []} />
 
-      {/* ── Resolved banner (read-only) ────────────────────────────────────── */}
+      {/* â”€â”€ Resolved banner (read-only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {resolved && detail.decision && (
         <div
           className={cn(
-            'rounded-xl border px-4 py-3 text-sm',
+            'rounded-lg border px-4 py-3 text-sm',
             detail.decision.outcome === 'approved'
               ? 'border-teal-200 bg-teal-50 text-teal-800 dark:border-teal-800 dark:bg-teal-900/20 dark:text-teal-300'
               : 'border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300',
@@ -211,22 +211,22 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
         >
           <p className="font-medium">
             {detail.decision.outcome === 'approved' ? 'Approved' : 'Rejected'} by{' '}
-            {detail.decision.decided_by} · {fmtDatetime(detail.decision.decided_at)}
+            {detail.decision.decided_by} Â· {fmtDatetime(detail.decision.decided_at)}
           </p>
           <p className="mt-1 text-xs opacity-90">Reason: {detail.decision.reason}</p>
         </div>
       )}
 
-      {/* ── Submitted artifacts (reviewer-only) ────────────────────────────── */}
+      {/* â”€â”€ Submitted artifacts (reviewer-only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <ArtifactViewer artifacts={detail.artifacts} />
 
-      {/* ── Certification metadata (§5.2) ──────────────────────────────────── */}
+      {/* â”€â”€ Certification metadata (Â§5.2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {detail.certification && (
         <section className="space-y-1.5">
           <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
             Certification details
           </h3>
-          <dl className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700">
+          <dl className="rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700">
             <div className="flex justify-between gap-2 py-1">
               <dt className="text-slate-400">Title</dt>
               <dd className="text-slate-700 dark:text-slate-300">{detail.certification.title}</dd>
@@ -257,13 +257,13 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
         </section>
       )}
 
-      {/* ── Tier 4 prerequisite gate (§4.5) ────────────────────────────────── */}
+      {/* â”€â”€ Tier 4 prerequisite gate (Â§4.5) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {detail.tier4 && <Tier4Prerequisites prereqs={detail.tier4} />}
 
-      {/* ── Automated checks (advisory, read-only) ─────────────────────────── */}
+      {/* â”€â”€ Automated checks (advisory, read-only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <AutomatedChecks checks={detail.automated} />
 
-      {/* ── Audit trail for this submission ────────────────────────────────── */}
+      {/* â”€â”€ Audit trail for this submission â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <section className="space-y-2">
         <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
           Audit trail
@@ -271,7 +271,7 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
         <AuditTrail targetType={AUDIT_TARGET_TYPE} targetId={detail.id} />
       </section>
 
-      {/* ── Decision actions ───────────────────────────────────────────────── */}
+      {/* â”€â”€ Decision actions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <Can
         do="write:verification"
         fallback={
@@ -298,7 +298,7 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
               className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-teal-600 text-sm font-medium text-white transition-colors hover:bg-teal-700 disabled:opacity-50"
             >
               <UserPlus className="size-4" />
-              {claimMutation.isPending ? 'Claiming…' : 'Claim to review'}
+              {claimMutation.isPending ? 'Claimingâ€¦' : 'Claim to review'}
             </button>
           ) : (
             <div className="grid grid-cols-3 gap-2">

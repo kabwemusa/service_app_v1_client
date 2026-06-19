@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import {
   useReactTable,
@@ -61,7 +61,7 @@ export function DataTable<T>({
 
   return (
     <div className={cn('flex flex-col gap-3', className)}>
-      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
+      <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
         <table className="w-full min-w-full text-sm">
           <thead>
             {table.getHeaderGroups().map((hg) => (

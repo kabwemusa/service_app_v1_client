@@ -36,7 +36,9 @@ export interface SearchResult {
     completion_rate:        number | null;
     trust_tier:             number;
     response_time_p50_mins: number | null;
+    base_location_label:   string | null;
   };
+  photo_urls: string[];
   sort_score: number;
 }
 

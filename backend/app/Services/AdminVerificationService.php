@@ -6,6 +6,7 @@ use App\Enums\DocStatus;
 use App\Enums\DocType;
 use App\Enums\ErrorCode;
 use App\Enums\TrustTier;
+use App\Events\VerificationUpdated;
 use App\Exceptions\Api\ApiException;
 use App\Models\AdminUser;
 use App\Models\IdentityDocument;
@@ -36,7 +37,10 @@ class AdminVerificationService
         'NRC', 'PASSPORT', 'DRIVERS_LICENSE', 'PROOF_OF_ADDRESS', 'CERTIFICATE',
     ];
 
-    public function __construct(private readonly AuditedMutationService $audit) {}
+    public function __construct(
+        private readonly AuditedMutationService $audit,
+        private readonly NotificationDispatcher $notifications,
+    ) {}
 
     // ── List ─────────────────────────────────────────────────────────────────
 
@@ -182,7 +186,13 @@ class AdminVerificationService
             },
         );
 
-        return $this->detail($doc->fresh());
+        $freshDoc = $doc->fresh();
+        $newTier = $freshDoc->user?->providerProfile?->trust_tier ?? 0;
+        $this->notifications->dispatch(new VerificationUpdated(
+            $freshDoc->user_id, 'approved', $newTier, null,
+        ));
+
+        return $this->detail($freshDoc);
     }
 
     public function reject(IdentityDocument $doc, AdminUser $actor, string $reason): array
@@ -208,7 +218,12 @@ class AdminVerificationService
             },
         );
 
-        return $this->detail($doc->fresh());
+        $freshDoc = $doc->fresh();
+        $this->notifications->dispatch(new VerificationUpdated(
+            $freshDoc->user_id, 'rejected', $freshDoc->user?->providerProfile?->trust_tier ?? 0, $reason,
+        ));
+
+        return $this->detail($freshDoc);
     }
 
     public function requestInfo(IdentityDocument $doc, AdminUser $actor, string $reason): array
@@ -233,7 +248,12 @@ class AdminVerificationService
             },
         );
 
-        return $this->detail($doc->fresh());
+        $freshDoc = $doc->fresh();
+        $this->notifications->dispatch(new VerificationUpdated(
+            $freshDoc->user_id, 'info_requested', $freshDoc->user?->providerProfile?->trust_tier ?? 0, $reason,
+        ));
+
+        return $this->detail($freshDoc);
     }
 
     // ── Artifact streaming (signed, reviewer-only) ───────────────────────────
@@ -241,9 +261,10 @@ class AdminVerificationService
     public function artifactPath(IdentityDocument $doc, string $kind): ?string
     {
         return match ($kind) {
-            'doc'    => $doc->doc_storage_url,
-            'selfie' => $doc->extracted_fields['selfie_path'] ?? null,
-            default  => null,
+            'doc'      => $doc->doc_storage_url,
+            'doc_back' => $doc->extracted_fields['doc_back_path'] ?? null,
+            'selfie'   => $doc->extracted_fields['selfie_path'] ?? null,
+            default    => null,
         };
     }
 
@@ -305,6 +326,16 @@ class AdminVerificationService
                 'kind'     => $docKind,
                 'url'      => $this->signedArtifactUrl($doc, 'doc'),
                 'label'    => $this->docTypeLabel($doc->doc_type),
+                'doc_type' => $doc->doc_type,
+            ];
+        }
+
+        if (!empty($doc->extracted_fields['doc_back_path'])) {
+            $artifacts[] = [
+                'id'       => $doc->id . ':doc_back',
+                'kind'     => 'id_document_back',
+                'url'      => $this->signedArtifactUrl($doc, 'doc_back'),
+                'label'    => $this->docTypeLabel($doc->doc_type) . ' (back)',
                 'doc_type' => $doc->doc_type,
             ];
         }

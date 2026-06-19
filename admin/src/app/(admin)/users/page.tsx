@@ -1,18 +1,11 @@
 import type { Metadata } from 'next'
-import { Users } from 'lucide-react'
-import { EmptyState } from '@/components/ui/EmptyState'
+import { UsersManager } from '@/components/users/UsersManager'
 
 export const metadata: Metadata = { title: 'Users' }
 
+// Route access is enforced two ways: middleware gates /users on `read:users`
+// (403 for anyone else) and the Sidebar hides the link via <Can>. PII reveal and
+// moderation actions inside are additionally gated on their own capabilities.
 export default function UsersPage() {
-  return (
-    <div className="space-y-4">
-      <h1 className="text-lg font-medium text-slate-900 dark:text-slate-100">Users</h1>
-      <EmptyState
-        title="User management"
-        description="Search, filter, and view customer and provider accounts. Account state changes (restrict, suspend, ban) go through the audited mutation flow."
-        icon={Users}
-      />
-    </div>
-  )
+  return <UsersManager />
 }

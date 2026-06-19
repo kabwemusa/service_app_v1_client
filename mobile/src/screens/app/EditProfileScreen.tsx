@@ -13,7 +13,7 @@ import { ActivityIndicator, Text } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useAuthStore } from '../../store/authStore';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { palette, radius as r, spacing, typography } from '../../theme';
 
 export default function EditProfileScreen({ navigation }: any) {
   const { user, updateAccount, loading } = useAuthStore();
@@ -139,11 +139,10 @@ const styles = StyleSheet.create({
 
   card: {
     backgroundColor: palette.surface,
-    borderRadius:    r.lg,
+    borderRadius:    r.sm,
     borderWidth:     1,
     borderColor:     palette.border,
     padding:         spacing.md,
-    ...shadow.card,
   },
 
   field: { gap: 4 },
@@ -159,15 +158,15 @@ const styles = StyleSheet.create({
     paddingVertical:   spacing.sm,
     color:         palette.textPrimary,
     fontSize:      15,
-    fontFamily:    'PlusJakartaSans_400Regular',
+    fontFamily:    'DMSans_400Regular',
     minHeight:     48,
   },
 
-  sep: { height: 1, backgroundColor: palette.border, marginVertical: spacing.md },
+  sep: { height: StyleSheet.hairlineWidth, backgroundColor: palette.border, marginVertical: spacing.md },
 
   saveBtn: {
     backgroundColor: palette.primary,
-    borderRadius:    r.lg,
+    borderRadius:    r.sm,
     paddingVertical: spacing.md,
     alignItems:      'center',
     justifyContent:  'center',

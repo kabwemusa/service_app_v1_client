@@ -14,6 +14,7 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import { CardSkeleton } from "../../components/ui/SkeletonBlock";
+import { NotificationBell } from "../../components/ui/NotificationBell";
 import { BookingSheet } from "../../components/booking/BookingSheet";
 import { LocationPickerSheet } from "../../components/location/LocationPickerSheet";
 import { HomeBannerCarousel } from "../../components/discovery/HomeBannerCarousel";
@@ -21,12 +22,12 @@ import { ServiceDiscoveryCard } from "../../components/discovery/ServiceDiscover
 import { ApiError } from "../../api/errors";
 import { BookAgainCard, bookingsApi, MyProvider } from "../../api/bookings";
 import { searchApi, SearchResult } from "../../api/search";
-import { Service } from "../../api/services";
+import { Service, servicesApi } from "../../api/services";
 import { useSnackbar } from "../../providers/SnackbarProvider";
 import { useAuthStore } from "../../store/authStore";
 import { useCategoryStore } from "../../store/categoryStore";
 import { useLocationStore } from "../../store/locationStore";
-import { palette, radius as r, shadow, spacing } from "../../theme";
+import { palette, radius as r, spacing } from "../../theme";
 import { fontFamily } from "../../theme/typography";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -93,6 +94,7 @@ function toBookableService(r: SearchResult): Service {
       base_location_label: null,
       availability_matrix: null,
       repeat_client_rate: null,
+      portfolio_images: [],
       badges: [],
     },
     inclusions: [],
@@ -169,7 +171,7 @@ export default function HomeScreen({ navigation }: any) {
   };
 
   const handleBookPress = useCallback(
-    (result: SearchResult) => {
+    async (result: SearchResult) => {
       if (result.pricing_model === "QUOTE") {
         showSnackbar({
           message:
@@ -178,7 +180,12 @@ export default function HomeScreen({ navigation }: any) {
         });
         return;
       }
-      setBookingService(toBookableService(result));
+      try {
+        const full = await servicesApi.show(result.id);
+        setBookingService(full);
+      } catch {
+        setBookingService(toBookableService(result));
+      }
     },
     [showSnackbar]
   );
@@ -257,17 +264,7 @@ export default function HomeScreen({ navigation }: any) {
                 color={primaryLocation ? palette.primary : palette.textPrimary}
               />
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.iconBtn}
-              accessibilityLabel="Notifications"
-              accessibilityRole="button"
-            >
-              <Ionicons
-                name="notifications-outline"
-                size={20}
-                color={palette.textPrimary}
-              />
-            </TouchableOpacity>
+            <NotificationBell />
           </View>
         </View>
 
@@ -571,15 +568,17 @@ export default function HomeScreen({ navigation }: any) {
         ) : (
           results
             .slice(0, 8)
-            .map((result) => (
-              <ServiceDiscoveryCard
-                key={result.id}
-                result={result}
-                onPress={() =>
-                  navigation.navigate("ServiceDetail", { serviceId: result.id })
-                }
-                onBook={() => handleBookPress(result)}
-              />
+            .map((result, i) => (
+              <React.Fragment key={result.id}>
+                {i > 0 && <View style={styles.cardDivider} />}
+                <ServiceDiscoveryCard
+                  result={result}
+                  onPress={() =>
+                    navigation.navigate("ServiceDetail", { serviceId: result.id })
+                  }
+                  onBook={() => handleBookPress(result)}
+                />
+              </React.Fragment>
             ))
         )}
       </ScrollView>
@@ -590,7 +589,14 @@ export default function HomeScreen({ navigation }: any) {
         serviceId={bookingService?.id ?? ""}
         serviceTitle={bookingService?.title ?? ""}
         basePrice={bookingService?.base_price ?? 0}
+        pricingModel={bookingService?.pricing_model}
+        paymentMode={bookingService?.payment_mode}
         availabilityMatrix={bookingService?.provider?.availability_matrix}
+        categoryId={bookingService?.category?.id}
+        providerName={bookingService?.provider?.display_name}
+        durationMins={bookingService?.duration_estimate_mins}
+        thumbUri={bookingService?.photos?.[0]?.path ?? null}
+        addons={bookingService?.addons}
         onBooked={handleBooked}
       />
 
@@ -710,12 +716,12 @@ const styles = StyleSheet.create({
   },
   catSkeleton: {
     height: 52,
-    borderRadius: r.md,
+    borderRadius: r.sm,
     backgroundColor: palette.skeleton,
   },
   categoryTile: {
     backgroundColor: palette.surface,
-    borderRadius: r.md,
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
     overflow: "hidden",
@@ -776,19 +782,23 @@ const styles = StyleSheet.create({
   },
 
   horizontalDivider: {
-    height: StyleSheet.hairlineWidth, // Creates a crisp, 1-pixel native line
-    backgroundColor: "#A9A9A9", // Choose your divider color
-    marginVertical: 15, // Adds space above and below the line
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: palette.border,
+    marginVertical: 15,
+  },
+  cardDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: palette.border,
+    marginVertical: spacing.md,
   },
   // ── Book again card (v3.2 §2.3) ──────────────────────────────
   bookAgainCard: {
-    borderRadius: r.lg,
+    borderRadius: r.sm,
     backgroundColor: palette.surface,
     borderWidth: 1,
     borderColor: palette.border,
     marginBottom: spacing.md,
     overflow: "hidden",
-    // ...shadow.card,
   },
   bookAgainInner: {
     flexDirection: "row",
@@ -838,7 +848,7 @@ const styles = StyleSheet.create({
 
   // ── Post a request entry (v3.2 §6) ───────────────────────────
   postRequestCard: {
-    borderRadius: r.lg,
+    borderRadius: r.sm,
     backgroundColor: palette.primaryLight,
     borderWidth: 1,
     borderColor: palette.border,
@@ -874,7 +884,7 @@ const styles = StyleSheet.create({
 
   // ── Location nudge banner ────────────────────────────────────
   locationNudge: {
-    borderRadius: r.lg,
+    borderRadius: r.sm,
     backgroundColor: palette.primaryLight,
     borderWidth: 1,
     borderColor: palette.border,
@@ -897,7 +907,7 @@ const styles = StyleSheet.create({
 
   // ── Fallback notice (no local providers) ─────────────────────
   fallbackNotice: {
-    borderRadius: r.lg,
+    borderRadius: r.sm,
     backgroundColor: palette.surface,
     borderWidth: 1,
     borderColor: palette.border,
@@ -919,7 +929,7 @@ const styles = StyleSheet.create({
   },
 
   // ── Empty state ───────────────────────────────────────────────
-  cardSkeleton: { height: 112, borderRadius: r.lg, marginBottom: spacing.sm },
+  cardSkeleton: { height: 112, borderRadius: r.sm, marginBottom: spacing.sm },
   emptyState: {
     alignItems: "center",
     paddingVertical: spacing.xxl,

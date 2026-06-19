@@ -57,7 +57,7 @@ const styles = StyleSheet.create({
   },
   sm:      { paddingHorizontal: 6,  paddingVertical: 2 },
   md:      { paddingHorizontal: 10, paddingVertical: 4 },
-  label:   { fontFamily: 'PlusJakartaSans_600SemiBold' },
+  label:   { fontFamily: 'DMSans_600SemiBold' },
   labelSm: { fontSize: 10 },
   labelMd: { fontSize: 12 },
 });

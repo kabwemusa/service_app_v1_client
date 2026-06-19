@@ -7,8 +7,10 @@ use App\Enums\UserRole;
 use App\Exceptions\Api\ApiException;
 use App\Exceptions\Api\ForbiddenException;
 use App\Exceptions\Api\NotFoundException;
+use App\Events\SafetyAlert;
 use App\Models\SafetyReport;
 use App\Models\User;
+use App\Services\NotificationDispatcher;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -22,6 +24,8 @@ use Illuminate\Support\Facades\Notification;
  */
 class SafetyReportService
 {
+    public function __construct(private readonly NotificationDispatcher $notifications) {}
+
     /**
      * File a safety report.
      *
@@ -81,6 +85,17 @@ class SafetyReportService
 
             // Notify all moderators and admins for same-hour review (§11.3)
             $this->alertModerators($report);
+
+            // Notify the reported user (time-critical, cannot be suppressed)
+            try {
+                $this->notifications->dispatch(new SafetyAlert(
+                    $report,
+                    $reported->id,
+                    'A safety concern has been reported regarding your account. Your account has been temporarily restricted pending review.',
+                ));
+            } catch (\Throwable $e) {
+                Log::error('SafetyReportService: notification failed', ['error' => $e->getMessage()]);
+            }
 
             return $report;
         });

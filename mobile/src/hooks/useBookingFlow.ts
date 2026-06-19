@@ -1,21 +1,45 @@
 import { useEffect, useState } from 'react';
 import { SelectedLocation } from '../components/ui/LocationSearch';
 import { useBookingStore } from '../store/bookingStore';
+import { useLocationStore } from '../store/locationStore';
 import { useSnackbar } from '../providers/SnackbarProvider';
 
 export const HOUR_OPTIONS    = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
 export const DURATION_OPTIONS = [1, 1.5, 2, 3, 4];
 
+// Zambia is CAT (Central Africa Time) = UTC+2. We derive "now in Zambia" so
+// past hours are greyed out correctly regardless of the device's local timezone.
+function zambiaHour(): number {
+  const utcH = new Date().getUTCHours();
+  const utcM = new Date().getUTCMinutes();
+  return ((utcH + 2) % 24) + (utcM > 0 ? 1 : 0); // round up — a partially-elapsed hour is past
+}
+
+function zambiaToday(): Date {
+  const now = new Date();
+  // Shift to UTC+2 for date boundary
+  const zambiaNow = new Date(now.getTime() + 2 * 60 * 60_000);
+  const d = new Date(zambiaNow.getUTCFullYear(), zambiaNow.getUTCMonth(), zambiaNow.getUTCDate());
+  return d;
+}
+
 function next14Days(): Date[] {
   const days: Date[] = [];
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  for (let i = 1; i <= 14; i++) {
+  const today = zambiaToday();
+  for (let i = 0; i <= 14; i++) {
     const d = new Date(today);
     d.setDate(today.getDate() + i);
     days.push(d);
   }
   return days;
+}
+
+/** True if the given hour has already passed on the given day (Zambia time). */
+export function isHourPast(hour: number, day: Date): boolean {
+  const today = zambiaToday();
+  if (day.getTime() > today.getTime()) return false;
+  if (day.getTime() < today.getTime()) return true;
+  return hour < zambiaHour();
 }
 
 function pad(n: number) {
@@ -24,6 +48,8 @@ function pad(n: number) {
 
 export function useBookingFlow(serviceId: string) {
   const { createBooking, submitting, error, clearError } = useBookingStore();
+  // The active delivery location (§4) — prefilled so the sheet opens ready to send.
+  const activeDelivery = useLocationStore((s) => s.deliveryLocation);
   const { showError } = useSnackbar();
 
   // Stable across re-renders — computed once on mount so Date objects don't
@@ -45,14 +71,30 @@ export function useBookingFlow(serviceId: string) {
     setDeliveryLocation(loc);
   }
 
-  function reset(initialDay?: Date) {
-    setSelectedDay(initialDay ?? days[0]);
-    setStartHour(9);
-    setDurationHrs(1);
-    setDeliveryLocation(null);
+  // Map the store's active DeliveryLocation onto the SelectedLocation shape the
+  // flow uses. SAVED source is treated as SEARCH for the booking payload.
+  function activeAsSelected(): SelectedLocation | null {
+    if (!activeDelivery) return null;
+    return {
+      label:  activeDelivery.label,
+      lat:    activeDelivery.lat,
+      lng:    activeDelivery.lng,
+      region: activeDelivery.region,
+      source: activeDelivery.source === 'DEVICE' ? 'DEVICE' : 'SEARCH',
+    };
   }
 
-  async function submit() {
+  function reset(initialDay?: Date) {
+    const day = initialDay ?? days[0];
+    setSelectedDay(day);
+    // Pick the first future hour on the selected day; default to 9 if all are valid.
+    const firstValid = HOUR_OPTIONS.find((h) => !isHourPast(h, day)) ?? HOUR_OPTIONS[0];
+    setStartHour(firstValid >= 9 && !isHourPast(9, day) ? 9 : firstValid);
+    setDurationHrs(1);
+    setDeliveryLocation(activeAsSelected());
+  }
+
+  async function submit(addonIds: number[] = [], notes?: string) {
     if (!deliveryLocation) {
       showError('Please set a delivery location.');
       return null;
@@ -71,6 +113,8 @@ export function useBookingFlow(serviceId: string) {
         delivery_location_label:   deliveryLocation.label,
         delivery_location_region:  deliveryLocation.region,
         delivery_location_source:  deliveryLocation.source,
+        ...(addonIds.length ? { addon_ids: addonIds } : {}),
+        ...(notes && notes.trim() ? { notes: notes.trim() } : {}),
       });
     } catch {
       return null;
@@ -88,6 +132,7 @@ export function useBookingFlow(serviceId: string) {
     startHour,       setStartHour,
     durationHrs,     setDurationHrs,
     deliveryLocation,
+    setDeliveryLocation,
     handleLocationChange,
     submit,
     reset,

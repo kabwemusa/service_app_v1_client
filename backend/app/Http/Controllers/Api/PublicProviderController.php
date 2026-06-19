@@ -7,15 +7,21 @@ use App\Exceptions\Api\ForbiddenException;
 use App\Exceptions\Api\NotFoundException;
 use App\Http\Controllers\Controller;
 
+use App\Models\ProviderProfile;
 use App\Models\User;
 use App\Services\ProviderProfileService;
+use App\Services\Ranking\RankingService;
 use App\Support\ApiResponse;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class PublicProviderController extends Controller
 {
-    public function __construct(private readonly ProviderProfileService $profiles) {}
+    public function __construct(
+        private readonly ProviderProfileService $profiles,
+        private readonly RankingService         $ranking,
+    ) {}
 
     /**
      * GET /providers/{userId}
@@ -31,19 +37,7 @@ class PublicProviderController extends Controller
      */
     public function show(string $userId): JsonResponse
     {
-        $user = User::with('providerProfile')->find($userId);
-
-        if (! $user || $user->role !== 'PROVIDER') {
-            throw new NotFoundException('Provider');
-        }
-
-        $profile = $user->providerProfile;
-
-        if (! $profile
-            || ($profile->trust_tier ?? 0) < TrustTier::BASIC->value
-            || $user->account_state !== 'ACTIVE') {
-            throw new ForbiddenException('This provider is not yet verified.');
-        }
+        [$user, $profile] = $this->resolveSellableProvider($userId);
 
         $highlights = array_merge(
             ['pinned_service_ids' => [], 'featured_photo_keys' => [], 'featured_badges' => []],
@@ -151,6 +145,133 @@ class PublicProviderController extends Controller
                 'reviewer'   => ['id' => $rev->reviewer_id, 'name' => $this->maskName($rev->reviewer_name)],
             ], $reviews),
         ], 'Provider profile retrieved.');
+    }
+
+    /**
+     * GET /providers/{userId}/reviews
+     *
+     * Provider-wide review feed (v3 §7.1) — reviews are a provider-level signal,
+     * never per-service. Every row comes from a COMPLETED booking (§10.4 / §12),
+     * so the whole list is a "verified booking" anti-fake trust surface.
+     *
+     * Paginated and SERVER-sorted (recent | highest | lowest), with an optional
+     * star-rating filter. The `summary` block (Bayesian header score + count +
+     * full star distribution) is computed across ALL of the provider's reviews,
+     * independent of the page or the rating filter, so the sticky header stays
+     * stable while the user scrolls or filters.
+     *
+     * Never exposes coordinates, reviewers' full legal names, or trust_score.
+     */
+    public function reviews(Request $request, string $userId): JsonResponse
+    {
+        [$user] = $this->resolveSellableProvider($userId);
+
+        $validated = $request->validate([
+            'sort'     => 'sometimes|in:recent,highest,lowest',
+            'rating'   => 'sometimes|integer|min:1|max:5',
+            'page'     => 'sometimes|integer|min:1',
+            'per_page' => 'sometimes|integer|min:1|max:50',
+        ]);
+
+        $sort    = $validated['sort'] ?? 'recent';
+        $rating  = $validated['rating'] ?? null;
+        $perPage = (int) ($validated['per_page'] ?? 15);
+
+        // ── Summary: provider-wide, ignores page + rating filter (§7.1) ──────
+        $cMean  = $this->ranking->getCMean();
+        $rBayes = (int) $user->v_reviews > 0
+            ? round($this->ranking->computeRBayes((float) $user->r_raw, (int) $user->v_reviews, $cMean), 2)
+            : null;
+
+        // Full star distribution (5→1) across every review for this provider.
+        $distRows = DB::table('reviews')
+            ->selectRaw('ROUND(rating)::int AS star, COUNT(*) AS n')
+            ->where('reviewee_id', $userId)
+            ->groupBy(DB::raw('ROUND(rating)::int'))
+            ->pluck('n', 'star');
+        $distribution = [];
+        foreach ([5, 4, 3, 2, 1] as $star) {
+            $distribution[(string) $star] = (int) ($distRows[$star] ?? 0);
+        }
+
+        // ── Page: server-sorted, optional rating filter ─────────────────────
+        $query = DB::table('reviews as r')
+            ->join('users as u', 'u.id', '=', 'r.reviewer_id')
+            ->leftJoin('bookings as b', 'b.id', '=', 'r.booking_id')
+            ->leftJoin('services as s', 's.id', '=', 'b.service_id')
+            ->where('r.reviewee_id', $userId)
+            ->select(
+                'r.id',
+                'r.rating',
+                'r.comment',
+                'r.created_at',
+                'u.legal_name as reviewer_name',
+                's.id as service_id',
+                's.title as service_title',
+            );
+
+        if ($rating !== null) {
+            $query->whereRaw('ROUND(r.rating)::int = ?', [$rating]);
+        }
+
+        match ($sort) {
+            'highest' => $query->orderByDesc('r.rating')->orderByDesc('r.created_at'),
+            'lowest'  => $query->orderBy('r.rating')->orderByDesc('r.created_at'),
+            default   => $query->orderByDesc('r.created_at'),
+        };
+
+        $paginator = $query->paginate($perPage);
+
+        return ApiResponse::success([
+            'summary' => [
+                // Bayesian header score (§7.1) — null until first review. Never r_raw.
+                'rating'       => $rBayes,
+                'count'        => (int) $user->v_reviews,
+                'distribution' => $distribution,
+            ],
+            'data' => array_map(fn ($rev) => [
+                'id'         => $rev->id,
+                'rating'     => (float) $rev->rating,
+                'comment'    => $rev->comment,
+                'created_at' => $rev->created_at,
+                'reviewer'   => ['name' => $this->maskName($rev->reviewer_name)],
+                // The booking→service the review was left for (small, secondary).
+                'service'    => $rev->service_id
+                    ? ['id' => $rev->service_id, 'title' => $rev->service_title]
+                    : null,
+                // Reviews exist only for COMPLETED bookings (§10.4) — always verified.
+                'verified'   => true,
+            ], $paginator->items()),
+            'current_page' => $paginator->currentPage(),
+            'last_page'    => $paginator->lastPage(),
+            'per_page'     => $paginator->perPage(),
+            'total'        => $paginator->total(),
+        ], 'Provider reviews retrieved.');
+    }
+
+    /**
+     * Resolve a publicly sellable provider (Tier ≥ BASIC, ACTIVE) or throw —
+     * the same gate the search index applies, shared by show() + reviews().
+     *
+     * @return array{0: User, 1: ProviderProfile}
+     */
+    private function resolveSellableProvider(string $userId): array
+    {
+        $user = User::with('providerProfile')->find($userId);
+
+        if (! $user || $user->role !== 'PROVIDER') {
+            throw new NotFoundException('Provider');
+        }
+
+        $profile = $user->providerProfile;
+
+        if (! $profile
+            || ($profile->trust_tier ?? 0) < TrustTier::BASIC->value
+            || $user->account_state !== 'ACTIVE') {
+            throw new ForbiddenException('This provider is not yet verified.');
+        }
+
+        return [$user, $profile];
     }
 
     /** "Chanda Mwansa" → "Chanda M." — never expose a reviewer's full legal name. */

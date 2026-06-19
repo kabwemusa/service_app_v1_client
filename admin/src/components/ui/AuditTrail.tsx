@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api/client'
@@ -41,7 +41,7 @@ export function AuditTrail({ targetType, targetId }: AuditTrailProps) {
       <FilterBar
         search={search}
         onSearchChange={(v) => { setSearch(v); setPage(1) }}
-        searchPlaceholder="Search by action or target…"
+        searchPlaceholder="Search by action or targetâ€¦"
       />
 
       {isLoading ? (
@@ -57,7 +57,7 @@ export function AuditTrail({ targetType, targetId }: AuditTrailProps) {
           icon={ClipboardList}
         />
       ) : (
-        <div className="divide-y divide-slate-100 rounded-xl border border-slate-200 dark:divide-slate-700 dark:border-slate-700">
+        <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-700 dark:border-slate-700">
           {data.data.map((entry) => (
             <div key={entry.id} className="flex gap-3 px-4 py-3">
               <Avatar name={entry.actor_name} size="sm" className="mt-0.5 shrink-0" />
@@ -78,7 +78,7 @@ export function AuditTrail({ targetType, targetId }: AuditTrailProps) {
                   <span className="font-medium">Reason:</span> {entry.reason}
                 </p>
                 <p className="mt-0.5 text-xs text-slate-400">
-                  {fmtDatetime(entry.created_at)} · {entry.ip}
+                  {fmtDatetime(entry.created_at)} Â· {entry.ip}
                 </p>
               </div>
             </div>

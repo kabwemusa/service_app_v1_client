@@ -121,6 +121,23 @@ class ProviderProfileService
 
         $mode = config('booking.payment_mode', 'DIRECT');
 
+        // DIRECT "to collect" — completed jobs the provider has not yet confirmed paid
+        // (reconciles with the two-party mark-paid: provider_marked_paid_at is the
+        // provider's own confirmation). Sum of agreed_amount + a count. ESCROW: n/a.
+        $toCollect = null;
+        if ($mode === 'DIRECT') {
+            $row = Booking::where('provider_id', $user->id)
+                ->where('payment_mode', 'DIRECT')
+                ->where('status', 'COMPLETED')
+                ->whereNull('provider_marked_paid_at')
+                ->selectRaw('COALESCE(SUM(agreed_amount), 0) AS amount, COUNT(*) AS cnt')
+                ->first();
+            $toCollect = [
+                'amount_zmw' => round((float) ($row->amount ?? 0), 2),
+                'count'      => (int) ($row->cnt ?? 0),
+            ];
+        }
+
         // TODAY aggregate — new requests = bookings awaiting a reply.
         // DIRECT: REQUESTED/QUOTED awaiting the provider · ESCROW: FUNDS_HELD (same
         // population as the §6.8 Requests tab "New" section).
@@ -182,12 +199,19 @@ class ProviderProfileService
                     'location_label' => $nextJob->delivery_location_label ?? '',
                 ] : null,
             ],
+            // DIRECT only — money on completed jobs the provider hasn't confirmed paid.
+            'to_collect' => $toCollect,
             'stats' => [
                 'rating'                 => ((int) $user->v_reviews) > 0 ? round((float) $user->r_raw, 2) : null,
+                // Bayesian rating count (§7.1) for the profile stats row.
+                'reviews'                => (int) $user->v_reviews,
                 'response_time_p50_mins' => $profile->response_time_p50_mins,
                 'repeat_client_rate'     => $profile->repeat_client_rate,
                 'jobs_done'              => $completedJobs,
+                'active_services'        => $profile->services()->where('status', 'ACTIVE')->count(),
             ],
+            // §9.6 referral entry — every user has an 8-char code.
+            'referral_code' => $user->referral_code,
         ];
     }
 

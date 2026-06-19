@@ -1,12 +1,12 @@
-'use client'
+﻿'use client'
 
 import type { ReactNode } from 'react'
 import { CheckCircle2, XCircle, AlertTriangle, MinusCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { AutomatedChecks as Checks } from '@/lib/api/verification'
 
-// Read-only surfacing of the automated check engine's results (§4.3 pipeline,
-// §5.3 image pipeline). The reviewer decides; the system advises — so these are
+// Read-only surfacing of the automated check engine's results (Â§4.3 pipeline,
+// Â§5.3 image pipeline). The reviewer decides; the system advises â€” so these are
 // presented as advisory rows, never as gating controls.
 
 type Tone = 'pass' | 'fail' | 'warn' | 'none'
@@ -60,7 +60,7 @@ export function AutomatedChecks({ checks }: { checks: Checks }) {
           <>
             Confidence {checks.authenticity.score.toFixed(2)}
             {checks.authenticity.flags.length > 0 &&
-              ` · ${checks.authenticity.flags.join(', ')}`}
+              ` Â· ${checks.authenticity.flags.join(', ')}`}
           </>
         }
       />,
@@ -72,7 +72,7 @@ export function AutomatedChecks({ checks }: { checks: Checks }) {
         key="liveness"
         label="Liveness / face match"
         tone={checks.liveness.passed ? 'pass' : 'fail'}
-        detail={`Match score ${checks.liveness.score.toFixed(2)} (≥ 0.85 required)`}
+        detail={`Match score ${checks.liveness.score.toFixed(2)} (â‰¥ 0.85 required)`}
       />,
     )
   }
@@ -84,7 +84,7 @@ export function AutomatedChecks({ checks }: { checks: Checks }) {
         tone={checks.database_match.matched ? 'fail' : 'pass'}
         detail={
           checks.database_match.matched
-            ? `Match found${checks.database_match.source ? ` · ${checks.database_match.source}` : ''}`
+            ? `Match found${checks.database_match.source ? ` Â· ${checks.database_match.source}` : ''}`
             : 'No match'
         }
       />,
@@ -141,12 +141,12 @@ export function AutomatedChecks({ checks }: { checks: Checks }) {
         id="checks-heading"
         className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400"
       >
-        Automated checks · advisory
+        Automated checks Â· advisory
       </h3>
       {rows.length === 0 ? (
         <p className="py-2 text-xs text-slate-400">No automated results recorded.</p>
       ) : (
-        <div className="divide-y divide-slate-100 rounded-xl border border-slate-200 px-3 dark:divide-slate-800 dark:border-slate-700">
+        <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 px-3 dark:divide-slate-800 dark:border-slate-700">
           {rows}
         </div>
       )}

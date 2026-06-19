@@ -28,6 +28,8 @@ class ProviderProfileResource extends JsonResource
             'momo_number'          => $this->momo_number,
             'base_location_lat'    => $this->base_location_lat,
             'base_location_lng'    => $this->base_location_lng,
+            // Human-readable area label for the header (never coordinates, §4.1).
+            'base_location_label'  => $this->base_location_label,
             'max_radius_km'        => $this->max_radius_km,
             'service_radius_km'    => $this->service_radius_km,
             'availability_matrix'  => $this->availability_matrix,

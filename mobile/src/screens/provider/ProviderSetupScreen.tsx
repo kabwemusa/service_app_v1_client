@@ -13,7 +13,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { LocationSearch } from '../../components/ui/LocationSearch';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useProfileStore } from '../../store/profileStore';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { ScreenHeader } from '../../components/ui/ScreenHeader';
+import { palette, radius as r, spacing, typography } from '../../theme';
 
 const MOMO_PROVIDERS = ['MTN', 'AIRTEL', 'ZAMTEL'] as const;
 type MomoProvider = typeof MOMO_PROVIDERS[number];
@@ -119,15 +120,11 @@ export default function ProviderSetupScreen({ navigation }: any) {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.header}>
-            <TouchableRipple onPress={() => navigation.goBack()} borderless style={styles.backBtn}>
-              <Ionicons name="arrow-back" size={20} color={palette.textPrimary} />
-            </TouchableRipple>
-            <View style={styles.headerText}>
-              <Text style={styles.pageTitle}>Provider Profile</Text>
-              <Text style={styles.subtitle}>Set trust details so clients can book confidently.</Text>
-            </View>
-          </View>
+          <ScreenHeader
+            title="Provider profile"
+            subtitle="Set trust details so clients can book confidently"
+            back
+          />
 
           <View style={styles.progressSection}>
             <View style={styles.progressRow}>
@@ -363,12 +360,11 @@ const styles = StyleSheet.create({
 
   progressSection: {
     backgroundColor: palette.surface,
-    borderRadius: r.lg,
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
     padding: spacing.md,
     marginBottom: spacing.md,
-    ...shadow.card,
   },
   progressRow:  { flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.sm },
   progressLabel:{ ...typography.label, color: palette.textSecondary },
@@ -394,23 +390,22 @@ const styles = StyleSheet.create({
   sectionLabel: { ...typography.label, color: palette.textSecondary, marginBottom: spacing.sm },
   card: {
     backgroundColor: palette.surface,
-    borderRadius: r.lg,
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
     padding: spacing.md,
     marginBottom: spacing.lg,
     gap: spacing.sm,
-    ...shadow.card,
   },
   input:       { backgroundColor: '#FFFFFF' },
-  inputOutline:{ borderRadius: r.lg },
+  inputOutline:{ borderRadius: r.sm },
   bioInput:    { minHeight: 88 },
 
   momoRow: { flexDirection: 'row', gap: spacing.sm },
   momoBtn: {
     flex: 1,
     paddingVertical: spacing.sm,
-    borderRadius: r.md,
+    borderRadius: r.sm,
     borderWidth: 1.5,
     borderColor: palette.border,
     alignItems: 'center',
@@ -419,7 +414,7 @@ const styles = StyleSheet.create({
   momoBtnText:       { ...typography.label, color: palette.textSecondary },
   momoBtnTextActive: { color: palette.primary },
 
-  saveBtn:        { borderRadius: r.lg, marginTop: spacing.md },
+  saveBtn:        { borderRadius: r.sm, marginTop: spacing.md },
   saveBtnContent: { height: 54 },
   saveBtnLabel:   { ...typography.label, fontSize: 16 },
 

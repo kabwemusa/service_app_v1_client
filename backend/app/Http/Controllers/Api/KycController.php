@@ -51,10 +51,11 @@ class KycController extends Controller
     public function submitDocument(SubmitDocumentRequest $request): JsonResponse
     {
         $doc = $this->kyc->submitDocument(
-            user:          $request->user(),
-            documentImage: $request->file('document'),
-            selfieImage:   $request->file('selfie'),
-            docType:       $request->validated('doc_type'),
+            user:               $request->user(),
+            documentImage:      $request->file('document'),
+            selfieImage:        $request->file('selfie'),
+            docType:            $request->validated('doc_type'),
+            documentBackImage:  $request->file('document_back'),
         );
 
         return ApiResponse::success(

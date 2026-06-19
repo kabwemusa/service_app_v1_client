@@ -19,7 +19,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useSnackbar } from "../../providers/SnackbarProvider";
 import { useAuthStore } from "../../store/authStore";
-import { palette, radius as r, shadow, spacing, typography } from "../../theme";
+import { palette, radius as r, spacing, typography } from "../../theme";
 
 type Role = "CUSTOMER" | "PROVIDER";
 
@@ -347,7 +347,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: palette.border,
     padding: spacing.lg,
-    // ...shadow.card,
+
   },
   roleLabel: {
     ...typography.label,

@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useEffect } from 'react'
 import { CheckCircle2, XCircle, AlertTriangle, Info, X } from 'lucide-react'
@@ -47,7 +47,7 @@ function ToastItem({ id, type, message, duration = DEFAULT_DURATION }: {
       role="alert"
       aria-live="polite"
       className={cn(
-        'flex items-start gap-3 rounded-xl border px-4 py-3 shadow-lg min-w-72 max-w-sm',
+        'flex items-start gap-3 rounded-lg border px-4 py-3 min-w-72 max-w-sm',
         STYLES[type],
       )}
     >

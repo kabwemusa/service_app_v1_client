@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useRef, useState, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
@@ -63,7 +63,7 @@ export default function MfaPage() {
     <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6 dark:bg-slate-950">
       <div className="w-full max-w-sm space-y-6">
         <div className="flex flex-col items-center gap-2">
-          <div className="flex size-10 items-center justify-center rounded-xl bg-teal-600">
+          <div className="flex size-10 items-center justify-center rounded-lg bg-teal-600">
             <ShieldCheck className="size-5 text-white" />
           </div>
           <h1 className="text-base font-medium text-slate-900 dark:text-slate-100">
@@ -76,7 +76,7 @@ export default function MfaPage() {
 
         <form
           onSubmit={handleSubmit}
-          className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 dark:border-slate-700 dark:bg-slate-800"
+          className="space-y-4 rounded-lg border border-slate-200 bg-white p-6 dark:border-slate-700 dark:bg-slate-800"
         >
           <div className="space-y-1.5">
             <label htmlFor="mfa-code" className="block text-xs font-medium text-slate-700 dark:text-slate-300">
@@ -115,7 +115,7 @@ export default function MfaPage() {
             disabled={code.length !== 6 || submitting}
             className="w-full rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-60"
           >
-            {submitting ? 'Verifying…' : 'Verify'}
+            {submitting ? 'Verifyingâ€¦' : 'Verify'}
           </button>
         </form>
 

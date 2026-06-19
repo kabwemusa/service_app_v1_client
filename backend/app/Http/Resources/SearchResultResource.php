@@ -53,7 +53,9 @@ class SearchResultResource extends JsonResource
                 'response_time_p50_mins' => $this->response_time_p50_mins !== null
                     ? (int) $this->response_time_p50_mins
                     : null,
+                'base_location_label'    => $this->base_location_label,
             ],
+            'photo_urls' => json_decode($this->photo_urls ?? '[]', true) ?: [],
             'sort_score' => round((float) ($this->sort_score ?? 0), 4),
         ];
     }

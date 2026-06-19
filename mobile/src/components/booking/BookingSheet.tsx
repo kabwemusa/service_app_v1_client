@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import { Image } from 'expo-image';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Dimensions,
   KeyboardAvoidingView,
@@ -9,6 +10,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -21,9 +23,13 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Button, Text } from 'react-native-paper';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { DURATION_OPTIONS, HOUR_OPTIONS, useBookingFlow } from '../../hooks/useBookingFlow';
-import { LocationSearch } from '../ui/LocationSearch';
+import { bookingsApi } from '../../api/bookings';
+import { ServiceAddon } from '../../api/services';
+import { DURATION_OPTIONS, HOUR_OPTIONS, isHourPast, useBookingFlow } from '../../hooks/useBookingFlow';
+import { DeliveryLocation } from '../../store/locationStore';
+import { LocationPickerSheet } from '../location/LocationPickerSheet';
 import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { fontFamily } from '../../theme/typography';
 
 // ── Availability helpers ──────────────────────────────────────────────────────
 
@@ -50,10 +56,40 @@ function isHourAvailable(hour: number, day: Date, matrix: AvailMatrix | null | u
   });
 }
 
+// Relative day label — Today / Tomorrow, else weekday + date (§ booking workflow).
+function dayChipLabel(day: Date): { top: string; bottom: string } {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diff = Math.round((day.getTime() - today.getTime()) / 86_400_000);
+  if (diff === 0) return { top: 'Today',    bottom: `${day.getDate()}` };
+  if (diff === 1) return { top: 'Tomorrow', bottom: `${day.getDate()}` };
+  return {
+    top:    day.toLocaleDateString('en', { weekday: 'short' }),
+    bottom: `${day.getDate()}`,
+  };
+}
+
+function deliveryToSelected(dl: DeliveryLocation) {
+  return {
+    label:  dl.label,
+    lat:    dl.lat,
+    lng:    dl.lng,
+    region: dl.region,
+    source: (dl.source === 'DEVICE' ? 'DEVICE' : 'SEARCH') as 'DEVICE' | 'SEARCH',
+  };
+}
+
+const CAT_PALETTE = [
+  '#0891B2', '#2563EB', '#7C3AED', '#D97706',
+  '#DB2777', '#16A34A', '#4B5563', '#0369A1',
+  '#15803D', '#B45309', '#1D4ED8', '#1E40AF',
+  '#92400E', '#9D174D',
+];
+
 // ── Sheet constants ───────────────────────────────────────────────────────────
 
 const { height: SCREEN_H } = Dimensions.get('window');
-const SHEET_H      = Math.min(SCREEN_H * 0.84, 700);
+const SHEET_H      = Math.min(SCREEN_H * 0.9, 760);
 const DISMISS_Y    = 100;
 const DISMISS_VEL  = 0.5;
 const SPRING_OPEN  = { damping: 24, stiffness: 280 } as const;
@@ -66,80 +102,126 @@ interface Props {
   serviceTitle:    string;
   basePrice:       number;
   pricingModel?:   'FIXED' | 'HOURLY' | 'QUOTE';
-  // Platform payment mode — drives fee breakdown + CTA copy (DIRECT = no escrow, no 2% fee).
+  // Platform payment mode — drives total breakdown + CTA copy (DIRECT = no escrow, no 2% fee).
   paymentMode?:    'DIRECT' | 'ESCROW';
   // Provider availability: keys are SUN/MON/…/SAT, values are [{start, end}] windows.
-  // Null/undefined = no restrictions (all days and hours selectable).
   availabilityMatrix?: AvailMatrix | null;
-  // Add-ons selected on the service detail screen (v3.1 §5.3 / §6.2).
-  // Displayed as fee-card line items and included in the total.
+
+  // ── Summary (optional — degrades gracefully when omitted) ──
+  thumbUri?:           string | null;
+  categoryId?:         number | null;
+  categoryIcon?:       string | null;
+  providerName?:       string | null;
+  durationMins?:       number | null;
+
+  // Service add-ons (§5.3) rendered as toggles that update the live total.
+  addons?:         ServiceAddon[];
+  // Pre-selected add-ons (e.g. chosen on the service detail screen) — initial state.
   selectedAddons?: { id: number; name: string; price: number }[];
   onBooked:        (bookingId: string) => void;
 }
 
-export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePrice, pricingModel = 'FIXED', paymentMode = 'DIRECT', availabilityMatrix, selectedAddons = [], onBooked }: Props) {
+export function BookingSheet({
+  visible, onClose, serviceId, serviceTitle, basePrice,
+  pricingModel = 'FIXED', paymentMode = 'DIRECT', availabilityMatrix,
+  thumbUri, categoryId, categoryIcon, providerName, durationMins,
+  addons, selectedAddons = [], onBooked,
+}: Props) {
   const insets          = useSafeAreaInsets();
   const translateY      = useSharedValue(SHEET_H);
   const backdropOpacity = useSharedValue(0);
   const flow            = useBookingFlow(serviceId);
 
-  // Normalise to null so helpers receive a consistent type.
-  const avail = availabilityMatrix ?? null;
+  const avail   = availabilityMatrix ?? null;
+  const isDirect = paymentMode === 'DIRECT';
+  const isQuote  = pricingModel === 'QUOTE';
 
-  // First day in the next-14 window that is available per the provider's matrix.
+  // Add-on list to render as toggles; falls back to the pre-selected list for
+  // callers that don't pass the full catalogue.
+  const addonList: ServiceAddon[] = addons ?? selectedAddons;
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [notes,       setNotes]       = useState('');
+  const [pickerOpen,  setPickerOpen]  = useState(false);
+
+  // Booked hours: set of "dateString-hour" keys greyed out as already taken.
+  const [bookedHours, setBookedHours] = useState<Set<string>>(new Set());
+
+  // A day is selectable if the provider works that day AND at least one
+  // hour remains available (not past + not outside the provider window).
+  function isDaySelectable(day: Date): boolean {
+    if (!isDayAvailable(day, avail)) return false;
+    return HOUR_OPTIONS.some((h) =>
+      isHourAvailable(h, day, avail) && !isHourPast(h, day),
+    );
+  }
+
   const firstAvailableDay = useMemo(
-    () => flow.days.find((d) => isDayAvailable(d, avail)) ?? flow.days[0],
-    // flow.days is stable (useState initialiser in useBookingFlow).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    () => flow.days.find((d) => isDaySelectable(d)) ?? flow.days[0],
     [flow.days, avail],
   );
 
   const close = useCallback(() => {
     translateY.value      = withSpring(SHEET_H, SPRING_CLOSE);
-    // The withTiming completion callback runs on the UI thread (worklet); onClose
-    // is a JS function, so it must be marshalled back with runOnJS or the app crashes.
     backdropOpacity.value = withTiming(0, { duration: 200 }, (finished) => {
       if (finished) runOnJS(onClose)();
     });
   }, [onClose]);
 
-  // Open: animate in and reset to the first available day.
+  // Open: animate in, reset to first available day + the pre-selected add-ons.
+  // Fetch booked slots so taken hours are greyed out.
   useEffect(() => {
     if (visible) {
       translateY.value      = withSpring(0, SPRING_OPEN);
       backdropOpacity.value = withTiming(0.55, { duration: 250 });
       flow.reset(firstAvailableDay);
+      setSelectedIds(new Set(selectedAddons.map((a) => a.id)));
+      setNotes('');
+      setBookedHours(new Set());
+
+      bookingsApi.bookedSlots(serviceId).then(({ slots }) => {
+        const keys = new Set<string>();
+        for (const slot of slots) {
+          const start = new Date(slot.start);
+          const end   = new Date(slot.end);
+          // Mark each whole hour touched by [start, end) as booked
+          const cur = new Date(start);
+          cur.setMinutes(0, 0, 0);
+          while (cur < end) {
+            keys.add(`${cur.toDateString()}-${cur.getHours()}`);
+            cur.setHours(cur.getHours() + 1);
+          }
+        }
+        setBookedHours(keys);
+      }).catch(() => {});
     }
   }, [visible]);
 
-  // When the selected day changes, ensure the selected hour is still within the
-  // provider's working window — auto-advance to the first available slot if not.
+  // When the day changes, ensure the selected hour is valid (in window + not past).
   useEffect(() => {
-    if (!avail) return;
-    if (!isHourAvailable(flow.startHour, flow.selectedDay, avail)) {
-      const firstHour = HOUR_OPTIONS.find((h) => isHourAvailable(h, flow.selectedDay, avail));
+    const current = flow.startHour;
+    const isValid = isHourAvailable(current, flow.selectedDay, avail)
+                 && !isHourPast(current, flow.selectedDay)
+                 && !bookedHours.has(`${flow.selectedDay.toDateString()}-${current}`);
+    if (!isValid) {
+      const firstHour = HOUR_OPTIONS.find((h) =>
+        isHourAvailable(h, flow.selectedDay, avail) && !isHourPast(h, flow.selectedDay)
+        && !bookedHours.has(`${flow.selectedDay.toDateString()}-${h}`),
+      );
       if (firstHour !== undefined) flow.setStartHour(firstHour);
     }
-  }, [flow.selectedDay]);
+  }, [flow.selectedDay, bookedHours]);
 
   // Drag-to-dismiss via PanResponder on the handle area
-  const dragStart = useRef(0);
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder:  (_, g) => g.dy > 4,
-      onPanResponderGrant: () => {
-        dragStart.current = 0;
-      },
       onPanResponderMove: (_, g) => {
         if (g.dy > 0) translateY.value = g.dy;
       },
       onPanResponderRelease: (_, g) => {
-        if (g.dy > DISMISS_Y || g.vy > DISMISS_VEL) {
-          close();
-        } else {
-          translateY.value = withSpring(0, SPRING_OPEN);
-        }
+        if (g.dy > DISMISS_Y || g.vy > DISMISS_VEL) close();
+        else translateY.value = withSpring(0, SPRING_OPEN);
       },
     }),
   ).current;
@@ -147,13 +229,42 @@ export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePr
   const sheetStyle    = useAnimatedStyle(() => ({ transform: [{ translateY: translateY.value }] }));
   const backdropStyle = useAnimatedStyle(() => ({ opacity: backdropOpacity.value }));
 
+  // ── Totals ──────────────────────────────────────────────────────────────────
+  const svcCost  = pricingModel === 'HOURLY' ? basePrice * flow.durationHrs : basePrice;
+  const addonSum = addonList.filter((a) => selectedIds.has(a.id)).reduce((s, a) => s + a.price, 0);
+  // No buyer-protection fee in DIRECT mode — there is no escrow to back it.
+  const prot     = !isDirect && !isQuote ? Math.min((svcCost + addonSum) * 0.02, 50) : 0;
+  const total    = svcCost + addonSum + prot;
+
+  const catColor = CAT_PALETTE[(categoryId ?? 0) % CAT_PALETTE.length];
+
+  const toggleAddon = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
   async function handleConfirm() {
-    const booking = await flow.submit();
+    const booking = await flow.submit(Array.from(selectedIds), isQuote ? notes : undefined);
     if (booking) {
       close();
       onBooked(booking.id);
     }
   }
+
+  const ctaLabel = isQuote
+    ? 'Request quote'
+    : isDirect
+    ? 'Request booking'
+    : `Confirm booking · ZMW ${total.toFixed(0)}`;
+
+  const durationLabel = durationMins
+    ? durationMins >= 60
+      ? `~${Math.round((durationMins / 60) * 10) / 10} hr`
+      : `~${durationMins} min`
+    : null;
 
   return (
     <Modal
@@ -164,10 +275,9 @@ export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePr
       onRequestClose={close}
     >
       <View style={styles.root}>
-
         {/* ── Dimmed backdrop ─────────────────────────────────── */}
         <Animated.View style={[styles.backdrop, backdropStyle]}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={close} />
+          <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel="Dismiss" />
         </Animated.View>
 
         {/* ── Sheet ───────────────────────────────────────────── */}
@@ -175,23 +285,43 @@ export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePr
           style={styles.kavWrapper}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         >
-          <Animated.View style={[styles.sheet, sheetStyle, { maxHeight: SHEET_H }]}>
-
-            {/* Drag handle — pan responder attached here only */}
+          <Animated.View
+            style={[styles.sheet, sheetStyle, { maxHeight: SHEET_H }]}
+            accessibilityViewIsModal
+            accessibilityLabel={`Book ${serviceTitle}`}
+          >
+            {/* Drag handle */}
             <View style={styles.handleArea} {...panResponder.panHandlers}>
               <View style={styles.handle} />
             </View>
 
-            {/* Header */}
+            {/* ── Service summary: thumb + title + provider + duration ── */}
             <View style={styles.header}>
+              <View style={styles.summaryThumbWrap}>
+                {thumbUri ? (
+                  <Image source={{ uri: thumbUri }} style={styles.summaryThumb} contentFit="cover" transition={120} />
+                ) : (
+                  <View style={[styles.summaryThumb, { backgroundColor: `${catColor}18` }]}>
+                    <Ionicons
+                      name={(categoryIcon ?? 'grid-outline') as any}
+                      size={20}
+                      color={catColor}
+                    />
+                  </View>
+                )}
+              </View>
               <View style={styles.headerLeft}>
                 <Text style={styles.headerTitle} numberOfLines={1}>{serviceTitle}</Text>
-                <Text style={styles.headerPrice}>ZMW {basePrice.toFixed(2)}</Text>
+                <Text style={styles.headerMeta} numberOfLines={1}>
+                  {[providerName, durationLabel].filter(Boolean).join('  ·  ') || 'Choose a time & place'}
+                </Text>
               </View>
               <TouchableOpacity
                 style={styles.closeBtn}
                 onPress={close}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityRole="button"
+                accessibilityLabel="Close"
               >
                 <Ionicons name="close" size={18} color={palette.textSecondary} />
               </TouchableOpacity>
@@ -204,28 +334,25 @@ export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePr
               automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
               contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + spacing.xl }]}
             >
-
-              {/* ── Date ──────────────────────────────────────── */}
-              <Text style={styles.sLabel}>Date</Text>
+              {/* ── When: date ─────────────────────────────────── */}
+              <Text style={styles.sLabel}>When</Text>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.chipRow}
+                accessibilityRole="radiogroup"
               >
-                {flow.days.slice(0, 14).map((day, i) => {
-                  const active      = day.toDateString() === flow.selectedDay.toDateString();
-                  const available   = isDayAvailable(day, avail);
+                {flow.days.map((day, i) => {
+                  const active    = day.toDateString() === flow.selectedDay.toDateString();
+                  const available = isDaySelectable(day);
+                  const lbl       = dayChipLabel(day);
                   return (
                     <TouchableOpacity
                       key={i}
-                      style={[
-                        styles.dayChip,
-                        active && styles.chipSel,
-                        !available && styles.dayChipUnavailable,
-                      ]}
+                      style={[styles.dayChip, active && styles.chipSel, !available && styles.chipUnavailable]}
                       onPress={() => available && flow.setSelectedDay(day)}
                       activeOpacity={available ? 0.7 : 1}
-                      accessible
+                      accessibilityRole="radio"
                       accessibilityLabel={
                         available
                           ? day.toLocaleDateString('en', { weekday: 'long', day: 'numeric', month: 'short' })
@@ -233,41 +360,45 @@ export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePr
                       }
                       accessibilityState={{ disabled: !available, selected: active }}
                     >
-                      <Text style={[styles.dayWkd, active && styles.chipTxtSel, !available && styles.dayTxtUnavailable]}>
-                        {day.toLocaleDateString('en', { weekday: 'short' })}
+                      <Text style={[styles.dayWkd, active && styles.chipTxtSel, !available && styles.txtUnavailable]}>
+                        {lbl.top}
                       </Text>
-                      <Text style={[styles.dayNum, active && styles.chipTxtSel, !available && styles.dayTxtUnavailable]}>
-                        {day.getDate()}
+                      <Text style={[styles.dayNum, active && styles.chipTxtSel, !available && styles.txtUnavailable]}>
+                        {lbl.bottom}
                       </Text>
-                      {!available && <View style={styles.dayUnavailableDot} />}
                     </TouchableOpacity>
                   );
                 })}
               </ScrollView>
 
-              {/* ── Start time ────────────────────────────────── */}
+              {/* ── When: start time ───────────────────────────── */}
               <Text style={styles.sLabel}>Start time</Text>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.chipRow}
+                accessibilityRole="radiogroup"
               >
                 {HOUR_OPTIONS.map((h) => {
                   const active    = h === flow.startHour;
-                  const available = isHourAvailable(h, flow.selectedDay, avail);
+                  const past      = isHourPast(h, flow.selectedDay);
+                  const inMatrix  = isHourAvailable(h, flow.selectedDay, avail);
+                  const booked    = bookedHours.has(`${flow.selectedDay.toDateString()}-${h}`);
+                  const available = inMatrix && !past && !booked;
                   return (
                     <TouchableOpacity
                       key={h}
-                      style={[
-                        styles.timeChip,
-                        active && styles.chipSel,
-                        !available && styles.timeChipUnavailable,
-                      ]}
+                      style={[styles.timeChip, active && styles.chipSel, !available && styles.chipUnavailable]}
                       onPress={() => available && flow.setStartHour(h)}
                       activeOpacity={available ? 0.7 : 1}
+                      accessibilityRole="radio"
                       accessibilityState={{ disabled: !available, selected: active }}
+                      accessibilityLabel={
+                        `${h.toString().padStart(2, '0')}:00` +
+                        (past ? ', already passed' : booked ? ', already booked' : !inMatrix ? ', unavailable' : '')
+                      }
                     >
-                      <Text style={[styles.timeChipTxt, active && styles.chipTxtSel, !available && styles.timeTxtUnavailable]}>
+                      <Text style={[styles.timeChipTxt, active && styles.chipTxtSel, !available && styles.txtUnavailable]}>
                         {h.toString().padStart(2, '0')}:00
                       </Text>
                     </TouchableOpacity>
@@ -275,7 +406,7 @@ export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePr
                 })}
               </ScrollView>
 
-              {/* ── Duration ──────────────────────────────────── */}
+              {/* ── Duration ───────────────────────────────────── */}
               <Text style={styles.sLabel}>Duration</Text>
               <View style={styles.durationRow}>
                 {DURATION_OPTIONS.map((d) => {
@@ -285,6 +416,8 @@ export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePr
                       key={d}
                       style={[styles.durChip, active && styles.durChipSel]}
                       onPress={() => flow.setDurationHrs(d)}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected: active }}
                     >
                       <Text style={[styles.durTxt, active && styles.durTxtSel]}>
                         {d === 1 ? '1 hr' : `${d} hrs`}
@@ -294,37 +427,91 @@ export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePr
                 })}
               </View>
 
-              {/* ── Time summary ──────────────────────────────── */}
-              <View style={styles.summaryRow}>
-                <Ionicons name="time-outline" size={13} color={palette.textSecondary} />
-                <Text style={styles.summaryTxt}>{flow.summaryLabel}</Text>
-              </View>
+              {/* ── Where: active delivery location + Change ───── */}
+              <Text style={styles.sLabel}>Where</Text>
+              <TouchableOpacity
+                style={styles.locationRow}
+                onPress={() => setPickerOpen(true)}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  flow.deliveryLocation
+                    ? `Delivery location ${flow.deliveryLocation.label}. Tap to change`
+                    : 'Add a delivery location'
+                }
+              >
+                <Ionicons name="location-outline" size={16} color={palette.primary} />
+                <Text
+                  style={[styles.locationTxt, !flow.deliveryLocation && styles.locationTxtEmpty]}
+                  numberOfLines={1}
+                >
+                  {flow.deliveryLocation?.label ?? 'Add a delivery location'}
+                </Text>
+                <Text style={styles.locationChange}>
+                  {flow.deliveryLocation ? 'Change' : 'Add'}
+                </Text>
+              </TouchableOpacity>
 
-              {/* ── Location ──────────────────────────────────── */}
-              <Text style={styles.sLabel}>Delivery location</Text>
-              <LocationSearch
-                value={flow.deliveryLocation}
-                onChange={flow.handleLocationChange}
-              />
+              {/* ── Add extras: add-on toggles ─────────────────── */}
+              {addonList.length > 0 && (
+                <>
+                  <Text style={styles.sLabel}>Add extras</Text>
+                  <View style={styles.addonCard}>
+                    {addonList.map((addon, idx) => {
+                      const on = selectedIds.has(addon.id);
+                      return (
+                        <TouchableOpacity
+                          key={addon.id}
+                          style={[styles.addonRow, idx > 0 && styles.addonDivider]}
+                          onPress={() => toggleAddon(addon.id)}
+                          accessibilityRole="checkbox"
+                          accessibilityState={{ checked: on }}
+                          accessibilityLabel={`${addon.name}, ZMW ${addon.price.toFixed(0)}`}
+                        >
+                          <View style={[styles.checkbox, on && styles.checkboxOn]}>
+                            {on && <Ionicons name="checkmark" size={13} color="#fff" />}
+                          </View>
+                          <Text style={styles.addonName} numberOfLines={1}>{addon.name}</Text>
+                          <Text style={styles.addonPrice}>+ ZMW {addon.price.toFixed(0)}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </>
+              )}
 
-              {/* ── Fee breakdown (§6.4 itemised checkout transparency) ── */}
-              {(() => {
-                const isDirect = paymentMode === 'DIRECT';
-                const svcCost  = pricingModel === 'HOURLY' ? basePrice * flow.durationHrs : basePrice;
-                const addonSum = selectedAddons.reduce((s, a) => s + a.price, 0);
-                // No buyer-protection fee in DIRECT mode — there is no escrow to back it.
-                const prot     = isDirect ? 0 : Math.min((svcCost + addonSum) * 0.02, 50);
-                const total    = svcCost + addonSum + prot;
-                return (
-                  <View style={styles.feeCard}>
+              {/* ── Notes (QUOTE only) ─────────────────────────── */}
+              {isQuote && (
+                <>
+                  <Text style={styles.sLabel}>Anything the provider should know?</Text>
+                  <TextInput
+                    style={styles.notesInput}
+                    placeholder="Describe what you need (optional)…"
+                    placeholderTextColor={palette.textDisabled}
+                    value={notes}
+                    onChangeText={setNotes}
+                    multiline
+                    accessibilityLabel="Notes for the provider"
+                  />
+                </>
+              )}
+
+              {/* ── Total + DIRECT note ────────────────────────── */}
+              <View style={styles.totalCard}>
+                {isQuote ? (
+                  <View style={styles.quoteNote}>
+                    <Ionicons name="chatbubble-ellipses-outline" size={16} color={palette.textSecondary} />
+                    <Text style={styles.quoteNoteTxt}>
+                      No fixed price yet — you’ll agree a price with{' '}
+                      {providerName ?? 'the provider'} after they review your request.
+                    </Text>
+                  </View>
+                ) : (
+                  <>
                     <View style={styles.feeRow}>
-                      <Text style={styles.feeLbl}>Service fee</Text>
-                      <Text style={styles.feeAmt}>
-                        ZMW {svcCost.toFixed(0)}
-                        {pricingModel === 'HOURLY' ? ` (${flow.durationHrs} hr${flow.durationHrs > 1 ? 's' : ''})` : ''}
-                      </Text>
+                      <Text style={styles.feeLbl}>Service{pricingModel === 'HOURLY' ? ` (${flow.durationHrs} hr${flow.durationHrs > 1 ? 's' : ''})` : ''}</Text>
+                      <Text style={styles.feeAmt}>ZMW {svcCost.toFixed(0)}</Text>
                     </View>
-                    {selectedAddons.map((addon) => (
+                    {addonList.filter((a) => selectedIds.has(a.id)).map((addon) => (
                       <View key={addon.id} style={styles.feeRow}>
                         <Text style={styles.feeLbl} numberOfLines={1}>{addon.name}</Text>
                         <Text style={styles.feeAmt}>ZMW {addon.price.toFixed(0)}</Text>
@@ -332,51 +519,58 @@ export function BookingSheet({ visible, onClose, serviceId, serviceTitle, basePr
                     ))}
                     {!isDirect && (
                       <View style={styles.feeRow}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                          <Text style={styles.feeLbl}>Buyer protection (2%)</Text>
-                          <Ionicons name="information-circle-outline" size={13} color={palette.textDisabled} />
-                        </View>
+                        <Text style={styles.feeLbl}>Buyer protection (2%)</Text>
                         <Text style={styles.feeAmt}>ZMW {prot.toFixed(0)}</Text>
                       </View>
                     )}
                     <View style={styles.feeDivider} />
-                    <View style={styles.feeRow}>
+                    <View
+                      style={styles.feeRow}
+                      accessibilityLiveRegion="polite"
+                      accessibilityLabel={`Total ${total.toFixed(0)} kwacha`}
+                    >
                       <Text style={styles.feeTotalLbl}>{isDirect ? 'Agreed price' : 'Total'}</Text>
                       <Text style={styles.feeTotalAmt}>ZMW {total.toFixed(0)}</Text>
                     </View>
-                    <View style={styles.escrowBanner}>
-                      <Ionicons
-                        name={isDirect ? 'cash-outline' : 'lock-closed-outline'}
-                        size={14}
-                        color={palette.success}
-                      />
-                      <Text style={styles.escrowNote}>
-                        {isDirect
-                          ? `Once the provider accepts, you pay them ZMW ${total.toFixed(0)} directly. Nothing is charged through the app.`
-                          : 'Held securely in escrow — released to the provider only when you confirm the job is complete.'}
-                      </Text>
-                    </View>
+                  </>
+                )}
 
-                    {/* ── CTA ─────────────────────────────────────── */}
-                    <Button
-                      mode="contained"
-                      style={styles.cta}
-                      contentStyle={styles.ctaContent}
-                      labelStyle={styles.ctaLabel}
-                      onPress={handleConfirm}
-                      loading={flow.submitting}
-                      disabled={!flow.canSubmit}
-                    >
-                      {isDirect ? 'Request booking' : `Confirm booking · ZMW ${total.toFixed(0)}`}
-                    </Button>
-                  </View>
-                );
-              })()}
+                <View style={styles.modeBanner}>
+                  <Ionicons
+                    name={isDirect ? 'cash-outline' : 'lock-closed-outline'}
+                    size={14}
+                    color={palette.success}
+                  />
+                  <Text style={styles.modeNote}>
+                    {isDirect
+                      ? `You'll pay ${providerName ?? 'the provider'} directly after the job · they'll confirm your request.`
+                      : 'Held securely in escrow — released to the provider only when you confirm the job is complete.'}
+                  </Text>
+                </View>
 
+                <Button
+                  mode="contained"
+                  style={styles.cta}
+                  contentStyle={styles.ctaContent}
+                  labelStyle={styles.ctaLabel}
+                  onPress={handleConfirm}
+                  loading={flow.submitting}
+                  disabled={!flow.canSubmit}
+                >
+                  {ctaLabel}
+                </Button>
+              </View>
             </ScrollView>
           </Animated.View>
         </KeyboardAvoidingView>
 
+        {/* Location picker — §4, label-only, opened by Change */}
+        <LocationPickerSheet
+          visible={pickerOpen}
+          onClose={() => setPickerOpen(false)}
+          onSelect={(dl) => flow.setDeliveryLocation(deliveryToSelected(dl))}
+          title="Delivery location"
+        />
       </View>
     </Modal>
   );
@@ -401,7 +595,6 @@ const styles = StyleSheet.create({
     alignItems:    'center',
     paddingTop:    spacing.sm,
     paddingBottom: spacing.xs,
-    // Slightly taller hit area than the visual handle
     paddingHorizontal: spacing.xl,
   },
   handle: {
@@ -411,17 +604,28 @@ const styles = StyleSheet.create({
     borderRadius:    r.full,
   },
 
+  // Summary header
   header: {
     flexDirection:     'row',
     alignItems:        'center',
+    gap:               spacing.sm,
     paddingHorizontal: spacing.lg,
     paddingVertical:   spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: palette.border,
   },
+  summaryThumbWrap: { width: 44, height: 44 },
+  summaryThumb: {
+    width:          44,
+    height:         44,
+    borderRadius:   r.sm,
+    alignItems:     'center',
+    justifyContent: 'center',
+    overflow:       'hidden',
+  },
   headerLeft:  { flex: 1 },
   headerTitle: { ...typography.label, color: palette.textPrimary, fontSize: 16 },
-  headerPrice: { ...typography.bodySmall, color: palette.primary, marginTop: 2 },
+  headerMeta:  { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12, marginTop: 2 },
   closeBtn: {
     width:           32,
     height:          32,
@@ -429,7 +633,6 @@ const styles = StyleSheet.create({
     backgroundColor: palette.background,
     alignItems:      'center',
     justifyContent:  'center',
-    marginLeft:      spacing.sm,
   },
 
   body: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
@@ -445,55 +648,36 @@ const styles = StyleSheet.create({
   chipRow:    { gap: spacing.xs, paddingBottom: spacing.xs },
   chipSel:    { backgroundColor: palette.primary, borderColor: palette.primary },
   chipTxtSel: { color: '#fff' },
+  chipUnavailable: { backgroundColor: palette.skeleton, borderColor: palette.border, opacity: 0.55 },
+  txtUnavailable:  { color: palette.textDisabled, textDecorationLine: 'line-through' },
 
   dayChip: {
-    width:           50,
+    width:           54,
     paddingVertical: spacing.sm,
-    borderRadius:    r.md,
+    borderRadius:    r.sm,
     borderWidth:     1,
     borderColor:     palette.border,
     backgroundColor: palette.background,
     alignItems:      'center',
   },
-  // Unavailable day: muted background, no border highlight.
-  dayChipUnavailable: {
-    backgroundColor: palette.skeleton,
-    borderColor:     palette.border,
-    opacity:         0.55,
-  },
   dayWkd: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 11 },
   dayNum: { ...typography.label,     color: palette.textPrimary,   fontSize: 16 },
-  dayTxtUnavailable: { color: palette.textDisabled },
-  // Small strikethrough-style dot beneath the date number to signal unavailability.
-  dayUnavailableDot: {
-    width:           4,
-    height:          4,
-    borderRadius:    2,
-    backgroundColor: palette.textDisabled,
-    marginTop:       2,
-  },
 
   timeChip: {
     paddingHorizontal: spacing.md,
     paddingVertical:   spacing.sm,
-    borderRadius:      r.md,
+    borderRadius:      r.sm,
     borderWidth:       1,
     borderColor:       palette.border,
     backgroundColor:   palette.background,
   },
-  timeChipUnavailable: {
-    backgroundColor: palette.skeleton,
-    borderColor:     palette.border,
-    opacity:         0.5,
-  },
-  timeChipTxt:       { ...typography.bodySmall, color: palette.textPrimary },
-  timeTxtUnavailable: { color: palette.textDisabled },
+  timeChipTxt: { ...typography.bodySmall, color: palette.textPrimary },
 
   durationRow: { flexDirection: 'row', gap: spacing.xs, flexWrap: 'wrap' },
   durChip: {
     paddingHorizontal: spacing.md,
     paddingVertical:   spacing.sm,
-    borderRadius:      r.md,
+    borderRadius:      r.sm,
     borderWidth:       1,
     borderColor:       palette.border,
     backgroundColor:   palette.background,
@@ -502,47 +686,98 @@ const styles = StyleSheet.create({
   durTxt:     { ...typography.bodySmall, color: palette.textPrimary },
   durTxtSel:  { ...typography.bodySmall, color: palette.primary },
 
-  summaryRow: {
+  // Location row
+  locationRow: {
     flexDirection:   'row',
     alignItems:      'center',
-    gap:             spacing.xs,
-    marginTop:       spacing.md,
+    gap:             spacing.sm,
     backgroundColor: palette.background,
-    borderRadius:    r.md,
+    borderRadius:    r.sm,
     borderWidth:     1,
     borderColor:     palette.border,
-    padding:         spacing.sm,
+    paddingHorizontal: spacing.md,
+    minHeight:       48,
   },
-  summaryTxt: { ...typography.bodySmall, color: palette.textSecondary },
+  locationTxt:      { ...typography.bodySmall, color: palette.textPrimary, flex: 1 },
+  locationTxtEmpty: { color: palette.textSecondary },
+  locationChange:   { ...typography.label, color: palette.primary, fontSize: 13 },
 
-  // §6.4 fee breakdown
-  feeCard: {
+  // Add-on toggles
+  addonCard: {
+    backgroundColor: palette.background,
+    borderRadius:    r.sm,
+    borderWidth:     1,
+    borderColor:     palette.border,
+    overflow:        'hidden',
+  },
+  addonRow: {
+    flexDirection:     'row',
+    alignItems:        'center',
+    gap:               spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical:   spacing.sm + 2,
+    minHeight:         48,
+  },
+  addonDivider: { borderTopWidth: 1, borderTopColor: palette.border },
+  checkbox: {
+    width:           20,
+    height:          20,
+    borderRadius:    6,
+    borderWidth:     1.5,
+    borderColor:     palette.border,
+    alignItems:      'center',
+    justifyContent:  'center',
+  },
+  checkboxOn:  { backgroundColor: palette.primary, borderColor: palette.primary },
+  addonName:   { ...typography.bodySmall, color: palette.textPrimary, flex: 1 },
+  addonPrice:  { ...typography.bodySmall, color: palette.textSecondary },
+
+  // Notes
+  notesInput: {
+    backgroundColor: palette.background,
+    borderRadius:    r.sm,
+    borderWidth:     1,
+    borderColor:     palette.border,
+    paddingHorizontal: spacing.md,
+    paddingVertical:   spacing.sm,
+    minHeight:       72,
+    textAlignVertical: 'top',
+    fontFamily:      fontFamily.regular,
+    fontSize:        14,
+    color:           palette.textPrimary,
+  },
+
+  // Total
+  totalCard: {
     marginTop:       spacing.lg,
     backgroundColor: palette.background,
-    borderRadius:    r.lg,
+    borderRadius:    r.md,
     borderWidth:     1,
     borderColor:     palette.border,
     padding:         spacing.md,
     gap:             spacing.sm,
   },
   feeRow:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  feeLbl:      { ...typography.bodySmall, color: palette.textSecondary },
+  feeLbl:      { ...typography.bodySmall, color: palette.textSecondary, flex: 1, marginRight: spacing.sm },
   feeAmt:      { ...typography.bodySmall, color: palette.textPrimary },
   feeDivider:  { height: 1, backgroundColor: palette.border, marginVertical: 2 },
   feeTotalLbl: { ...typography.label, color: palette.textPrimary },
-  feeTotalAmt: { fontFamily: 'PlusJakartaSans_700Bold', fontSize: 16, color: palette.primary },
+  feeTotalAmt: { fontFamily: fontFamily.bold, fontSize: 16, color: palette.primary },
 
-  escrowBanner: {
+  quoteNote: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.xs },
+  quoteNoteTxt: { ...typography.bodySmall, color: palette.textSecondary, flex: 1, lineHeight: 18 },
+
+  modeBanner: {
     flexDirection:   'row',
     alignItems:      'flex-start',
     gap:             spacing.xs,
     backgroundColor: palette.successLight,
-    borderRadius:    r.md,
+    borderRadius:    r.sm,
     padding:         spacing.sm,
   },
-  escrowNote: { ...typography.bodySmall, color: palette.success, flex: 1, lineHeight: 17 },
+  modeNote: { ...typography.bodySmall, color: palette.success, flex: 1, lineHeight: 17 },
 
-  cta:        { borderRadius: r.lg, marginTop: spacing.sm },
-  ctaContent: { height: 54 },
+  cta:        { borderRadius: r.md, marginTop: spacing.xs },
+  ctaContent: { height: 52 },
   ctaLabel:   { ...typography.label, fontSize: 15, letterSpacing: 0.2 },
 });

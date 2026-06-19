@@ -190,7 +190,7 @@ const styles = StyleSheet.create({
   skeleton: {
     height:          CARD_H,
     marginHorizontal: PEEK,
-    borderRadius:    r.xl,
+    borderRadius:    r.sm,
     backgroundColor: palette.skeleton,
   },
 
@@ -200,7 +200,7 @@ const styles = StyleSheet.create({
   card: {
     width:        CARD_W,
     height:       CARD_H,
-    borderRadius: r.xl,
+    borderRadius: r.sm,
     overflow:     'hidden',
   },
 

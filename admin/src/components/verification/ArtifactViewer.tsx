@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useState } from 'react'
 import { ImageOff, Lock, FileText } from 'lucide-react'
@@ -6,14 +6,15 @@ import { cn } from '@/lib/utils'
 import type { VerificationArtifact, ArtifactKind } from '@/lib/api/verification'
 
 // Reviewer-only rendering of a KYC artifact (ID image, selfie, proof of
-// address, certificate, portfolio item). Handles slow/failed loads gracefully —
+// address, certificate, portfolio item). Handles slow/failed loads gracefully â€”
 // never a broken-image icon. Every artifact carries descriptive alt text.
 //
 // These images are visible ONLY inside this reviewer drawer. They are never
 // used as the public avatar and their URLs are never logged.
 
 const KIND_LABEL: Record<ArtifactKind, string> = {
-  id_document: 'Government ID',
+  id_document: 'Government ID (front)',
+  id_document_back: 'Government ID (back)',
   selfie: 'Liveness selfie',
   proof_of_address: 'Proof of address',
   certificate: 'Certificate',
@@ -26,7 +27,7 @@ function ArtifactTile({ artifact }: { artifact: VerificationArtifact }) {
   const alt = `${kindLabel}: ${artifact.label}`
 
   return (
-    <figure className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/60">
+    <figure className="overflow-hidden rounded-lg border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/60">
       <div className="relative aspect-[4/3] w-full">
         {state !== 'error' && (
           // eslint-disable-next-line @next/next/no-img-element -- signed KYC URL, reviewer-only
@@ -50,12 +51,12 @@ function ArtifactTile({ artifact }: { artifact: VerificationArtifact }) {
           />
         )}
 
-        {/* Graceful failure — informative, never a broken image */}
+        {/* Graceful failure â€” informative, never a broken image */}
         {state === 'error' && (
           <div
             className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-slate-400 dark:text-slate-500"
             role="img"
-            aria-label={`${alt} — failed to load`}
+            aria-label={`${alt} â€” failed to load`}
           >
             <ImageOff className="size-6" strokeWidth={1.5} />
             <span className="px-3 text-center text-xs">Artifact unavailable</span>

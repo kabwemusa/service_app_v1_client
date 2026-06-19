@@ -22,7 +22,8 @@ import { EARNED_BADGE_META } from '../../components/discovery/VettingBadge';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useProfileStore } from '../../store/profileStore';
 import { useServiceStore } from '../../store/serviceStore';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { ScreenHeader } from '../../components/ui/ScreenHeader';
+import { palette, radius as r, spacing, typography } from '../../theme';
 
 const SCREEN_W   = Dimensions.get('window').width;
 const PHOTO_GAP  = spacing.sm;
@@ -280,15 +281,11 @@ export default function ProviderProfileEditScreen({ navigation }: any) {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.header}>
-            <TouchableRipple onPress={() => navigation.goBack()} borderless style={styles.backBtn}>
-              <Ionicons name="arrow-back" size={20} color={palette.textPrimary} />
-            </TouchableRipple>
-            <View style={styles.headerText}>
-              <Text style={styles.pageTitle}>Profile & Highlights</Text>
-              <Text style={styles.subtitle}>Configure your public profile and what shows first.</Text>
-            </View>
-          </View>
+          <ScreenHeader
+            title="Profile & highlights"
+            subtitle="Configure your public profile and what shows first"
+            back
+          />
 
           {/* Public profile */}
           <Text style={styles.sectionLabel}>Public Profile</Text>
@@ -579,13 +576,12 @@ const styles = StyleSheet.create({
 
   card: {
     backgroundColor: palette.surface,
-    borderRadius: r.xl,
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
     padding: spacing.md,
     marginBottom: spacing.md,
     gap: spacing.md,
-    ...shadow.card,
   },
   cardTitle: { ...typography.label, color: palette.textPrimary, marginBottom: 2 },
   cardBody:  { ...typography.bodySmall, color: palette.textSecondary, lineHeight: 18 },
@@ -611,7 +607,7 @@ const styles = StyleSheet.create({
   avatarSub:  { ...typography.bodySmall, color: palette.textSecondary, lineHeight: 17 },
 
   input: { backgroundColor: '#FFFFFF' },
-  inputOutline: { borderRadius: r.lg },
+  inputOutline: { borderRadius: r.sm },
   bioInput: { minHeight: 100 },
   charCount: { ...typography.bodySmall, color: palette.textDisabled, fontSize: 11, textAlign: 'right', marginTop: 2 },
   fieldError: { ...typography.bodySmall, color: palette.danger, fontSize: 12, marginTop: 2 },
@@ -625,7 +621,7 @@ const styles = StyleSheet.create({
   },
   pickChipActive: { backgroundColor: palette.primary, borderColor: palette.primary },
   pickChipText: { ...typography.bodySmall, color: palette.textSecondary },
-  pickChipTextActive: { color: '#FFFFFF', fontFamily: 'PlusJakartaSans_600SemiBold' },
+  pickChipTextActive: { color: '#FFFFFF', fontFamily: 'DMSans_600SemiBold' },
 
   // Radius stepper
   radiusRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
@@ -641,7 +637,7 @@ const styles = StyleSheet.create({
   // Portfolio / featured photo grid
   photoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: PHOTO_GAP },
   photoCell: {
-    width: PHOTO_SIZE, height: PHOTO_SIZE, borderRadius: r.md,
+    width: PHOTO_SIZE, height: PHOTO_SIZE, borderRadius: r.sm,
     overflow: 'hidden', backgroundColor: palette.background,
   },
   photoImage: { width: '100%', height: '100%' },
@@ -654,7 +650,7 @@ const styles = StyleSheet.create({
     backgroundColor: palette.primary, alignItems: 'center', justifyContent: 'center',
   },
   photoAddTile: {
-    width: PHOTO_SIZE, height: PHOTO_SIZE, borderRadius: r.md,
+    width: PHOTO_SIZE, height: PHOTO_SIZE, borderRadius: r.sm,
     borderWidth: 1.5, borderStyle: 'dashed', borderColor: palette.border,
     alignItems: 'center', justifyContent: 'center', gap: 4,
   },
@@ -675,6 +671,6 @@ const styles = StyleSheet.create({
   badgePickInner: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   badgePickText: { ...typography.label, fontSize: 11.5 },
 
-  cta: { borderRadius: r.lg, marginTop: spacing.sm },
+  cta: { borderRadius: r.sm, marginTop: spacing.sm },
   ctaContent: { height: 54 },
 });

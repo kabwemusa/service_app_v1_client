@@ -33,9 +33,16 @@ class Category extends Model
         return $this->belongsTo(Category::class, 'parent_id');
     }
 
+    /** Active children only — used by the public GET /categories endpoint. */
     public function children()
     {
         return $this->hasMany(Category::class, 'parent_id')->where('is_active', true)->orderBy('display_order');
+    }
+
+    /** All children regardless of status — used by admin GET /admin/categories. */
+    public function allChildren()
+    {
+        return $this->hasMany(Category::class, 'parent_id')->orderBy('display_order')->orderBy('name');
     }
 
     public function services()

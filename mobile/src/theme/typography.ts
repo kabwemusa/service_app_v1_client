@@ -1,9 +1,9 @@
 export const fontFamily = {
-  regular:   'PlusJakartaSans_400Regular',
-  medium:    'PlusJakartaSans_500Medium',
-  semiBold:  'PlusJakartaSans_600SemiBold',
-  bold:      'PlusJakartaSans_700Bold',
-  extraBold: 'PlusJakartaSans_800ExtraBold',
+  regular:   'DMSans_400Regular',
+  medium:    'DMSans_500Medium',
+  semiBold:  'DMSans_600SemiBold',
+  bold:      'DMSans_700Bold',
+  extraBold: 'DMSans_800ExtraBold',
 } as const;
 
 export const typography = {

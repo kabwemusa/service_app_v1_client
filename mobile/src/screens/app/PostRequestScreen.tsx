@@ -17,7 +17,7 @@ import { LocationPickerSheet } from '../../components/location/LocationPickerShe
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useCategoryStore } from '../../store/categoryStore';
 import { DeliveryLocation, toDeliveryLocation, useLocationStore } from '../../store/locationStore';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { palette, radius as r, spacing, typography } from '../../theme';
 
 // v3.2 §6 — time-window presets: urgency is the whole point of this flow, so
 // the choices are coarse and fast, not a datetime form.
@@ -260,7 +260,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md, paddingVertical: 8,
   },
   windowChip: {
-    borderRadius: r.lg, borderWidth: 1, borderColor: palette.border,
+    borderRadius: r.sm, borderWidth: 1, borderColor: palette.border,
     backgroundColor: palette.surface,
     paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
     minWidth: 100,
@@ -275,10 +275,9 @@ const styles = StyleSheet.create({
 
   locationRow: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
-    borderRadius: r.lg, borderWidth: 1, borderColor: palette.border,
+    borderRadius: r.sm, borderWidth: 1, borderColor: palette.border,
     backgroundColor: palette.surface,
     padding: spacing.md, minHeight: 48,
-    ...shadow.card,
   },
   locationText: { ...typography.body, color: palette.textPrimary, flex: 1, fontSize: 14 },
 

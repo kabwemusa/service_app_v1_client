@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -100,7 +100,7 @@ export function VerificationQueue() {
           const s = row.original
           return (
             <div className="flex items-center gap-2.5">
-              {/* Initials only — never the KYC selfie */}
+              {/* Initials only â€” never the KYC selfie */}
               <Avatar name={s.applicant.display_name} size="sm" />
               <div className="min-w-0">
                 <p className="truncate font-medium text-slate-800 dark:text-slate-200">
@@ -124,7 +124,7 @@ export function VerificationQueue() {
       },
       {
         id: 'submitted',
-        header: 'Submitted · SLA',
+        header: 'Submitted Â· SLA',
         enableSorting: false,
         cell: ({ row }) => <SlaCell submission={row.original} />,
       },
@@ -134,7 +134,7 @@ export function VerificationQueue() {
         enableSorting: false,
         cell: ({ row }) => (
           <span className="line-clamp-2 max-w-xs text-xs text-slate-500 dark:text-slate-400">
-            {row.original.auto_summary || '—'}
+            {row.original.auto_summary || 'â€”'}
           </span>
         ),
       },
@@ -146,7 +146,7 @@ export function VerificationQueue() {
           const claimed = row.original.claimed_by
           return claimed ? (
             <span className="text-xs text-slate-600 dark:text-slate-400">
-              In review · {claimed.name}
+              In review Â· {claimed.name}
             </span>
           ) : (
             <span className="text-xs text-slate-400">Unassigned</span>
@@ -201,7 +201,7 @@ export function VerificationQueue() {
           setSearch(v)
           setPage(1)
         }}
-        searchPlaceholder="Search by applicant…"
+        searchPlaceholder="Search by applicantâ€¦"
         filters={[
           {
             key: 'type',
@@ -253,7 +253,7 @@ export function VerificationQueue() {
         width="xl"
         title={
           selectedRow
-            ? `${selectedRow.applicant.display_name} · ${SUBMISSION_TYPE_LABEL[selectedRow.type]}`
+            ? `${selectedRow.applicant.display_name} Â· ${SUBMISSION_TYPE_LABEL[selectedRow.type]}`
             : 'Verification review'
         }
         subtitle={selectedRow ? STATUS_LABEL[selectedRow.status] : undefined}
@@ -276,7 +276,7 @@ function VerificationDetailSkeleton() {
   return (
     <div className="space-y-4">
       {Array.from({ length: 5 }).map((_, i) => (
-        <div key={i} className="h-24 animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800" />
+        <div key={i} className="h-24 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800" />
       ))}
     </div>
   )

@@ -13,7 +13,7 @@ import { Button, Text, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useBookingStore } from '../../store/bookingStore';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { palette, radius as r, spacing, typography } from '../../theme';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -435,7 +435,7 @@ const styles = StyleSheet.create({
 
   serviceCard: {
     backgroundColor: palette.surface,
-    borderRadius: r.lg,
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
     padding: spacing.md,
@@ -443,7 +443,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    ...shadow.card,
   },
   serviceTitle: { ...typography.label, color: palette.textPrimary, flex: 1 },
   servicePrice: { ...typography.label, color: palette.primary },
@@ -502,11 +501,10 @@ const styles = StyleSheet.create({
   // Location
   locationCard: {
     backgroundColor: palette.surface,
-    borderRadius: r.lg,
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
     padding: spacing.md,
-    ...shadow.card,
   },
   locationInputRow: {
     flexDirection: 'row',
@@ -559,7 +557,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: palette.border,
   },
-  bookBtn: { borderRadius: r.lg },
+  bookBtn: { borderRadius: r.sm },
   bookBtnContent: { height: 54 },
   bookBtnLabel: { ...typography.label, fontSize: 16 },
 });

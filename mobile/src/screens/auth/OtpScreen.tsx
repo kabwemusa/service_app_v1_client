@@ -15,7 +15,7 @@ import { Text, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useAuthStore } from '../../store/authStore';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { palette, radius as r, spacing, typography } from '../../theme';
 
 const BOX_COUNT = 6;
 
@@ -221,11 +221,10 @@ const styles = StyleSheet.create({
     maxWidth: 520,
     alignSelf: 'center',
     backgroundColor: palette.surface,
-    borderRadius: r.xl,
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
     padding: spacing.lg,
-    ...shadow.card,
   },
   boxRow: {
     flexDirection: 'row',

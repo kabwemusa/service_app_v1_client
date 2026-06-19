@@ -32,6 +32,8 @@ class Booking extends Model
         'payment_status',
         'payment_marked_by',
         'payment_marked_at',
+        'provider_marked_paid_at',
+        'customer_marked_paid_at',
         'payout_eligible_at',
         'expires_at',
         'instant_payout_requested',
@@ -43,6 +45,8 @@ class Booking extends Model
         'delivery_location_label',
         'delivery_location_region',
         'delivery_location_source',
+        'notes',
+        'selected_addon_ids',
     ];
 
     protected function casts(): array
@@ -54,11 +58,14 @@ class Booking extends Model
             'disbursed_at'             => 'datetime',
             'payout_eligible_at'       => 'datetime',
             'payment_marked_at'        => 'datetime',
+            'provider_marked_paid_at'  => 'datetime',
+            'customer_marked_paid_at'  => 'datetime',
             'expires_at'               => 'datetime',
             'amount'                   => 'float',
             'agreed_amount'            => 'float',
             'buyer_protection_fee'     => 'float',
             'instant_payout_requested' => 'boolean',
+            'selected_addon_ids'       => 'array',
         ];
     }
 

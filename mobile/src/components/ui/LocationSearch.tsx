@@ -12,7 +12,7 @@ import {
 import { Text, TextInput } from 'react-native-paper';
 import { locationApi, PlaceCandidate } from '../../api/location';
 import { useHighAccuracyLocation } from '../../hooks/useHighAccuracyLocation';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { palette, radius as r, spacing, typography } from '../../theme';
 import { SkeletonBlock } from './SkeletonBlock';
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -284,12 +284,13 @@ const styles = StyleSheet.create({
   dropdown: {
     marginTop:       spacing.xs,
     backgroundColor: palette.surface,
-    borderRadius:    r.lg,
-    borderWidth:     1,
+    borderRadius:    r.sm,
+    borderWidth:     StyleSheet.hairlineWidth,
     borderColor:     palette.border,
     overflow:        'hidden',
-    ...shadow.card,
-    // Dropdown must float above sibling content — override the card shadow's elevation
+    // Flat (v3.1 §2): no shadow. zIndex/elevation here are for Android stacking
+    // ONLY (this autocomplete panel floats over content with no scrim) — the
+    // hairline border + solid surface provide the visual separation.
     zIndex:          30,
     elevation:       30,
   },

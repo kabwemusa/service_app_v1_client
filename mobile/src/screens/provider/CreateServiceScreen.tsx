@@ -1,11 +1,17 @@
 import { Ionicons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import * as ImagePicker from 'expo-image-picker';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
+  TextInput as RNTextInput,
   View,
 } from 'react-native';
 import {
@@ -18,21 +24,31 @@ import {
   TouchableRipple,
 } from 'react-native-paper';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LocationPickerSheet } from '../../components/location/LocationPickerSheet';
-import { MarkdownEditor } from '../../components/ui/MarkdownEditor';
+import { storageUrl } from '../../api/client';
+import { ApiError } from '../../api/errors';
 import { locationApi } from '../../api/location';
 import {
   CommissionPreview,
   PricingModel,
   Service,
+  ServicePhoto,
   ServiceStatus,
   servicesApi,
 } from '../../api/services';
-import { DeliveryLocation } from '../../store/locationStore';
+import { LocationPickerSheet } from '../../components/location/LocationPickerSheet';
+import { MarkdownEditor } from '../../components/ui/MarkdownEditor';
+import { ScreenHeader } from '../../components/ui/ScreenHeader';
+import { TabItem, Tabs } from '../../components/ui/Tabs';
 import { useSnackbar } from '../../providers/SnackbarProvider';
+import { DeliveryLocation } from '../../store/locationStore';
+import { Category } from '../../api/categories';
 import { useCategoryStore } from '../../store/categoryStore';
+import { useProfileStore } from '../../store/profileStore';
 import { useServiceStore } from '../../store/serviceStore';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { palette, radius as r, spacing, typography } from '../../theme';
+import { fontFamily } from '../../theme/typography';
+
+type SectionKey = 'details' | 'pricing' | 'extras' | 'photos';
 
 const PRICING_OPTIONS: { value: PricingModel; label: string }[] = [
   { value: 'FIXED',  label: 'Fixed'    },
@@ -40,7 +56,16 @@ const PRICING_OPTIONS: { value: PricingModel; label: string }[] = [
   { value: 'QUOTE',  label: 'By quote' },
 ];
 
+const STATUS_OPTIONS: { value: ServiceStatus; label: string }[] = [
+  { value: 'DRAFT',  label: 'Draft'  },
+  { value: 'ACTIVE', label: 'Active' },
+  { value: 'PAUSED', label: 'Paused' },
+];
+
 interface DraftAddon { name: string; price: string }
+
+// Which fields, when missing, block which action — mapped to the tab that hides them.
+interface FieldError { tab: SectionKey; field: string }
 
 export default function CreateServiceScreen({ navigation, route }: any) {
   const editing: Service | undefined = route.params?.service;
@@ -48,8 +73,23 @@ export default function CreateServiceScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
 
   const { categories, fetchCategories } = useCategoryStore();
-  const { loading, error, createService, updateService, clearError } = useServiceStore();
+  const { loading, createService, updateService, clearError } = useServiceStore();
+  const dashboardMode = useProfileStore((s) => s.dashboard?.payment_mode);
+  const fetchDashboard = useProfileStore((s) => s.fetchDashboard);
+  const dashboardLoaded = useProfileStore((s) => s.dashboard !== null);
   const { showSuccess, showError } = useSnackbar();
+
+  // One source of truth for commission copy (§ commission rule): per-service mode
+  // if known, else the platform dashboard mode, else the DIRECT pilot default.
+  const paymentMode = editing?.payment_mode ?? dashboardMode ?? 'DIRECT';
+
+  // ── One form, one dirty-state across every tab ──────────────────────────────
+  const [section, setSection] = useState<SectionKey>('details');
+  const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(false);
+  const savingRef = useRef(false);
+  useEffect(() => { dirtyRef.current = dirty; }, [dirty]);
+  const markDirty = useCallback(() => setDirty(true), []);
 
   const [categoryId, setCategoryId]     = useState<number | undefined>(editing?.category_id);
   const [title, setTitle]               = useState(editing?.title ?? '');
@@ -59,33 +99,56 @@ export default function CreateServiceScreen({ navigation, route }: any) {
   const [duration, setDuration]         = useState(
     editing?.duration_estimate_mins != null ? String(editing.duration_estimate_mins) : ''
   );
-  const [status, setStatus] = useState<ServiceStatus>(editing?.status ?? 'DRAFT');
+  const [status, setStatus]   = useState<ServiceStatus>(editing?.status ?? 'DRAFT');
+  const [isPinned, setIsPinned] = useState(editing?.is_pinned ?? false);
 
-  // §5.2 — "What's included" bullets, ordered (add/remove/reorder land in one save)
   const [inclusions, setInclusions]         = useState<string[]>(editing?.inclusions ?? []);
   const [inclusionDraft, setInclusionDraft] = useState('');
 
-  // §5.3 — paid extras: name + price, ordered
   const [addons, setAddons] = useState<DraftAddon[]>(
     (editing?.addons ?? []).map((a) => ({ name: a.name, price: String(a.price) }))
   );
   const [addonName, setAddonName]   = useState('');
   const [addonPrice, setAddonPrice] = useState('');
 
-  // §4.1/§4.2 — service location: resolved label only, never raw coordinates in the UI.
-  const [location, setLocation]           = useState<DeliveryLocation | null>(null);
-  const [locationLabel, setLocationLabel]  = useState<string | null>(null);
-  const [pickerVisible, setPickerVisible]  = useState(false);
+  const [location, setLocation]          = useState<DeliveryLocation | null>(null);
+  const [locationLabel, setLocationLabel] = useState<string | null>(null);
+  const [pickerVisible, setPickerVisible] = useState(false);
 
-  // §6.7 — live commission preview, debounced as the provider edits price/category
+  // Photos are persisted immediately (need a service id), so they sit outside the
+  // form dirty-state — discarding form edits never loses an uploaded photo.
+  const [photos, setPhotos]       = useState<ServicePhoto[]>(editing?.photos ?? []);
+  const [uploading, setUploading] = useState(false);
+  const [busyPhotoId, setBusyPhotoId] = useState<number | null>(null);
+  const [photoError, setPhotoError]   = useState<string | null>(null);
+
+  // Publish-validation state — which tabs/fields are offending.
+  const [fieldErrors, setFieldErrors] = useState<FieldError[]>([]);
+
   const [preview, setPreview]               = useState<CommissionPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const previewDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => { fetchCategories(); }, []);
+  const titleRef = useRef<any>(null);
+  const priceRef = useRef<any>(null);
 
-  // Reverse-geocode the existing service's coordinates into a display label —
-  // §4.1 forbids ever rendering raw lat/lng, even for a service the provider owns.
+  useEffect(() => {
+    fetchCategories();
+    if (!dashboardLoaded) fetchDashboard();
+    clearError(); // drop any stale store error so it isn't shown by the list later
+  }, []);
+
+  // Refresh photos for an existing service (list payload may be stale).
+  useEffect(() => {
+    if (!isEdit) return;
+    let cancelled = false;
+    servicesApi.show(editing!.id)
+      .then((svc) => { if (!cancelled) setPhotos(svc.photos ?? []); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isEdit]);
+
+  // Reverse-geocode existing coordinates into a label — §4.1 never renders raw lat/lng.
   useEffect(() => {
     if (!isEdit || editing?.latitude == null || editing?.longitude == null) return;
     let cancelled = false;
@@ -104,50 +167,43 @@ export default function CreateServiceScreen({ navigation, route }: any) {
     return () => { cancelled = true; };
   }, [isEdit]);
 
+  // ── Discard guard — prompt before leaving with unsaved changes ──────────────
   useEffect(() => {
-    if (error && !error.isValidation) {
-      showError(error.message);
-      clearError();
-    }
-  }, [error]);
+    const sub = navigation.addListener('beforeRemove', (e: any) => {
+      if (!dirtyRef.current || savingRef.current) return;
+      e.preventDefault();
+      Alert.alert('Discard changes?', 'You have unsaved changes. Leave without saving?', [
+        { text: 'Keep editing', style: 'cancel' },
+        { text: 'Discard', style: 'destructive', onPress: () => navigation.dispatch(e.data.action) },
+      ]);
+    });
+    return sub;
+  }, [navigation]);
 
-  const titleErr    = error?.isValidation ? error.fieldError('title')                  : null;
-  const catErr      = error?.isValidation ? error.fieldError('category_id')            : null;
-  const priceErr    = error?.isValidation ? error.fieldError('base_price')             : null;
-  const durationErr = error?.isValidation ? error.fieldError('duration_estimate_mins') : null;
-  const latErr      = error?.isValidation ? error.fieldError('latitude')               : null;
-
-  // ── Live commission preview (§6.7 — "At {price}, {category}/{tier} commission
-  //    is {rate}. You keep ~{net}.") — debounced so it doesn't fire on every keystroke
+  // ── Live commission preview — only ESCROW mode charges commission ───────────
   useEffect(() => {
     if (previewDebounce.current) clearTimeout(previewDebounce.current);
-
-    if (pricingModel === 'QUOTE' || !categoryId) {
+    if (paymentMode !== 'ESCROW' || pricingModel === 'QUOTE' || !categoryId) {
       setPreview(null);
       return;
     }
     const numeric = parseFloat(price);
-    if (Number.isNaN(numeric) || numeric <= 0) {
-      setPreview(null);
-      return;
-    }
+    if (Number.isNaN(numeric) || numeric <= 0) { setPreview(null); return; }
 
     previewDebounce.current = setTimeout(async () => {
       setPreviewLoading(true);
       try {
-        const result = await servicesApi.commissionPreview(categoryId, numeric);
-        setPreview(result);
+        setPreview(await servicesApi.commissionPreview(categoryId, numeric));
       } catch {
         setPreview(null);
       } finally {
         setPreviewLoading(false);
       }
     }, 450);
-
     return () => { if (previewDebounce.current) clearTimeout(previewDebounce.current); };
-  }, [categoryId, price, pricingModel]);
+  }, [categoryId, price, pricingModel, paymentMode]);
 
-  // ── Inclusions ─────────────────────────────────────────────────────────────
+  // ── Inclusions ──────────────────────────────────────────────────────────────
   const addInclusion = () => {
     const text = inclusionDraft.trim();
     if (!text) return;
@@ -155,10 +211,12 @@ export default function CreateServiceScreen({ navigation, route }: any) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setInclusions((prev) => [...prev, text]);
     setInclusionDraft('');
+    markDirty();
   };
   const removeInclusion = (index: number) => {
     Haptics.selectionAsync();
     setInclusions((prev) => prev.filter((_, i) => i !== index));
+    markDirty();
   };
   const moveInclusion = (index: number, dir: -1 | 1) => {
     const target = index + dir;
@@ -169,9 +227,10 @@ export default function CreateServiceScreen({ navigation, route }: any) {
       [next[index], next[target]] = [next[target], next[index]];
       return next;
     });
+    markDirty();
   };
 
-  // ── Add-ons ────────────────────────────────────────────────────────────────
+  // ── Add-ons ─────────────────────────────────────────────────────────────────
   const addAddon = () => {
     const name = addonName.trim();
     const priceNum = parseFloat(addonPrice);
@@ -182,61 +241,157 @@ export default function CreateServiceScreen({ navigation, route }: any) {
     setAddons((prev) => [...prev, { name, price: addonPrice }]);
     setAddonName('');
     setAddonPrice('');
+    markDirty();
   };
   const removeAddon = (index: number) => {
     Haptics.selectionAsync();
     setAddons((prev) => prev.filter((_, i) => i !== index));
+    markDirty();
   };
 
-  // ── Location ───────────────────────────────────────────────────────────────
   const handleLocationSelect = useCallback((loc: DeliveryLocation) => {
     setLocation(loc);
     setLocationLabel(loc.label);
-  }, []);
+    markDirty();
+  }, [markDirty]);
 
-  // ── Publish / pause toggle (§6.7 — operates on `status`) ───────────────────
-  const published = status === 'ACTIVE';
-  const togglePublished = (value: boolean) => {
-    Haptics.selectionAsync();
-    setStatus(value ? 'ACTIVE' : (status === 'DRAFT' ? 'DRAFT' : 'PAUSED'));
+  // ── Photos (persisted immediately; run server-side §5.3 pipeline) ───────────
+  const addPhoto = async () => {
+    setPhotoError(null);
+    if (photos.length >= 8) { setPhotoError('Maximum 8 photos per service.'); return; }
+
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (perm.status !== 'granted') { showError('Photo library permission is required.'); return; }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsMultipleSelection: false,
+      quality: 0.8,
+      allowsEditing: true,
+      aspect: [4, 3],
+    });
+    if (result.canceled || !result.assets[0]) return;
+
+    const asset = result.assets[0];
+    const formData = new FormData();
+    formData.append('photo', { uri: asset.uri, name: `photo_${Date.now()}.jpg`, type: 'image/jpeg' } as any);
+
+    setUploading(true);
+    try {
+      const photo = await servicesApi.uploadPhoto(editing!.id, formData);
+      setPhotos((prev) => [...prev, photo]);
+      showSuccess('Photo added.');
+    } catch (e) {
+      // Pipeline rejections (NSFW / duplicate / oversize) surface inline.
+      setPhotoError(e instanceof ApiError ? e.message : 'Upload failed.');
+    } finally {
+      setUploading(false);
+    }
   };
 
-  // ── Submit ─────────────────────────────────────────────────────────────────
-  const handleSubmit = async () => {
-    if (!categoryId) { showError('Please select a category.'); return; }
-    if (!title.trim()) { showError('Give your service a title.'); return; }
-    if (!location) { showError('Set where you offer this service before saving.'); return; }
+  const deletePhoto = (photo: ServicePhoto) => {
+    Alert.alert('Remove photo', 'Delete this photo from your service?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          setBusyPhotoId(photo.id);
+          try {
+            await servicesApi.deletePhoto(editing!.id, photo.id);
+            setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
+          } catch (e) {
+            showError(e instanceof ApiError ? e.message : 'Failed to delete photo.');
+          } finally {
+            setBusyPhotoId(null);
+          }
+        },
+      },
+    ]);
+  };
 
-    let numericPrice: number | null = null;
-    if (pricingModel !== 'QUOTE') {
-      numericPrice = parseFloat(price);
-      if (Number.isNaN(numericPrice) || numericPrice <= 0) {
-        showError(pricingModel === 'HOURLY' ? 'Enter your hourly rate.' : 'Enter a price.');
-        return;
-      }
+  // Reorder (first = cover). No gesture lib installed — move left/right controls.
+  const movePhoto = async (index: number, dir: -1 | 1) => {
+    const target = index + dir;
+    if (target < 0 || target >= photos.length) return;
+    const prev = photos;
+    const next = [...photos];
+    [next[index], next[target]] = [next[target], next[index]];
+    Haptics.selectionAsync();
+    setPhotos(next);
+    try {
+      await servicesApi.reorderPhotos(editing!.id, next.map((p) => p.id));
+    } catch (e) {
+      setPhotos(prev);
+      showError(e instanceof ApiError ? e.message : 'Could not reorder photos.');
     }
+  };
+
+  // ── Validation ──────────────────────────────────────────────────────────────
+  const hasError = (field: string) => fieldErrors.some((e) => e.field === field);
+  const tabHasError = (tab: SectionKey) => fieldErrors.some((e) => e.tab === tab);
+
+  const collectErrors = (forStatus: ServiceStatus): FieldError[] => {
+    const errs: FieldError[] = [];
+    // Required to save at all (backend also enforces these).
+    if (!title.trim())   errs.push({ tab: 'details', field: 'title' });
+    if (!categoryId)     errs.push({ tab: 'details', field: 'category' });
+    if (!location)       errs.push({ tab: 'details', field: 'location' });
+    // Required only to publish (move to ACTIVE).
+    if (forStatus === 'ACTIVE') {
+      if (pricingModel !== 'QUOTE' && !(parseFloat(price) > 0)) errs.push({ tab: 'pricing', field: 'price' });
+      if (inclusions.length === 0) errs.push({ tab: 'extras', field: 'inclusions' });
+    }
+    return errs;
+  };
+
+  const focusFirst = (errs: FieldError[]) => {
+    const first = errs[0];
+    setSection(first.tab);
+    setTimeout(() => {
+      if (first.field === 'title') titleRef.current?.focus?.();
+      if (first.field === 'price') priceRef.current?.focus?.();
+    }, 120);
+  };
+
+  // ── Submit (one Save commits every tab) ─────────────────────────────────────
+  const handleSubmit = async () => {
+    const errs = collectErrors(status);
+    if (errs.length) {
+      setFieldErrors(errs);
+      focusFirst(errs);
+      showError(status === 'ACTIVE'
+        ? 'Complete the highlighted fields to publish.'
+        : 'Add a title, category and location to save.');
+      return;
+    }
+    setFieldErrors([]);
 
     const durationMins = duration.trim() ? parseInt(duration, 10) : null;
     if (duration.trim() && (Number.isNaN(durationMins!) || durationMins! < 1)) {
+      setSection('pricing');
       showError('Estimated duration should be a whole number of minutes.');
       return;
     }
 
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const payload = {
+      category_id:            categoryId!,
+      title:                  title.trim(),
+      description:            description.trim() || undefined,
+      pricing_model:          pricingModel,
+      base_price:             pricingModel === 'QUOTE' ? null : (parseFloat(price) || null),
+      duration_estimate_mins: durationMins,
+      status,
+      is_pinned:              isPinned,
+      latitude:               location!.lat,
+      longitude:              location!.lng,
+      inclusions,
+      addons: addons.map((a) => ({ name: a.name.trim(), price: parseFloat(a.price) || 0 })),
+    };
+
     try {
-      const payload = {
-        category_id:             categoryId,
-        title:                   title.trim(),
-        description:             description.trim() || undefined,
-        pricing_model:           pricingModel,
-        base_price:              pricingModel === 'QUOTE' ? null : numericPrice,
-        duration_estimate_mins:  durationMins,
-        status,
-        latitude:                location.lat,
-        longitude:               location.lng,
-        inclusions,
-        addons: addons.map((a) => ({ name: a.name.trim(), price: parseFloat(a.price) || 0 })),
-      };
+      savingRef.current = true;
       if (isEdit) {
         await updateService(editing!.id, payload);
         showSuccess('Service updated.');
@@ -244,288 +399,356 @@ export default function CreateServiceScreen({ navigation, route }: any) {
         await createService(payload);
         showSuccess(status === 'ACTIVE' ? 'Service published.' : 'Service saved as a draft.');
       }
+      setDirty(false);
       navigation.goBack();
-    } catch {}
+    } catch (e: any) {
+      savingRef.current = false;
+      clearError(); // we render the error ourselves; don't let the list re-show it
+      // Surface backend field errors on the right tab when possible.
+      if (e?.isValidation) {
+        const backendErrs: FieldError[] = [];
+        if (e.fieldError('title'))       backendErrs.push({ tab: 'details', field: 'title' });
+        if (e.fieldError('category_id')) backendErrs.push({ tab: 'details', field: 'category' });
+        if (e.fieldError('base_price'))  backendErrs.push({ tab: 'pricing', field: 'price' });
+        if (e.fieldError('latitude'))    backendErrs.push({ tab: 'details', field: 'location' });
+        if (backendErrs.length) { setFieldErrors(backendErrs); focusFirst(backendErrs); }
+      }
+      showError(e?.message ?? 'Could not save the service.');
+    }
   };
 
-  const priceLabel = pricingModel === 'HOURLY' ? 'Hourly rate (ZMW)' : 'Price (ZMW)';
+  // ── Render helpers ──────────────────────────────────────────────────────────
+  const priceLabelText = pricingModel === 'HOURLY' ? 'Hourly rate (ZMW)' : 'Price (ZMW)';
+  const categoryName = categories.find((c) => c.id === categoryId)?.name;
+
+  const tabs: TabItem[] = [
+    { key: 'details', label: 'Details', hasError: tabHasError('details') },
+    { key: 'pricing', label: 'Pricing', hasError: tabHasError('pricing') },
+    { key: 'extras',  label: 'Extras',  hasError: tabHasError('extras')  },
+    { key: 'photos',  label: 'Photos'  },
+  ];
 
   return (
-    <SafeAreaView style={styles.safe}>
-      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
+      <ScreenHeader
+        title={isEdit ? 'Edit service' : 'New service'}
+        subtitle={(title.trim() || isEdit) ? (title.trim() || editing?.title || undefined) : undefined}
+        back
+      />
+
+      <Tabs items={tabs} activeKey={section} onChange={(k) => setSection(k as SectionKey)} scrollable />
+
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView
-          contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 40 }]}
+          contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.header}>
-            <TouchableRipple onPress={() => navigation.goBack()} borderless style={styles.backBtn}>
-              <Ionicons name="arrow-back" size={20} color={palette.textPrimary} />
-            </TouchableRipple>
-            <View style={styles.headerText}>
-              <Text style={styles.title}>{isEdit ? 'Edit Service' : 'New Service'}</Text>
-              <Text style={styles.subtitle}>Set details clearly so customers can book faster.</Text>
-            </View>
-          </View>
-
-          <Text style={styles.sectionLabel}>Category</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.catRow}>
-            {categories.map((category) => (
-              <TouchableRipple
-                key={category.id}
-                onPress={() => { Haptics.selectionAsync(); setCategoryId(category.id); }}
-                borderless
-                style={[styles.catChip, categoryId === category.id && styles.catChipActive]}
-              >
-                <Text style={[styles.catChipText, categoryId === category.id && styles.catChipTextActive]}>
-                  {category.name}
-                </Text>
-              </TouchableRipple>
-            ))}
-          </ScrollView>
-          {catErr && <HelperText type="error" visible style={styles.helperTop}>{catErr}</HelperText>}
-
-          <Text style={styles.sectionLabel}>Details</Text>
-          <View style={styles.card}>
-            <View>
+          {/* ── DETAILS ───────────────────────────────────────────────── */}
+          {section === 'details' && (
+            <>
+              <Text style={styles.subLabel}>Title</Text>
               <TextInput
+                ref={titleRef}
                 mode="outlined"
-                label="Service Title"
-                placeholder="e.g. Physics Tutoring (UNZA)"
+                placeholder="e.g. Physics tutoring (UNZA)"
                 value={title}
-                onChangeText={setTitle}
-                error={!!titleErr}
+                onChangeText={(t) => { setTitle(t); markDirty(); }}
+                error={hasError('title')}
                 style={styles.input}
                 outlineStyle={styles.inputOutline}
               />
-              {titleErr && <HelperText type="error" visible>{titleErr}</HelperText>}
-            </View>
+              {hasError('title') && <HelperText type="error" visible>Add a title.</HelperText>}
 
-            <MarkdownEditor
-              label="Description (optional)"
-              placeholder="Describe what you offer — use bullets, bold, etc."
-              value={description}
-              onChangeText={setDescription}
-            />
-          </View>
+              <View style={styles.divider} />
 
-          {/* ── Pricing model (§5.1/§6.7) ───────────────────────────────── */}
-          <Text style={styles.sectionLabel}>How do you price this?</Text>
-          <View style={styles.card}>
-            <SegmentedButtons
-              value={pricingModel}
-              onValueChange={(v) => { Haptics.selectionAsync(); setPricingModel(v as PricingModel); }}
-              buttons={PRICING_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-            />
+              <Text style={styles.subLabel}>Category</Text>
+              <CategoryPicker
+                categories={categories}
+                selectedId={categoryId}
+                onSelect={(id) => { Haptics.selectionAsync(); setCategoryId(id); markDirty(); }}
+              />
+              {hasError('category') && <HelperText type="error" visible>Choose a category.</HelperText>}
 
-            {pricingModel === 'QUOTE' ? (
-              <Text style={styles.quoteHint}>
-                Customers will see “By quote” and request a custom price from you instead of a listed rate.
+              <View style={styles.divider} />
+
+              <Text style={styles.subLabel}>Description</Text>
+              <MarkdownEditor
+                label="Description (optional)"
+                placeholder="Describe what you offer — use bullets, bold, etc."
+                value={description}
+                onChangeText={(t: string) => { setDescription(t); markDirty(); }}
+              />
+
+              <View style={styles.divider} />
+
+              <Text style={styles.subLabel}>Where do you offer this from?</Text>
+              <TouchableRipple
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setPickerVisible(true); }}
+                borderless
+                style={[styles.rowField, hasError('location') && styles.rowFieldError]}
+              >
+                <View style={styles.rowFieldInner}>
+                  <Ionicons name="location-outline" size={18} color={palette.primary} />
+                  <Text style={styles.rowFieldText} numberOfLines={1}>{locationLabel ?? 'Choose a location'}</Text>
+                  <Ionicons name="chevron-forward" size={16} color={palette.textSecondary} />
+                </View>
+              </TouchableRipple>
+              {hasError('location') && <HelperText type="error" visible>Set where you offer this service.</HelperText>}
+
+              <View style={styles.divider} />
+
+              <Text style={styles.subLabel}>Status</Text>
+              <SegmentedButtons
+                value={status}
+                onValueChange={(v) => { Haptics.selectionAsync(); setStatus(v as ServiceStatus); markDirty(); }}
+                buttons={STATUS_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+              />
+              <Text style={styles.hint}>
+                {status === 'ACTIVE'
+                  ? 'Customers can find and book this service.'
+                  : status === 'PAUSED'
+                    ? 'Temporarily hidden from search — keeps its details.'
+                    : 'Not listed yet — visible only to you.'}
               </Text>
-            ) : (
-              <>
-                <View>
+
+              <View style={styles.divider} />
+
+              <View style={styles.switchRow}>
+                <View style={styles.switchText}>
+                  <Text style={styles.switchTitle}>Pin to profile highlights</Text>
+                  <Text style={styles.hint}>Feature this service near the top of your public profile (§5.4).</Text>
+                </View>
+                <Switch value={isPinned} onValueChange={(v) => { setIsPinned(v); markDirty(); }} color={palette.primary} />
+              </View>
+            </>
+          )}
+
+          {/* ── PRICING ───────────────────────────────────────────────── */}
+          {section === 'pricing' && (
+            <>
+              <Text style={styles.subLabel}>How do you price this?</Text>
+              <SegmentedButtons
+                value={pricingModel}
+                onValueChange={(v) => { Haptics.selectionAsync(); setPricingModel(v as PricingModel); markDirty(); }}
+                buttons={PRICING_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+              />
+
+              {pricingModel === 'QUOTE' ? (
+                <Text style={styles.quoteHint}>
+                  Customers see “By quote” and request a custom price from you instead of a listed rate. No price or
+                  duration needed.
+                </Text>
+              ) : (
+                <>
+                  <View style={styles.divider} />
+                  <Text style={styles.subLabel}>{priceLabelText}</Text>
                   <TextInput
+                    ref={priceRef}
                     mode="outlined"
-                    label={priceLabel}
                     keyboardType="decimal-pad"
                     value={price}
-                    onChangeText={setPrice}
-                    error={!!priceErr}
+                    onChangeText={(t) => { setPrice(t); markDirty(); }}
+                    error={hasError('price')}
                     style={styles.input}
                     outlineStyle={styles.inputOutline}
                     left={<TextInput.Icon icon="cash" />}
                     right={pricingModel === 'HOURLY' ? <TextInput.Affix text="/ hr" /> : undefined}
                   />
-                  {priceErr && <HelperText type="error" visible>{priceErr}</HelperText>}
-                </View>
+                  {hasError('price') && <HelperText type="error" visible>Enter a price to publish.</HelperText>}
 
-                <View>
+                  <Text style={styles.subLabel}>Estimated duration</Text>
                   <TextInput
                     mode="outlined"
-                    label="Estimated duration (minutes, optional)"
+                    label="Minutes (optional)"
                     keyboardType="number-pad"
                     value={duration}
-                    onChangeText={setDuration}
-                    error={!!durationErr}
+                    onChangeText={(t) => { setDuration(t); markDirty(); }}
                     style={styles.input}
                     outlineStyle={styles.inputOutline}
                     left={<TextInput.Icon icon="clock-outline" />}
                   />
-                  {durationErr && <HelperText type="error" visible>{durationErr}</HelperText>}
+                </>
+              )}
+
+              {/* Earnings preview — payment_mode-aware (§ commission rule) */}
+              {pricingModel !== 'QUOTE' && parseFloat(price) > 0 && (
+                <View style={[styles.previewBox, paymentMode === 'DIRECT' && styles.previewBoxDirect]}>
+                  <Ionicons
+                    name={paymentMode === 'DIRECT' ? 'checkmark-circle-outline' : 'information-circle-outline'}
+                    size={16}
+                    color={paymentMode === 'DIRECT' ? palette.success : palette.primary}
+                  />
+                  {paymentMode === 'DIRECT' ? (
+                    <Text style={styles.previewText}>
+                      You’re paid the full ZMW {parseFloat(price).toFixed(0)} directly — no commission is charged.
+                    </Text>
+                  ) : previewLoading && !preview ? (
+                    <Text style={styles.previewText}>Calculating your commission…</Text>
+                  ) : preview ? (
+                    <Text style={styles.previewText}>
+                      At ZMW {preview.gross.toFixed(0)}, {categoryName ?? 'this category'}/Tier {preview.tier} commission
+                      is {(preview.effective_rate * 100).toFixed(1)}%. You keep ~ZMW {preview.net_to_provider.toFixed(0)}.
+                    </Text>
+                  ) : null}
                 </View>
-              </>
-            )}
-
-            {/* Live commission preview — "At {price}, {category}/{tier} commission is {rate}. You keep ~{net}." */}
-            {pricingModel !== 'QUOTE' && (preview || previewLoading) && (
-              <View style={styles.previewBox}>
-                <Ionicons name="information-circle-outline" size={16} color={palette.primary} />
-                {previewLoading && !preview ? (
-                  <Text style={styles.previewText}>Calculating your commission…</Text>
-                ) : preview ? (
-                  <Text style={styles.previewText}>
-                    At ZMW {preview.gross.toFixed(0)}, {categories.find((c) => c.id === categoryId)?.name ?? 'this category'}/Tier {preview.tier} commission is {(preview.effective_rate * 100).toFixed(1)}%. You keep ~ZMW {preview.net_to_provider.toFixed(0)}.
-                  </Text>
-                ) : null}
-              </View>
-            )}
-          </View>
-
-          {/* ── What's included (§5.2) ──────────────────────────────────── */}
-          <Text style={styles.sectionLabel}>What's included</Text>
-          <View style={styles.card}>
-            {inclusions.map((item, index) => (
-              <View key={`${item}-${index}`} style={styles.listRow}>
-                <Ionicons name="checkmark-circle-outline" size={18} color={palette.success} />
-                <Text style={styles.listText} numberOfLines={2}>{item}</Text>
-                <View style={styles.listActions}>
-                  <TouchableRipple
-                    onPress={() => moveInclusion(index, -1)}
-                    disabled={index === 0}
-                    borderless
-                    style={styles.listActionBtn}
-                  >
-                    <Ionicons name="chevron-up" size={16} color={index === 0 ? palette.textDisabled : palette.textSecondary} />
-                  </TouchableRipple>
-                  <TouchableRipple
-                    onPress={() => moveInclusion(index, 1)}
-                    disabled={index === inclusions.length - 1}
-                    borderless
-                    style={styles.listActionBtn}
-                  >
-                    <Ionicons name="chevron-down" size={16} color={index === inclusions.length - 1 ? palette.textDisabled : palette.textSecondary} />
-                  </TouchableRipple>
-                  <TouchableRipple onPress={() => removeInclusion(index)} borderless style={styles.listActionBtn}>
-                    <Ionicons name="close" size={16} color={palette.danger} />
-                  </TouchableRipple>
-                </View>
-              </View>
-            ))}
-
-            <View style={styles.addRow}>
-              <TextInput
-                mode="outlined"
-                placeholder="e.g. Free pickup & drop-off"
-                value={inclusionDraft}
-                onChangeText={setInclusionDraft}
-                onSubmitEditing={addInclusion}
-                returnKeyType="done"
-                style={[styles.input, styles.addInput]}
-                outlineStyle={styles.inputOutline}
-                dense
-              />
-              <TouchableRipple onPress={addInclusion} borderless style={styles.addBtn}>
-                <Ionicons name="add" size={20} color="#FFFFFF" />
-              </TouchableRipple>
-            </View>
-          </View>
-
-          {/* ── Add-ons (§5.3) ──────────────────────────────────────────── */}
-          <Text style={styles.sectionLabel}>Add-ons (optional extras)</Text>
-          <View style={styles.card}>
-            {addons.map((addon, index) => (
-              <View key={`${addon.name}-${index}`} style={styles.listRow}>
-                <Ionicons name="add-circle-outline" size={18} color={palette.primary} />
-                <Text style={styles.listText} numberOfLines={1}>{addon.name}</Text>
-                <Text style={styles.addonPrice}>ZMW {(parseFloat(addon.price) || 0).toFixed(0)}</Text>
-                <TouchableRipple onPress={() => removeAddon(index)} borderless style={styles.listActionBtn}>
-                  <Ionicons name="close" size={16} color={palette.danger} />
-                </TouchableRipple>
-              </View>
-            ))}
-
-            <View style={styles.addRow}>
-              <TextInput
-                mode="outlined"
-                placeholder="Add-on name"
-                value={addonName}
-                onChangeText={setAddonName}
-                style={[styles.input, styles.addInput]}
-                outlineStyle={styles.inputOutline}
-                dense
-              />
-              <TextInput
-                mode="outlined"
-                placeholder="Price"
-                keyboardType="decimal-pad"
-                value={addonPrice}
-                onChangeText={setAddonPrice}
-                onSubmitEditing={addAddon}
-                returnKeyType="done"
-                style={[styles.input, styles.addonPriceInput]}
-                outlineStyle={styles.inputOutline}
-                dense
-              />
-              <TouchableRipple onPress={addAddon} borderless style={styles.addBtn}>
-                <Ionicons name="add" size={20} color="#FFFFFF" />
-              </TouchableRipple>
-            </View>
-          </View>
-
-          {/* ── Service location (§4.1/§4.2 — label only, never coordinates) ─ */}
-          <Text style={styles.sectionLabel}>Where do you offer this from?</Text>
-          <View style={styles.card}>
-            <TouchableRipple
-              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setPickerVisible(true); }}
-              borderless
-              style={styles.locationRow}
-            >
-              <View style={styles.locationRowInner}>
-                <Ionicons name="location-outline" size={18} color={palette.primary} />
-                <Text style={styles.locationText} numberOfLines={1}>
-                  {locationLabel ?? 'Choose a location'}
-                </Text>
-                <Ionicons name="chevron-forward" size={16} color={palette.textSecondary} />
-              </View>
-            </TouchableRipple>
-            {latErr && <HelperText type="error" visible>{latErr}</HelperText>}
-          </View>
-
-          {/* ── Photos ──────────────────────────────────────────────────── */}
-          {isEdit && (
-            <>
-              <Text style={styles.sectionLabel}>Photos</Text>
-              <TouchableRipple
-                onPress={() => navigation.navigate('ServicePhotos', { serviceId: editing!.id, serviceTitle: editing!.title })}
-                borderless
-                style={styles.card}
-              >
-                <View style={styles.photoRow}>
-                  <Ionicons name="images-outline" size={20} color={palette.primary} />
-                  <Text style={styles.photoRowText}>Manage photos ({editing!.photos.length}/8)</Text>
-                  <Ionicons name="chevron-forward" size={16} color={palette.textSecondary} />
-                </View>
-              </TouchableRipple>
+              )}
             </>
           )}
 
-          {/* ── Publish / pause (§6.7) ──────────────────────────────────── */}
-          <Text style={styles.sectionLabel}>Visibility</Text>
-          <View style={[styles.card, styles.publishRow]}>
-            <View style={styles.publishText}>
-              <Text style={styles.publishTitle}>{published ? 'Published' : 'Not published'}</Text>
-              <Text style={styles.publishSubtitle}>
-                {published
-                  ? 'Customers can find and book this service.'
-                  : 'Hidden from search — switch on when you’re ready to go live.'}
-              </Text>
-            </View>
-            <Switch value={published} onValueChange={togglePublished} color={palette.primary} />
-          </View>
+          {/* ── EXTRAS ────────────────────────────────────────────────── */}
+          {section === 'extras' && (
+            <>
+              <Text style={styles.subLabel}>What’s included</Text>
+              {hasError('inclusions') && (
+                <HelperText type="error" visible>Add at least one inclusion to publish.</HelperText>
+              )}
+              {inclusions.map((item, index) => (
+                <View key={`${item}-${index}`} style={styles.listRow}>
+                  <Ionicons name="checkmark-circle-outline" size={18} color={palette.success} />
+                  <Text style={styles.listText} numberOfLines={2}>{item}</Text>
+                  <View style={styles.listActions}>
+                    <TouchableRipple onPress={() => moveInclusion(index, -1)} disabled={index === 0} borderless style={styles.listActionBtn}>
+                      <Ionicons name="chevron-up" size={16} color={index === 0 ? palette.textDisabled : palette.textSecondary} />
+                    </TouchableRipple>
+                    <TouchableRipple onPress={() => moveInclusion(index, 1)} disabled={index === inclusions.length - 1} borderless style={styles.listActionBtn}>
+                      <Ionicons name="chevron-down" size={16} color={index === inclusions.length - 1 ? palette.textDisabled : palette.textSecondary} />
+                    </TouchableRipple>
+                    <TouchableRipple onPress={() => removeInclusion(index)} borderless style={styles.listActionBtn}>
+                      <Ionicons name="close" size={16} color={palette.danger} />
+                    </TouchableRipple>
+                  </View>
+                </View>
+              ))}
+              <View style={styles.addRow}>
+                <TextInput
+                  mode="outlined"
+                  placeholder="e.g. Free pickup & drop-off"
+                  value={inclusionDraft}
+                  onChangeText={setInclusionDraft}
+                  onSubmitEditing={addInclusion}
+                  returnKeyType="done"
+                  style={[styles.input, styles.addInput]}
+                  outlineStyle={styles.inputOutline}
+                  dense
+                />
+                <TouchableRipple onPress={addInclusion} borderless style={styles.addBtn}>
+                  <Ionicons name="add" size={20} color="#FFFFFF" />
+                </TouchableRipple>
+              </View>
 
+              <View style={styles.divider} />
+
+              <Text style={styles.subLabel}>Add-ons (optional extras)</Text>
+              {addons.map((addon, index) => (
+                <View key={`${addon.name}-${index}`} style={styles.listRow}>
+                  <Ionicons name="add-circle-outline" size={18} color={palette.primary} />
+                  <Text style={styles.listText} numberOfLines={1}>{addon.name}</Text>
+                  <Text style={styles.addonPrice}>ZMW {(parseFloat(addon.price) || 0).toFixed(0)}</Text>
+                  <TouchableRipple onPress={() => removeAddon(index)} borderless style={styles.listActionBtn}>
+                    <Ionicons name="close" size={16} color={palette.danger} />
+                  </TouchableRipple>
+                </View>
+              ))}
+              <View style={styles.addRow}>
+                <TextInput
+                  mode="outlined"
+                  placeholder="Add-on name"
+                  value={addonName}
+                  onChangeText={setAddonName}
+                  style={[styles.input, styles.addInput]}
+                  outlineStyle={styles.inputOutline}
+                  dense
+                />
+                <TextInput
+                  mode="outlined"
+                  placeholder="Price"
+                  keyboardType="decimal-pad"
+                  value={addonPrice}
+                  onChangeText={setAddonPrice}
+                  onSubmitEditing={addAddon}
+                  returnKeyType="done"
+                  style={[styles.input, styles.addonPriceInput]}
+                  outlineStyle={styles.inputOutline}
+                  dense
+                />
+                <TouchableRipple onPress={addAddon} borderless style={styles.addBtn}>
+                  <Ionicons name="add" size={20} color="#FFFFFF" />
+                </TouchableRipple>
+              </View>
+            </>
+          )}
+
+          {/* ── PHOTOS ────────────────────────────────────────────────── */}
+          {section === 'photos' && (
+            <>
+              {!isEdit ? (
+                <View style={styles.photoNotice}>
+                  <Ionicons name="images-outline" size={28} color={palette.textDisabled} />
+                  <Text style={styles.photoNoticeText}>
+                    Save this service first, then reopen it to add photos.
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  <Text style={styles.subLabel}>Photos ({photos.length}/8)</Text>
+                  <Text style={styles.hint}>The first photo is your cover. Use the arrows to reorder.</Text>
+                  {photoError && <HelperText type="error" visible>{photoError}</HelperText>}
+
+                  <View style={styles.photoGrid}>
+                    {photos.map((photo, index) => (
+                      <View key={photo.id} style={styles.photoCell}>
+                        <Image source={{ uri: storageUrl(photo.path) }} style={styles.photoImg} contentFit="cover" transition={120} />
+                        {index === 0 && (
+                          <View style={styles.coverBadge}><Text style={styles.coverBadgeText}>Cover</Text></View>
+                        )}
+                        <View style={styles.photoOverlay}>
+                          <TouchableRipple onPress={() => movePhoto(index, -1)} disabled={index === 0} borderless style={styles.photoCtl}>
+                            <Ionicons name="chevron-back" size={16} color={index === 0 ? 'rgba(255,255,255,0.4)' : '#fff'} />
+                          </TouchableRipple>
+                          <TouchableRipple onPress={() => movePhoto(index, 1)} disabled={index === photos.length - 1} borderless style={styles.photoCtl}>
+                            <Ionicons name="chevron-forward" size={16} color={index === photos.length - 1 ? 'rgba(255,255,255,0.4)' : '#fff'} />
+                          </TouchableRipple>
+                          <TouchableRipple onPress={() => deletePhoto(photo)} disabled={busyPhotoId === photo.id} borderless style={styles.photoCtl}>
+                            {busyPhotoId === photo.id
+                              ? <ActivityIndicator size={12} color="#fff" />
+                              : <Ionicons name="trash-outline" size={15} color="#fff" />}
+                          </TouchableRipple>
+                        </View>
+                      </View>
+                    ))}
+
+                    {photos.length < 8 && (
+                      <TouchableRipple onPress={addPhoto} disabled={uploading} borderless style={[styles.photoCell, styles.addTile]}>
+                        <View style={styles.addTileInner}>
+                          {uploading
+                            ? <ActivityIndicator color={palette.primary} />
+                            : <Ionicons name="camera-outline" size={26} color={palette.textDisabled} />}
+                          <Text style={styles.addTileText}>{photos.length === 0 ? 'Add photo' : 'Add'}</Text>
+                        </View>
+                      </TouchableRipple>
+                    )}
+                  </View>
+                </>
+              )}
+            </>
+          )}
+        </ScrollView>
+
+        {/* ── Persistent save bar (spans every tab) ────────────────────── */}
+        <View style={[styles.saveBar, { paddingBottom: insets.bottom + spacing.sm }]}>
           <Button
             mode="contained"
             onPress={handleSubmit}
             loading={loading}
             disabled={loading}
-            style={styles.submitBtn}
-            contentStyle={styles.submitBtnContent}
-            labelStyle={styles.submitBtnLabel}
+            style={styles.saveBtn}
+            contentStyle={styles.saveBtnContent}
+            labelStyle={styles.saveBtnLabel}
           >
-            {isEdit ? 'Save Changes' : published ? 'Publish Service' : 'Save Service'}
+            {status === 'ACTIVE' ? (isEdit ? 'Save & publish' : 'Publish') : 'Save'}
           </Button>
-        </ScrollView>
+        </View>
       </KeyboardAvoidingView>
 
       <LocationPickerSheet
@@ -538,66 +761,257 @@ export default function CreateServiceScreen({ navigation, route }: any) {
   );
 }
 
+// ── Category picker (searchable) ────────────────────────────────────────────
+
+function flattenCategories(cats: Category[]): Category[] {
+  const out: Category[] = [];
+  for (const c of cats) {
+    out.push(c);
+    if (c.children?.length) out.push(...flattenCategories(c.children));
+  }
+  return out;
+}
+
+function CategoryPicker({
+  categories,
+  selectedId,
+  onSelect,
+}: {
+  categories: Category[];
+  selectedId: number | undefined;
+  onSelect:   (id: number) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen]   = useState(false);
+
+  const all = useMemo(() => flattenCategories(categories), [categories]);
+  const selected = all.find((c) => c.id === selectedId);
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) return all;
+    const q = query.toLowerCase();
+    return all.filter((c) =>
+      c.name.toLowerCase().includes(q) ||
+      c.synonyms?.some((s) => s.toLowerCase().includes(q)),
+    );
+  }, [all, query]);
+
+  const handleSelect = (cat: Category) => {
+    onSelect(cat.id);
+    setQuery('');
+    setOpen(false);
+  };
+
+  return (
+    <View style={cpStyles.wrap}>
+      {/* Selected chip */}
+      {selected && !open && (
+        <Pressable onPress={() => setOpen(true)} style={cpStyles.selectedChip}>
+          {selected.icon && (
+            <Ionicons name={selected.icon as any} size={14} color={palette.primary} />
+          )}
+          <Text style={cpStyles.selectedText}>{selected.name}</Text>
+          <Ionicons name="chevron-down" size={14} color={palette.textSecondary} />
+        </Pressable>
+      )}
+
+      {/* Search input */}
+      {(!selected || open) && (
+        <View style={cpStyles.inputWrap}>
+          <Ionicons name="search-outline" size={16} color={palette.textSecondary} style={cpStyles.searchIcon} />
+          <RNTextInput
+            style={cpStyles.input}
+            placeholder="Search categories…"
+            placeholderTextColor={palette.textDisabled}
+            value={query}
+            onChangeText={(t) => { setQuery(t); setOpen(true); }}
+            onFocus={() => setOpen(true)}
+            autoCorrect={false}
+          />
+          {query.length > 0 && (
+            <Pressable onPress={() => setQuery('')} hitSlop={8}>
+              <Ionicons name="close-circle" size={16} color={palette.textDisabled} />
+            </Pressable>
+          )}
+        </View>
+      )}
+
+      {/* Results dropdown */}
+      {open && (
+        <View style={cpStyles.dropdown}>
+          <ScrollView style={cpStyles.dropdownScroll} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+            {filtered.length === 0 ? (
+              <Text style={cpStyles.empty}>No categories found</Text>
+            ) : (
+              filtered.map((cat) => {
+                const isActive = cat.id === selectedId;
+                return (
+                  <Pressable
+                    key={cat.id}
+                    onPress={() => handleSelect(cat)}
+                    style={[cpStyles.row, isActive && cpStyles.rowActive]}
+                  >
+                    {cat.icon && (
+                      <Ionicons
+                        name={cat.icon as any}
+                        size={16}
+                        color={isActive ? palette.primary : palette.textSecondary}
+                      />
+                    )}
+                    <Text
+                      style={[cpStyles.rowText, isActive && cpStyles.rowTextActive]}
+                      numberOfLines={1}
+                    >
+                      {cat.name}
+                    </Text>
+                    {isActive && <Ionicons name="checkmark" size={16} color={palette.primary} />}
+                  </Pressable>
+                );
+              })
+            )}
+          </ScrollView>
+        </View>
+      )}
+    </View>
+  );
+}
+
+const cpStyles = StyleSheet.create({
+  wrap: { marginBottom: spacing.xs },
+  selectedChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    alignSelf: 'flex-start',
+    paddingVertical: spacing.xs + 4,
+    paddingHorizontal: spacing.md,
+    borderRadius: r.sm,
+    borderWidth: 1,
+    borderColor: palette.primary,
+    backgroundColor: palette.primaryLight,
+  },
+  selectedText: {
+    fontFamily: fontFamily.medium,
+    fontSize: 14,
+    color: palette.primary,
+  },
+  inputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: r.sm,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
+    paddingHorizontal: spacing.sm,
+    minHeight: 44,
+  },
+  searchIcon: { marginRight: spacing.xs },
+  input: {
+    flex: 1,
+    fontFamily: fontFamily.regular,
+    fontSize: 14,
+    color: palette.textPrimary,
+    paddingVertical: Platform.OS === 'ios' ? spacing.sm : spacing.xs,
+  },
+  dropdown: {
+    marginTop: spacing.xs,
+    borderRadius: r.sm,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
+    overflow: 'hidden',
+  },
+  dropdownScroll: { maxHeight: 220 },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm + 2,
+    paddingHorizontal: spacing.md,
+    minHeight: 44,
+  },
+  rowActive: { backgroundColor: palette.primaryLight },
+  rowText: {
+    flex: 1,
+    fontFamily: fontFamily.regular,
+    fontSize: 14,
+    color: palette.textPrimary,
+  },
+  rowTextActive: { fontFamily: fontFamily.medium, color: palette.primary },
+  empty: {
+    fontFamily: fontFamily.regular,
+    fontSize: 13,
+    color: palette.textDisabled,
+    textAlign: 'center',
+    paddingVertical: spacing.lg,
+  },
+});
+
+// ── Styles ──────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: palette.background },
   flex: { flex: 1 },
-  scroll: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
+  scroll: { paddingHorizontal: spacing.lg, paddingTop: spacing.md, paddingBottom: spacing.xl },
 
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    marginBottom: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.sm,
   },
   backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: r.full,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: palette.surface,
-    borderWidth: 1,
-    borderColor: palette.border,
+    width: 44, height: 44, borderRadius: r.sm,
+    alignItems: 'center', justifyContent: 'center',
   },
   headerText: { flex: 1 },
-  title:    { ...typography.heading2, color: palette.textPrimary, marginBottom: 2 },
+  title:    { ...typography.heading2, color: palette.textPrimary },
   subtitle: { ...typography.bodySmall, color: palette.textSecondary },
 
-  sectionLabel: { ...typography.label, color: palette.textSecondary, marginBottom: spacing.sm },
-  helperTop:    { marginTop: -spacing.xs, marginBottom: spacing.sm },
+  subLabel: { ...typography.label, color: palette.textPrimary, marginBottom: spacing.xs, marginTop: spacing.sm },
+  hint:     { ...typography.bodySmall, color: palette.textSecondary, marginBottom: spacing.sm, fontSize: 13 },
 
-  catRow: { gap: spacing.sm, paddingBottom: spacing.md },
+  divider: { height: StyleSheet.hairlineWidth, backgroundColor: palette.border, marginVertical: spacing.md },
+
+  input:        { backgroundColor: palette.surface },
+  inputOutline: { borderRadius: r.sm },
+
+  catWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   catChip: {
-    paddingVertical: spacing.xs + 2,
+    paddingVertical: spacing.xs + 4,
     paddingHorizontal: spacing.md,
-    borderRadius: r.full,
-    borderWidth: 1.5,
+    borderRadius: r.sm,
+    borderWidth: 1,
     borderColor: palette.border,
     backgroundColor: palette.surface,
   },
   catChipActive:     { borderColor: palette.primary, backgroundColor: palette.primaryLight },
   catChipText:       { ...typography.bodySmall, color: palette.textSecondary },
-  catChipTextActive: { color: palette.primary },
+  catChipTextActive: { color: palette.primary, fontFamily: 'DMSans_500Medium' },
 
-  card: {
-    backgroundColor: palette.surface,
-    borderRadius: r.lg,
+  rowField: {
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
-    padding: spacing.md,
-    marginBottom: spacing.lg,
-    gap: spacing.sm,
-    ...shadow.card,
+    backgroundColor: palette.surface,
   },
-  input:       { backgroundColor: '#FFFFFF' },
-  inputOutline:{ borderRadius: r.lg },
+  rowFieldError: { borderColor: palette.danger },
+  rowFieldInner: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md, minHeight: 52 },
+  rowFieldText:  { ...typography.body, color: palette.textPrimary, flex: 1, fontSize: 15 },
+
+  switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
+  switchText: { flex: 1 },
+  switchTitle: { ...typography.label, color: palette.textPrimary, fontSize: 15, marginBottom: 2 },
 
   quoteHint: {
     ...typography.bodySmall,
     color: palette.textSecondary,
     backgroundColor: palette.primaryLight,
-    borderRadius: r.md,
-    padding: spacing.sm,
+    borderRadius: r.sm,
+    padding: spacing.md,
+    marginTop: spacing.md,
   },
 
   previewBox: {
@@ -605,50 +1019,66 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     gap: spacing.xs,
     backgroundColor: palette.primaryLight,
-    borderRadius: r.md,
-    padding: spacing.sm,
+    borderRadius: r.sm,
+    padding: spacing.md,
+    marginTop: spacing.md,
   },
+  previewBoxDirect: { backgroundColor: palette.successLight },
   previewText: { ...typography.bodySmall, color: palette.textPrimary, flex: 1, fontSize: 13, lineHeight: 18 },
 
-  listRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    paddingVertical: spacing.xs,
-  },
+  listRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.xs },
   listText: { ...typography.body, color: palette.textPrimary, flex: 1, fontSize: 14 },
   listActions: { flexDirection: 'row', alignItems: 'center' },
-  listActionBtn: {
-    width: 28, height: 28, borderRadius: r.full,
-    alignItems: 'center', justifyContent: 'center',
-  },
+  listActionBtn: { width: 32, height: 32, borderRadius: r.sm, alignItems: 'center', justifyContent: 'center' },
   addonPrice: { ...typography.label, color: palette.primary, fontSize: 14 },
 
   addRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginTop: spacing.xs },
   addInput: { flex: 1 },
   addonPriceInput: { width: 100 },
-  addBtn: {
-    width: 44, height: 44, borderRadius: r.full,
-    backgroundColor: palette.primary,
-    alignItems: 'center', justifyContent: 'center',
+  addBtn: { width: 44, height: 44, borderRadius: r.sm, backgroundColor: palette.primary, alignItems: 'center', justifyContent: 'center' },
+
+  // Photos
+  photoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
+  photoCell: {
+    width: '31%',
+    aspectRatio: 1,
+    borderRadius: r.sm,
+    overflow: 'hidden',
+    backgroundColor: palette.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: palette.border,
   },
-
-  locationRow: { borderRadius: r.md },
-  locationRowInner: {
-    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
-    paddingVertical: spacing.xs,
+  photoImg: { width: '100%', height: '100%' },
+  coverBadge: {
+    position: 'absolute', top: 4, left: 4,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    borderRadius: r.sm,
+    paddingHorizontal: 6, paddingVertical: 2,
   },
-  locationText: { ...typography.body, color: palette.textPrimary, flex: 1, fontSize: 15 },
+  coverBadgeText: { color: '#fff', fontSize: 10, fontFamily: 'DMSans_500Medium' },
+  photoOverlay: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    paddingVertical: 2,
+  },
+  photoCtl: { width: 32, height: 30, alignItems: 'center', justifyContent: 'center', borderRadius: r.sm },
+  addTile: { borderStyle: 'dashed', borderColor: palette.border },
+  addTileInner: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 4 },
+  addTileText: { ...typography.bodySmall, color: palette.textDisabled, fontSize: 12 },
 
-  photoRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  photoRowText: { ...typography.body, color: palette.textPrimary, flex: 1, fontSize: 15 },
+  photoNotice: { alignItems: 'center', paddingVertical: spacing.xxl, gap: spacing.sm },
+  photoNoticeText: { ...typography.body, color: palette.textSecondary, textAlign: 'center', paddingHorizontal: spacing.lg },
 
-  publishRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  publishText: { flex: 1, paddingRight: spacing.md, gap: 2 },
-  publishTitle: { ...typography.label, color: palette.textPrimary, fontSize: 15 },
-  publishSubtitle: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12 },
-
-  submitBtn:        { borderRadius: r.lg },
-  submitBtnContent: { height: 54 },
-  submitBtnLabel:   { ...typography.label, fontSize: 16 },
+  // Save bar
+  saveBar: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: palette.border,
+    backgroundColor: palette.surface,
+  },
+  saveBtn:        { borderRadius: r.sm },
+  saveBtnContent: { height: 52 },
+  saveBtnLabel:   { ...typography.label, fontSize: 16 },
 });

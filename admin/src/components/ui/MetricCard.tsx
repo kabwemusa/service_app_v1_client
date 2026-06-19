@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+﻿import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import type { LucideIcon } from 'lucide-react'
 
@@ -25,7 +25,7 @@ export function MetricCard({
   return (
     <div
       className={cn(
-        'rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-800',
+        'rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-800',
         className,
       )}
     >

@@ -24,6 +24,8 @@ export interface ProviderProfile {
   momo_number:          string | null;
   base_location_lat:    number | null;
   base_location_lng:    number | null;
+  /** Area label for display (never coordinates, §4.1). */
+  base_location_label?: string | null;
   max_radius_km:        number;
   service_radius_km:    number;
   availability_matrix:  Record<string, { start: string; end: string }[]> | null;
@@ -135,6 +137,10 @@ export interface ProviderDashboard {
     /** 'up' | 'down' | 'flat' vs previous week (NEW) */
     trend?:         'up' | 'down' | 'flat';
   };
+  /** DIRECT only — completed jobs the provider hasn't yet confirmed paid. */
+  to_collect?: { amount_zmw: number; count: number } | null;
+  /** §9.6 referral entry — 8-char code. */
+  referral_code?: string | null;
   next_payout: {
     booking_id:  string;
     amount_zmw:  number;
@@ -165,9 +171,11 @@ export interface ProviderDashboard {
   /** Key performance stats (NEW — v3 §5.1, §7.1) */
   stats?: {
     rating:                 number | null;
+    reviews?:               number;
     response_time_p50_mins: number | null;
     repeat_client_rate:     number | null;
     jobs_done:              number;
+    active_services?:       number;
   };
   /** Current subscription plan (NEW — v3 §8.4) */
   subscription?: {

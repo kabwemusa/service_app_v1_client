@@ -45,7 +45,7 @@ import { VettingBadge } from '../../components/discovery/VettingBadge';
 import { CardSkeleton } from '../../components/ui/SkeletonBlock';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useBookingStore } from '../../store/bookingStore';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { palette, radius as r, spacing, typography } from '../../theme';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Status configuration
@@ -1009,7 +1009,7 @@ const styles = StyleSheet.create({
     marginHorizontal:  spacing.lg,
     marginBottom:      spacing.md,
     backgroundColor:   palette.surface,
-    borderRadius:      r.lg,
+    borderRadius:      r.sm,
     borderWidth:       1,
     borderColor:       palette.border,
     padding:           3,
@@ -1020,7 +1020,7 @@ const styles = StyleSheet.create({
     alignItems:      'center',
     justifyContent:  'center',
     paddingVertical: spacing.sm,
-    borderRadius:    r.md,
+    borderRadius:    r.sm,
     gap:             6,
     minHeight:       44,
   },
@@ -1039,16 +1039,15 @@ const styles = StyleSheet.create({
   countBadgeText: { ...typography.label, color: palette.primary, fontSize: 11 },
 
   skeletons: { paddingHorizontal: spacing.lg, gap: spacing.sm },
-  skeleton:  { borderRadius: r.lg },
+  skeleton:  { borderRadius: r.sm },
 
   card: {
     backgroundColor: palette.surface,
-    borderRadius:    r.lg,
+    borderRadius:    r.sm,
     borderWidth:     1,
     borderColor:     palette.border,
     padding:         spacing.md,
     marginBottom:    spacing.sm,
-    ...shadow.card,
   },
   cardTop: {
     flexDirection: 'row',
@@ -1059,7 +1058,7 @@ const styles = StyleSheet.create({
   thumb: {
     width:           44,
     height:          44,
-    borderRadius:    r.md,
+    borderRadius:    r.sm,
     backgroundColor: palette.primaryLight,
     alignItems:      'center',
     justifyContent:  'center',
@@ -1068,7 +1067,7 @@ const styles = StyleSheet.create({
   provRow:      { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2, flexWrap: 'wrap' },
   provName:     { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12 },
 
-  sep: { height: 1, backgroundColor: palette.border, marginVertical: spacing.sm },
+  sep: { height: StyleSheet.hairlineWidth, backgroundColor: palette.border, marginVertical: spacing.sm },
 
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   metaTxt: { ...typography.bodySmall, color: palette.textSecondary, flex: 1, fontSize: 13 },
@@ -1113,7 +1112,7 @@ const styles = StyleSheet.create({
   },
   actionPrimary: {
     backgroundColor: palette.primary,
-    borderRadius:    r.md,
+    borderRadius:    r.sm,
     overflow:        'hidden',
     minWidth:        44,
   },
@@ -1131,7 +1130,7 @@ const styles = StyleSheet.create({
   actionSecondary: {
     borderWidth:     1,
     borderColor:     palette.border,
-    borderRadius:    r.md,
+    borderRadius:    r.sm,
     paddingHorizontal: spacing.md,
     paddingVertical:   spacing.sm,
     minHeight:       44,
@@ -1150,7 +1149,7 @@ const styles = StyleSheet.create({
   actionDestructive: {
     borderWidth:     1,
     borderColor:     palette.dangerLight,
-    borderRadius:    r.md,
+    borderRadius:    r.sm,
     paddingHorizontal: spacing.md,
     paddingVertical:   spacing.sm,
     minHeight:       44,
@@ -1161,7 +1160,7 @@ const styles = StyleSheet.create({
   actionEmergency: {
     borderWidth:     1,
     borderColor:     palette.dangerLight,
-    borderRadius:    r.md,
+    borderRadius:    r.sm,
     overflow:        'hidden',
     minHeight:       44,
     justifyContent:  'center',
@@ -1187,14 +1186,13 @@ const styles = StyleSheet.create({
 
   emptyWrap: { flex: 1, paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
   emptyCard: {
-    borderRadius:    r.xl,
+    borderRadius:    r.sm,
     borderWidth:     1,
     borderColor:     palette.border,
     backgroundColor: palette.surface,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.xl,
     alignItems:      'center',
-    ...shadow.card,
   },
   emptyIcon: {
     width:           80,
@@ -1207,7 +1205,7 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { ...typography.heading3, color: palette.textPrimary, marginBottom: spacing.xs, textAlign: 'center' },
   emptyBody:  { ...typography.body, color: palette.textSecondary, textAlign: 'center', maxWidth: 280, marginBottom: spacing.lg },
-  emptyBtn:   { borderRadius: r.lg },
+  emptyBtn:   { borderRadius: r.sm },
 
   overlayBackdrop: {
     flex:              1,
@@ -1217,9 +1215,8 @@ const styles = StyleSheet.create({
   },
   emergencySheet: {
     backgroundColor: palette.surface,
-    borderRadius:    r.xl,
+    borderRadius:    r.sm,
     padding:         spacing.lg,
-    ...shadow.modal,
   },
   emergencyHeader: {
     flexDirection: 'row',
@@ -1233,7 +1230,7 @@ const styles = StyleSheet.create({
 
   callBtn: {
     backgroundColor: palette.danger,
-    borderRadius:    r.lg,
+    borderRadius:    r.sm,
     overflow:        'hidden',
     marginBottom:    spacing.sm,
   },
@@ -1250,7 +1247,7 @@ const styles = StyleSheet.create({
   alertBtn: {
     borderWidth:   1,
     borderColor:   palette.dangerLight,
-    borderRadius:  r.lg,
+    borderRadius:  r.sm,
     overflow:      'hidden',
     marginBottom:  spacing.md,
   },
@@ -1266,15 +1263,14 @@ const styles = StyleSheet.create({
 
   reportSheet: {
     backgroundColor:      palette.surface,
-    borderTopLeftRadius:  r.xl,
-    borderTopRightRadius: r.xl,
+    borderTopLeftRadius:  r.sm,
+    borderTopRightRadius: r.sm,
     padding:              spacing.lg,
     paddingBottom:        spacing.xl,
     position:             'absolute',
     bottom:               0,
     left:                 0,
     right:                0,
-    ...shadow.modal,
   },
   reportHeader: {
     flexDirection:  'row',
@@ -1311,7 +1307,7 @@ const styles = StyleSheet.create({
     fontSize:     14,
     minHeight:    100,
     marginBottom: spacing.sm,
-    fontFamily:   'PlusJakartaSans_400Regular',
+    fontFamily:   'DMSans_400Regular',
   },
   tosNote: {
     ...typography.bodySmall,
@@ -1319,5 +1315,5 @@ const styles = StyleSheet.create({
     fontSize:     11,
     marginBottom: spacing.md,
   },
-  submitBtn: { borderRadius: r.lg },
+  submitBtn: { borderRadius: r.sm },
 });

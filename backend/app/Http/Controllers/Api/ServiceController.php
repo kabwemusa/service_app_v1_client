@@ -9,11 +9,13 @@ use App\Http\Requests\Service\StoreServiceRequest;
 use App\Http\Requests\Service\UpdateServiceRequest;
 use App\Http\Resources\ServicePhotoResource;
 use App\Http\Resources\ServiceResource;
+use App\Models\Booking;
 use App\Models\Service;
 use App\Services\ServiceService;
 use App\Support\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
 class ServiceController extends Controller
@@ -84,6 +86,28 @@ class ServiceController extends Controller
         return ApiResponse::success(new ServiceResource($found), 'Service retrieved.');
     }
 
+    /** GET /services/{service}/booked-slots — public, returns occupied time ranges for next 14 days */
+    public function bookedSlots(string $service): JsonResponse
+    {
+        $svc = Service::find($service);
+        if (!$svc) throw new NotFoundException('Service');
+
+        $slots = Booking::where('provider_id', $svc->provider_id)
+            ->whereIn('status', ['REQUESTED', 'QUOTED', 'ACCEPTED', 'FUNDS_HELD', 'IN_PROGRESS'])
+            ->where('scheduled_end', '>', now())
+            ->where('scheduled_start', '<', now()->addDays(15))
+            ->select('scheduled_start', 'scheduled_end')
+            ->orderBy('scheduled_start')
+            ->get()
+            ->map(fn ($b) => [
+                'start' => $b->scheduled_start->toIso8601String(),
+                'end'   => $b->scheduled_end->toIso8601String(),
+            ])
+            ->values();
+
+        return ApiResponse::success(['slots' => $slots]);
+    }
+
     /** POST /provider/services */
     public function store(StoreServiceRequest $request): JsonResponse
     {
@@ -129,6 +153,39 @@ class ServiceController extends Controller
         $photo = $svc->photos()->create(['path' => $path, 'display_order' => $order]);
 
         return ApiResponse::success(new ServicePhotoResource($photo), 'Photo uploaded.', 201);
+    }
+
+    /**
+     * PUT /provider/services/{service}/photos/order
+     *
+     * Persists the gallery order — index 0 is the cover. The client sends the
+     * full ordered list of photo ids after a drag/move so display_order stays
+     * contiguous and the first photo is always the cover.
+     */
+    public function reorderPhotos(Request $request, string $service): JsonResponse
+    {
+        $data = $request->validate([
+            'photo_ids'   => ['required', 'array', 'min:1'],
+            'photo_ids.*' => ['integer'],
+        ]);
+
+        $svc = Service::find($service);
+        if (! $svc || $svc->provider_id !== $request->user()->id) {
+            throw new ForbiddenException('You do not own this service.');
+        }
+
+        $owned = $svc->photos()->pluck('id')->all();
+        foreach ($data['photo_ids'] as $position => $photoId) {
+            if (! in_array($photoId, $owned, true)) {
+                throw new NotFoundException('Photo');
+            }
+            $svc->photos()->whereKey($photoId)->update(['display_order' => $position]);
+        }
+
+        return ApiResponse::success(
+            ServicePhotoResource::collection($svc->photos()->get()),
+            'Photos reordered.',
+        );
     }
 
     /** DELETE /provider/services/{service}/photos/{photo} */

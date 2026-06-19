@@ -139,14 +139,9 @@ const styles = StyleSheet.create({
     alignItems:        'center',
     paddingVertical:   spacing.sm + 2,
     paddingHorizontal: spacing.md,
-    borderRadius:      14,
+    borderRadius:      8,
     zIndex:            9999,
-    // Shadow
-    shadowColor:    '#000',
-    shadowOffset:   { width: 0, height: 4 },
-    shadowOpacity:  0.18,
-    shadowRadius:   8,
-    elevation:      10,
+    // Flat (v3.1 §2) — solid coloured surface; zIndex handles stacking, no shadow.
   },
   icon: {
     marginRight: spacing.xs,

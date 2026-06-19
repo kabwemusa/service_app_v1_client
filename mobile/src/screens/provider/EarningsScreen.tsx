@@ -4,10 +4,11 @@ import { FlatList, StyleSheet, View } from 'react-native';
 import { Chip, ProgressBar, Text, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { EarningsEntry } from '../../api/providerProfile';
+import { ScreenHeader } from '../../components/ui/ScreenHeader';
 import { CardSkeleton } from '../../components/ui/SkeletonBlock';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useProfileStore } from '../../store/profileStore';
-import { palette, radius as r, shadow, spacing, typography } from '../../theme';
+import { palette, radius as r, spacing, typography } from '../../theme';
 
 function payoutCountdown(eligibleAt: string | null): string {
   if (!eligibleAt) return 'Pending completion';
@@ -87,19 +88,11 @@ export default function EarningsScreen({ navigation }: any) {
   }, [error]);
 
   const Header = () => (
-    <View style={styles.header}>
-      {showBack ? (
-        <TouchableRipple onPress={() => navigation.goBack()} borderless style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={20} color={palette.textPrimary} />
-        </TouchableRipple>
-      ) : (
-        <View style={styles.backBtnPlaceholder} />
-      )}
-      <View style={styles.headerText}>
-        <Text style={styles.title}>Earnings</Text>
-        <Text style={styles.subtitle}>Your weekly cap, earnings, and job history.</Text>
-      </View>
-    </View>
+    <ScreenHeader
+      title="Earnings"
+      subtitle="Weekly cap, earnings, and job history"
+      back={showBack}
+    />
   );
 
   if (loading && !earnings) {
@@ -240,18 +233,17 @@ const styles = StyleSheet.create({
   subtitle: { ...typography.bodySmall, color: palette.textSecondary, marginTop: 2 },
 
   skeletons: { padding: spacing.lg, gap: spacing.md },
-  skeleton: { height: 110, borderRadius: r.xl },
+  skeleton: { height: 110, borderRadius: r.sm },
 
   list: { paddingHorizontal: spacing.lg },
   listHeader: { gap: spacing.md, paddingBottom: spacing.sm },
 
   card: {
     backgroundColor: palette.surface,
-    borderRadius: r.xl,
+    borderRadius: r.sm,
     borderWidth: 1,
     borderColor: palette.border,
     padding: spacing.md,
-    ...shadow.card,
   },
   cardTitle: { ...typography.label, color: palette.textPrimary, marginBottom: 2 },
   cardBody: { ...typography.bodySmall, color: palette.textSecondary, lineHeight: 18 },

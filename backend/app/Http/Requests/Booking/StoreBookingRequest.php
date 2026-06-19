@@ -22,6 +22,9 @@ class StoreBookingRequest extends FormRequest
             'delivery_location_label'  => ['required', 'string', 'max:255'],
             'delivery_location_region' => ['nullable', 'string', 'max:255'],
             'delivery_location_source' => ['required', 'string', 'in:DEVICE,SEARCH,SAVED'],
+            'addon_ids'                => ['sometimes', 'array'],
+            'addon_ids.*'              => ['integer', 'exists:service_addons,id'],
+            'notes'                    => ['nullable', 'string', 'max:2000'],
         ];
     }
 }

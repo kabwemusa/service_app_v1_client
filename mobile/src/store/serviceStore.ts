@@ -25,6 +25,8 @@ interface ServiceState {
   createService:    (payload: ServicePayload) => Promise<Service>;
   updateService:    (id: string, payload: Partial<ServicePayload>) => Promise<Service>;
   deleteService:    (id: string) => Promise<void>;
+  /** Optimistic local merge — used for the list's pause/activate toggle. */
+  patchService:     (id: string, patch: Partial<Service>) => void;
   clearError:       () => void;
   reset:            () => void;
 }
@@ -38,6 +40,10 @@ export const useServiceStore = create<ServiceState>((set, get) => ({
   myLastPage: 1,
   loading:    false,
   error:      null,
+
+  patchService: (id, patch) => set((s) => ({
+    myServices: s.myServices.map((sv) => (sv.id === id ? { ...sv, ...patch } : sv)),
+  })),
 
   clearError: () => set({ error: null }),
   reset: () => set({

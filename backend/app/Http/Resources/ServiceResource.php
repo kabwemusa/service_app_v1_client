@@ -25,6 +25,9 @@ class ServiceResource extends JsonResource
             'duration_estimate_mins' => $this->duration_estimate_mins,
             'status'                 => $this->status,
             'is_pinned'              => (bool) $this->is_pinned,
+            // Completed-booking count for the provider list stat row ("N booked").
+            // Only present on the listMine query (withCount); null elsewhere.
+            'bookings_count'         => $this->whenCounted('bookings'),
             // These are injected by ServiceService queries via ST_Y / ST_X
             'latitude'     => isset($this->latitude)  ? (float) $this->latitude  : null,
             'longitude'    => isset($this->longitude) ? (float) $this->longitude : null,
@@ -63,6 +66,8 @@ class ServiceResource extends JsonResource
                 'completion_rate'        => $this->provider->completion_rate !== null
                     ? round((float) $this->provider->completion_rate, 3)
                     : null,
+                // Portfolio: previous-work photos (up to 12, storage paths — render via storageUrl)
+                'portfolio_images'       => $this->provider->providerProfile?->portfolio_images ?? [],
                 // Earned badges (v3 §9.2) — set by findOrFail via ProviderProfileService::earnedBadges()
                 'badges'                 => $this->provider_badges ?? [],
             ]),

@@ -9,7 +9,7 @@ interface KycState {
 
   fetchStatus:    () => Promise<void>;
   submitTier1:    (legalName: string, selfieUri: string) => Promise<boolean>;
-  submitDocument: (docType: DocType, documentUri: string, selfieUri: string) => Promise<boolean>;
+  submitDocument: (docType: DocType, documentUri: string, selfieUri: string, documentBackUri?: string | null) => Promise<boolean>;
   submitAddress:  (documentUri: string) => Promise<boolean>;
   clearError:     () => void;
   reset:          () => void;
@@ -56,10 +56,10 @@ export const useKycStore = create<KycState>((set) => ({
     }
   },
 
-  submitDocument: async (docType, documentUri, selfieUri) => {
+  submitDocument: async (docType, documentUri, selfieUri, documentBackUri) => {
     set({ loading: true, error: null });
     try {
-      await kycApi.submitDocument(docType, documentUri, selfieUri);
+      await kycApi.submitDocument(docType, documentUri, selfieUri, documentBackUri);
       const status = await kycApi.getStatus();
       set({ status });
       return true;

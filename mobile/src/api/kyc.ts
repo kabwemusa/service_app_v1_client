@@ -62,12 +62,13 @@ export const kycApi = {
     return api.upload<SubmitDocumentResponse>('/kyc/tier1', form);
   },
 
-  /** Tier 2 — government ID + selfie */
-  submitDocument: (docType: DocType, documentUri: string, selfieUri: string) => {
+  /** Tier 2 — government ID (front + optional back) + selfie */
+  submitDocument: (docType: DocType, documentUri: string, selfieUri: string, documentBackUri?: string | null) => {
     const form = buildForm({
       doc_type: docType,
-      document: { uri: documentUri, type: 'image/jpeg', name: 'document.jpg' },
+      document: { uri: documentUri, type: 'image/jpeg', name: 'document_front.jpg' },
       selfie:   { uri: selfieUri,   type: 'image/jpeg', name: 'selfie.jpg' },
+      ...(documentBackUri ? { document_back: { uri: documentBackUri, type: 'image/jpeg', name: 'document_back.jpg' } } : {}),
     });
     return api.upload<SubmitDocumentResponse>('/kyc/document', form);
   },

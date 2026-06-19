@@ -1,11 +1,11 @@
-'use client'
+﻿'use client'
 
-// ─── ConfirmWithReason modal ──────────────────────────────────────────────────
+// â”€â”€â”€ ConfirmWithReason modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // The single reusable modal for all sensitive/destructive/financial actions.
 // It is registered globally in AppShell so module code never manages it.
 //
-// Usage: call useAuditedMutation() — the hook drives this modal automatically.
-// ─────────────────────────────────────────────────────────────────────────────
+// Usage: call useAuditedMutation() â€” the hook drives this modal automatically.
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, ShieldCheck, X } from 'lucide-react'
@@ -60,7 +60,7 @@ export function ConfirmWithReasonModal() {
       />
 
       {/* Panel */}
-      <div className="relative z-10 w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-800">
+      <div className="relative z-10 w-full max-w-md rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800">
         {/* Header */}
         <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4 dark:border-slate-700">
           <div className="flex items-center gap-3">
@@ -143,7 +143,7 @@ export function ConfirmWithReasonModal() {
                 : 'cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-slate-700',
             )}
           >
-            {submitting ? 'Processing…' : 'Confirm'}
+            {submitting ? 'Processingâ€¦' : 'Confirm'}
           </button>
         </div>
       </div>

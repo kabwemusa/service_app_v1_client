@@ -23,15 +23,13 @@ class StoreCategoryRequest extends FormRequest
             'icon'            => ['sometimes', 'nullable', 'string', 'max:100'],
             'is_active'       => ['sometimes', 'boolean'],
             'display_order'   => ['sometimes', 'integer', 'min:0'],
-            // commission_band is REQUIRED — a category without one breaks the revenue ledger (v3 §8.1)
-            'commission_band' => ['required', 'string', 'max:50'],
-        ];
-    }
-
-    public function messages(): array
-    {
-        return [
-            'commission_band.required' => 'Every category must have a commission_band (v3 §8.1).',
+            // commission_band is optional on create — categories may be created as DRAFT (inactive)
+            // without a band. Activation (is_active=true) is rejected server-side in CategoryService
+            // if commission_band is not set (v3 §8.1).
+            'commission_band' => ['sometimes', 'nullable', 'string', 'max:50'],
+            'commission_rates' => ['sometimes', 'nullable', 'array'],
+            'commission_rates.*' => ['numeric', 'min:0', 'max:1'],
+            'reason'          => ['sometimes', 'string', 'min:10', 'max:1000'],
         ];
     }
 }
