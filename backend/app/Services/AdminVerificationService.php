@@ -11,6 +11,7 @@ use App\Exceptions\Api\ApiException;
 use App\Models\AdminUser;
 use App\Models\IdentityDocument;
 use App\Models\ProviderProfile;
+use App\Models\ProviderVerification;
 use App\Models\User;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\URL;
@@ -260,6 +261,12 @@ class AdminVerificationService
 
     public function artifactPath(IdentityDocument $doc, string $kind): ?string
     {
+        // Portfolio image by index, e.g. "portfolio:2".
+        if (str_starts_with($kind, 'portfolio:')) {
+            $i = (int) substr($kind, strlen('portfolio:'));
+            return $doc->extracted_fields['portfolio_paths'][$i] ?? null;
+        }
+
         return match ($kind) {
             'doc'      => $doc->doc_storage_url,
             'doc_back' => $doc->extracted_fields['doc_back_path'] ?? null,
@@ -313,6 +320,20 @@ class AdminVerificationService
     private function buildArtifacts(IdentityDocument $doc): array
     {
         $artifacts = [];
+
+        // Portfolio submissions carry N images — render each as a portfolio_item
+        // (the admin ArtifactViewer already knows this kind).
+        if (($doc->extracted_fields['cert_type'] ?? null) === 'PORTFOLIO_ITEM') {
+            foreach (array_values((array) ($doc->extracted_fields['portfolio_paths'] ?? [])) as $i => $_path) {
+                $artifacts[] = [
+                    'id'    => $doc->id . ':portfolio:' . $i,
+                    'kind'  => 'portfolio_item',
+                    'url'   => $this->signedArtifactUrl($doc, 'portfolio:' . $i),
+                    'label' => 'Portfolio sample ' . ($i + 1),
+                ];
+            }
+            return $artifacts;
+        }
 
         $docKind = match (DocType::from($doc->doc_type)) {
             DocType::PROOF_OF_ADDRESS => 'proof_of_address',
@@ -381,6 +402,20 @@ class AdminVerificationService
             $checks['name_consistency'] = [
                 'matched'  => $distance <= 2,
                 'distance' => $distance,
+            ];
+        }
+
+        // §5.3 portfolio image pipeline results (the admin panel renders these).
+        if (isset($fields['nsfw'])) {
+            $checks['nsfw'] = [
+                'flagged' => (bool) ($fields['nsfw']['flagged'] ?? false),
+                'score'   => $fields['nsfw']['score'] ?? null,
+            ];
+        }
+        if (isset($fields['phash_duplicate'])) {
+            $checks['phash_duplicate'] = [
+                'flagged'          => (bool) ($fields['phash_duplicate']['flagged'] ?? false),
+                'match_provider_id'=> $fields['phash_duplicate']['match_provider_id'] ?? null,
             ];
         }
 
@@ -492,10 +527,14 @@ class AdminVerificationService
 
     private function grantTierFor(IdentityDocument $doc): void
     {
+        // CERTIFICATE submissions (portfolio / police clearance) don't change the
+        // trust_tier; they attach a verification record that flips the gate.
+        $this->attachVerificationFor($doc);
+
         $target = match (DocType::from($doc->doc_type)) {
             DocType::NRC, DocType::PASSPORT, DocType::DRIVERS_LICENSE => TrustTier::IDENTIFIED,
             DocType::PROOF_OF_ADDRESS                                 => TrustTier::VERIFIED,
-            default                                                   => null, // CERTIFICATE attaches, no tier change
+            default                                                   => null,
         };
         if (!$target) {
             return;
@@ -504,7 +543,48 @@ class AdminVerificationService
         $profile = ProviderProfile::where('user_id', $doc->user_id)->first();
         if ($profile && $profile->trust_tier < $target->value) {
             $profile->update(['trust_tier' => $target->value, 'kyc_status' => 'VERIFIED']);
+
+            // Immediately compute their trust_score so they appear in search
+            // without waiting for the 02:00 nightly job. A provider whose tier
+            // just hit 1 for the first time currently has trust_score = 0.00,
+            // which is below the 0.40 floor and blocks them until the cron runs.
+            \App\Jobs\ComputeTrustScoreJob::dispatch();
         }
+    }
+
+    /**
+     * The eligibility flip: a portfolio / police-clearance certificate approval
+     * writes the VERIFIED provider_verifications row that RealTrustEngine::
+     * checkEligibility reads, so any listing pending that tier becomes
+     * dispatchable. (NRC's row is written by the KYC pipeline.) This is purely
+     * server-side — no client state can produce it.
+     */
+    private function attachVerificationFor(IdentityDocument $doc): void
+    {
+        if (DocType::from($doc->doc_type) !== DocType::CERTIFICATE) {
+            return;
+        }
+
+        $certType = $doc->extracted_fields['cert_type'] ?? null;
+        $verificationType = match ($certType) {
+            'PORTFOLIO_ITEM'   => 'portfolio',
+            'POLICE_CLEARANCE' => 'police_clearance',
+            default            => null,
+        };
+        if (!$verificationType) {
+            return;
+        }
+
+        ProviderVerification::updateOrCreate(
+            ['provider_id' => $doc->user_id, 'verification_type' => $verificationType],
+            [
+                'status'      => 'VERIFIED',
+                'verified_at' => now(),
+                'verified_by' => $doc->reviewer_admin_id,
+                'expires_at'  => $doc->expires_on,
+                'metadata'    => ['document_id' => $doc->id],
+            ],
+        );
     }
 
     private function assertNotResolved(IdentityDocument $doc): void

@@ -10,11 +10,14 @@ use App\Models\Commission;
 use App\Models\Dispute;
 use App\Models\ProviderProfile;
 use App\Models\User;
+use App\Services\Location\RegionResolver;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 
 class ProviderProfileService
 {
+    public function __construct(private readonly RegionResolver $regionResolver) {}
+
     /** v3.1 §6.6 — portfolio manager limits. */
     private const MAX_PORTFOLIO_IMAGES = 12;
     private const MAX_PORTFOLIO_BYTES  = 5 * 1024 * 1024;
@@ -51,6 +54,24 @@ class ProviderProfileService
     {
         $profile = $this->getOrCreate($user);
         $profile->fill($data);
+
+        // Resolve the region hierarchy (area → city → province) from the base
+        // location whenever it is (re)set — this is what search widens over,
+        // replacing the retired radius filter.
+        if (array_key_exists('base_location_lat', $data)
+            && array_key_exists('base_location_lng', $data)
+            && $profile->base_location_lat !== null
+            && $profile->base_location_lng !== null
+            && config('search.geo.auto_resolve_regions', true)) {
+            $region = $this->regionResolver->resolve(
+                (float) $profile->base_location_lat,
+                (float) $profile->base_location_lng,
+            );
+            $profile->region_ward     = $region['ward'];
+            $profile->region_city     = $region['city'];
+            $profile->region_province = $region['province'];
+        }
+
         $profile->profile_completeness = $this->calculateCompleteness($profile);
         $profile->save();
 
@@ -390,6 +411,26 @@ class ProviderProfileService
         }
 
         $profile->cover_image_url      = $file->store('cover_photos', 'public');
+        $profile->profile_completeness = $this->calculateCompleteness($profile);
+        $profile->save();
+
+        return $profile->fresh();
+    }
+
+    /**
+     * Public profile photo (avatar) — deliberately separate from the private KYC
+     * selfie (onboarding spec §5: "public avatar ≠ KYC selfie"). Stored on the
+     * PUBLIC disk; the selfie lives on the local/private disk and is never served.
+     */
+    public function uploadAvatar(User $user, UploadedFile $file): ProviderProfile
+    {
+        $profile = $this->getOrCreate($user);
+
+        if (! empty($profile->avatar_url)) {
+            Storage::disk('public')->delete($profile->avatar_url);
+        }
+
+        $profile->avatar_url           = $file->store('avatars', 'public');
         $profile->profile_completeness = $this->calculateCompleteness($profile);
         $profile->save();
 

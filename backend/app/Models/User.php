@@ -91,8 +91,68 @@ class User extends Authenticatable implements JWTSubject
         return [
             'role'  => $this->role,
             'tier'  => $tier,
+            'phone' => $this->phone,
             'caps'  => $this->resolveCaps($tier),
         ];
+    }
+
+    /**
+     * Resolve a single account from a phone number (identity rule: phone is the
+     * canonical key across WhatsApp, the PWA and any future native client).
+     * Input is normalized to E.164 so all formats collapse to one account.
+     *
+     * @param  string  $intent  'CUSTOMER' or 'PROVIDER' — only used when creating.
+     */
+    public static function findOrCreateByPhone(string $rawPhone, string $intent = 'CUSTOMER'): self
+    {
+        $e164 = \App\Support\PhoneNumber::normalize($rawPhone);
+        if ($e164 === null) {
+            throw new \InvalidArgumentException("Not a valid Zambian phone number: {$rawPhone}");
+        }
+
+        // Match on the trailing subscriber digits so a WhatsApp-created row
+        // (which may have been stored without the + or with odd prefixing)
+        // and a PWA sign-in for the same number resolve to one account.
+        $user = self::where('phone', $e164)
+            ->orWhere('phone', 'LIKE', '%' . substr($e164, -9))
+            ->first();
+
+        if ($user) {
+            // Canonicalize legacy/loosely-stored numbers to E.164 on first touch.
+            if ($user->phone !== $e164) {
+                $user->phone = $e164;
+                $user->save();
+            }
+            $intent === 'PROVIDER' ? $user->ensureProviderProfile() : null;
+
+            return $user;
+        }
+
+        $user = self::create([
+            'phone'         => $e164,
+            'role'          => $intent === 'PROVIDER' ? 'PROVIDER' : 'CUSTOMER',
+            'account_state' => 'ACTIVE',
+            'is_verified'   => false,
+        ]);
+
+        if ($intent === 'PROVIDER') {
+            $user->ensureProviderProfile();
+        }
+
+        return $user;
+    }
+
+    /** Ensure a PROVIDER account has a profile, created in the DRAFT onboarding state. */
+    public function ensureProviderProfile(): ProviderProfile
+    {
+        if ($this->role !== 'PROVIDER') {
+            $this->update(['role' => 'PROVIDER']);
+        }
+
+        return ProviderProfile::firstOrCreate(
+            ['user_id' => $this->id],
+            ['onboarding_state' => 'DRAFT'],
+        );
     }
 
     public function isActive(): bool

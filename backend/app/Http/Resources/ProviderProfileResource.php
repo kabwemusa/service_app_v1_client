@@ -30,8 +30,10 @@ class ProviderProfileResource extends JsonResource
             'base_location_lng'    => $this->base_location_lng,
             // Human-readable area label for the header (never coordinates, §4.1).
             'base_location_label'  => $this->base_location_label,
-            'max_radius_km'        => $this->max_radius_km,
-            'service_radius_km'    => $this->service_radius_km,
+            // Region hierarchy — search widens over these (radius retired, §4.4).
+            'region_ward'          => $this->region_ward,
+            'region_city'          => $this->region_city,
+            'region_province'      => $this->region_province,
             'availability_matrix'  => $this->availability_matrix,
             'cover_image_url'      => $this->cover_image_url,
             'portfolio_images'     => $this->portfolio_images ?? [],

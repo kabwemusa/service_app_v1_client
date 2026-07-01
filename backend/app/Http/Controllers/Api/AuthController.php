@@ -32,6 +32,46 @@ class AuthController extends Controller
     }
 
     /**
+     * POST /api/auth/otp/request — passwordless phone-OTP (canonical).
+     * Find-or-creates the account for the number and SMSes a code.
+     */
+    public function requestOtp(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'phone'  => ['required', 'string', 'max:20'],
+            'intent' => ['sometimes', 'in:CUSTOMER,PROVIDER'],
+        ]);
+
+        $result = $this->authService->requestPhoneOtp(
+            $data['phone'],
+            $data['intent'] ?? 'CUSTOMER',
+        );
+
+        return ApiResponse::success($result, 'A verification code has been sent by SMS.');
+    }
+
+    /**
+     * POST /api/auth/otp/verify — verify a phone OTP, issue tokens, merge any
+     * anonymous (guest) context onto the now-identified account.
+     */
+    public function verifyPhoneOtp(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'phone'       => ['required', 'string', 'max:20'],
+            'otp'         => ['required', 'string', 'size:6'],
+            'guest_token' => ['sometimes', 'nullable', 'string', 'max:128'],
+        ]);
+
+        $tokens = $this->authService->verifyPhoneOtp(
+            $data['phone'],
+            $data['otp'],
+            $data['guest_token'] ?? null,
+        );
+
+        return ApiResponse::success(new AuthTokenResource($tokens), 'Phone verified successfully.');
+    }
+
+    /**
      * POST /api/auth/verify-otp
      */
     public function verifyOtp(VerifyOtpRequest $request): JsonResponse

@@ -272,8 +272,11 @@ import {
 } from "react-native";
 import { Text, TextInput } from "react-native-paper";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { locationApi, PlaceCandidate } from "../../api/location";
-import { useHighAccuracyLocation } from "../../hooks/useHighAccuracyLocation";
+import { BiasCoords, locationApi, PlaceCandidate } from "../../api/location";
+import {
+  getSearchBias,
+  useHighAccuracyLocation,
+} from "../../hooks/useHighAccuracyLocation";
 import { useSnackbar } from "../../providers/SnackbarProvider";
 import {
   candidateToDeliveryLocation,
@@ -310,6 +313,11 @@ export function LocationPickerSheet({
   const [searching, setSearching] = useState(false);
   const searchInputRef = useRef<any>(null);
 
+  // Proximity bias for forward search: prefer a prompt-free last-known device
+  // fix, else the user's primary location. Resolved once per search session so
+  // "near me" ranking works without a permission prompt or a GPS spin-up.
+  const biasRef = useRef<BiasCoords | null>(null);
+
   const { loading: locating, capture } = useHighAccuracyLocation();
 
   // Reset state on open
@@ -322,13 +330,20 @@ export function LocationPickerSheet({
     }
   }, [visible]);
 
-  // Focus input
+  // Focus input + resolve the search bias when entering search mode
   useEffect(() => {
     if (mode === "search") {
       const t = setTimeout(() => searchInputRef.current?.focus(), 120);
+      (async () => {
+        biasRef.current =
+          (await getSearchBias()) ??
+          (primaryLocation
+            ? { lat: primaryLocation.lat, lng: primaryLocation.lng }
+            : null);
+      })();
       return () => clearTimeout(t);
     }
-  }, [mode]);
+  }, [mode, primaryLocation]);
 
   // 2. The Debouncer: Only updates the search term when the user stops typing for 300ms
   useEffect(() => {
@@ -349,7 +364,10 @@ export function LocationPickerSheet({
 
       setSearching(true);
       try {
-        const results = await locationApi.search(debouncedQuery.trim());
+        const results = await locationApi.search(
+          debouncedQuery.trim(),
+          biasRef.current,
+        );
         if (isSubscribed) {
           setSuggestions(results);
         }

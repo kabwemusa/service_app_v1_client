@@ -123,7 +123,7 @@ interface Props {
 
 export function BookingSheet({
   visible, onClose, serviceId, serviceTitle, basePrice,
-  pricingModel = 'FIXED', paymentMode = 'DIRECT', availabilityMatrix,
+  pricingModel = 'FIXED', paymentMode = 'ESCROW', availabilityMatrix,
   thumbUri, categoryId, categoryIcon, providerName, durationMins,
   addons, selectedAddons = [], onBooked,
 }: Props) {
@@ -249,6 +249,13 @@ export function BookingSheet({
   async function handleConfirm() {
     const booking = await flow.submit(Array.from(selectedIds), isQuote ? notes : undefined);
     if (booking) {
+      // ESCROW (fixed-price): kick off the mobile-money collection immediately so the
+      // customer gets the USSD prompt. The gateway callback advances REQUESTED →
+      // PENDING_PAYMENT → FUNDS_HELD. If the push can't be initiated the booking stays
+      // REQUESTED and the customer can retry "Pay & hold funds" from the booking detail.
+      if (!isDirect && !isQuote) {
+        try { await bookingsApi.pay(booking.id); } catch { /* retry available on booking detail */ }
+      }
       close();
       onBooked(booking.id);
     }

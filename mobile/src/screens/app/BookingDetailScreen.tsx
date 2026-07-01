@@ -68,6 +68,8 @@ type StepState = 'done' | 'current' | 'upcoming';
 function stepStates(status: BookingStatus): StepState[] {
   switch (status) {
     case 'ACCEPTED':     return ['current', 'upcoming', 'upcoming'];
+    // ESCROW: funds held is the "Confirmed" step (the escrow equivalent of ACCEPTED).
+    case 'FUNDS_HELD':   return ['current', 'upcoming', 'upcoming'];
     case 'IN_PROGRESS':  return ['done',    'current',  'upcoming'];
     case 'DELIVERED':    return ['done',    'done',     'current'];
     case 'COMPLETED':
@@ -112,7 +114,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
   const { showError } = useSnackbar();
   const {
-    acceptQuote, complete, cancel, markPaid, review,
+    acceptQuote, complete, cancel, markPaid, review, pay,
     submitting, error, clearError,
   } = useBookingStore();
 
@@ -411,13 +413,24 @@ export default function BookingDetailScreen({ navigation, route }: any) {
             </Text>
           </View>
         ) : (
-          <LineItem label="Amount" value={total} />
+          <>
+            <LineItem label="Amount" value={total} />
+            {/* ESCROW-only buyer protection fee (mode-driven, §8.3). */}
+            {!isDirect && (booking.buyer_protection_fee ?? 0) > 0 && (
+              <LineItem label="Buyer protection (2%)" value={booking.buyer_protection_fee} />
+            )}
+          </>
         )}
 
         {isDirect ? (
           <Text style={styles.paymentMode}>Direct payment · no platform escrow</Text>
         ) : (
-          <Text style={styles.paymentMode}>Secured by Sebenza Escrow</Text>
+          <>
+            <Text style={styles.paymentMode}>Secured by Sebenza Escrow</Text>
+            <Text style={styles.paymentMode}>
+              Money-back guarantee — full refund if the job isn’t delivered (§11.1).
+            </Text>
+          </>
         )}
 
         <Divider />
@@ -692,12 +705,12 @@ export default function BookingDetailScreen({ navigation, route }: any) {
         }
         onComplete={() =>
           confirmAction(
-            isDirect && !customerPaid ? 'Confirm & mark paid' : 'Confirm completion',
+            isDirect && !customerPaid ? 'Confirm & mark paid' : isDirect ? 'Confirm completion' : 'Confirm & release funds',
             isDirect && !customerPaid
               ? 'Confirm the job is done and that payment has been settled directly with the provider.'
               : isDirect
                 ? 'Confirm the job is done. This closes the booking and lets you leave a review.'
-                : 'This releases funds to the provider. The action cannot be undone.',
+                : 'This releases the funds held in escrow to the provider. The action cannot be undone.',
             async () => {
               const updated = await complete(booking.id);
               if (isDirect && !customerPaid) {
@@ -705,6 +718,13 @@ export default function BookingDetailScreen({ navigation, route }: any) {
               }
               return updated;
             },
+          )
+        }
+        onPay={() =>
+          confirmAction(
+            'Hold funds in escrow',
+            `We'll send a mobile-money prompt to your phone for ZMW ${(total + (booking.buyer_protection_fee ?? 0)).toFixed(2)} (incl. ${(booking.buyer_protection_fee ?? 0).toFixed(2)} buyer protection). Approve it to hold the funds securely until the job is done.`,
+            () => pay(booking.id),
           )
         }
         onEmergency={handleEmergency}
@@ -785,7 +805,7 @@ function ActionBar({
   booking, busy, insetBottom,
   onAcceptQuote, onDeclineQuote, onCancel,
   onComplete, onEmergency, onRaiseDispute,
-  onSubmitReview, onBookAgain, onMarkPaid,
+  onSubmitReview, onBookAgain, onMarkPaid, onPay,
   reviewRating, hasReview,
   isDirect, customerPaid,
 }: {
@@ -801,6 +821,7 @@ function ActionBar({
   onSubmitReview: () => void;
   onBookAgain: () => void;
   onMarkPaid: () => void;
+  onPay: () => void;
   reviewRating: number;
   hasReview: boolean;
   isDirect: boolean;
@@ -811,7 +832,9 @@ function ActionBar({
   let content: React.ReactNode = null;
 
   if (status === 'REQUESTED') {
-    content = (
+    // ESCROW: the customer funds the request up front (funding is the commitment).
+    // DIRECT: the provider must respond first; the customer just waits.
+    content = isDirect ? (
       <>
         <PassiveNote icon="hourglass-outline" text="Waiting for the provider to respond to your request." />
         <Button
@@ -822,16 +845,55 @@ function ActionBar({
           Cancel request
         </Button>
       </>
+    ) : (
+      <>
+        <Button
+          mode="contained" style={styles.primaryBtn} contentStyle={styles.barBtnContent} labelStyle={styles.btnLabel}
+          loading={busy} disabled={busy}
+          onPress={onPay}
+        >
+          Pay & hold funds · ZMW {agreedTotal.toFixed(0)}
+        </Button>
+        <Button
+          mode="text" textColor={palette.danger}
+          disabled={busy}
+          onPress={onCancel}
+        >
+          Cancel request
+        </Button>
+      </>
+    );
+  } else if (status === 'PENDING_PAYMENT') {
+    // ESCROW: a mobile-money prompt was sent — let the customer re-send if it lapsed.
+    content = (
+      <>
+        <PassiveNote icon="phone-portrait-outline" text="Check your phone — approve the mobile-money prompt to hold the funds." />
+        <Button
+          mode="contained" style={styles.primaryBtn} contentStyle={styles.barBtnContent} labelStyle={styles.btnLabel}
+          loading={busy} disabled={busy}
+          onPress={onPay}
+        >
+          Resend payment prompt
+        </Button>
+        <Button
+          mode="text" textColor={palette.danger}
+          disabled={busy}
+          onPress={onCancel}
+        >
+          Cancel request
+        </Button>
+      </>
     );
   } else if (status === 'QUOTED') {
+    // ESCROW: accepting the quote funds it (Pay). DIRECT: accept then pay provider later.
     content = (
       <>
         <Button
           mode="contained" style={styles.primaryBtn} contentStyle={styles.barBtnContent} labelStyle={styles.btnLabel}
           loading={busy} disabled={busy}
-          onPress={onAcceptQuote}
+          onPress={isDirect ? onAcceptQuote : onPay}
         >
-          Accept quote · ZMW {agreedTotal.toFixed(0)}
+          {isDirect ? `Accept quote · ZMW ${agreedTotal.toFixed(0)}` : `Accept & pay · ZMW ${agreedTotal.toFixed(0)}`}
         </Button>
         <Button
           mode="text" textColor={palette.danger}
@@ -839,6 +901,20 @@ function ActionBar({
           onPress={onDeclineQuote}
         >
           Decline quote
+        </Button>
+      </>
+    );
+  } else if (status === 'FUNDS_HELD') {
+    // ESCROW: funds are secured; the provider will start the job.
+    content = (
+      <>
+        <PassiveNote icon="lock-closed-outline" text="Funds held securely in escrow — the provider will start the job shortly." />
+        <Button
+          mode="outlined" style={styles.cancelBtn} contentStyle={styles.barBtnContent}
+          textColor={palette.danger} disabled={busy}
+          onPress={onCancel}
+        >
+          Cancel & refund
         </Button>
       </>
     );

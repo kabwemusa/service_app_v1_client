@@ -45,6 +45,7 @@ import ProviderBookingDetailScreen from "./src/screens/provider/ProviderBookingD
 import ProviderProfileEditScreen from "./src/screens/provider/ProviderProfileEditScreen";
 import ProviderProfileScreen from "./src/screens/provider/ProviderProfileScreen";
 import ProviderSetupScreen from "./src/screens/provider/ProviderSetupScreen";
+import ProviderSetupTimelineScreen from "./src/screens/provider/ProviderSetupTimelineScreen";
 import { usePushNotifications } from "./src/hooks/usePushNotifications";
 import { useAuthStore } from "./src/store/authStore";
 import { useLocationStore } from "./src/store/locationStore";
@@ -156,12 +157,18 @@ function HubStackNavigator() {
   return (
     <HubStack.Navigator screenOptions={{ headerShown: false }}>
       <HubStack.Screen name="HubMain" component={HubScreen} />
+      {/* Setup spine — the resumable six-milestone onboarding home. Hub
+          redirects an un-listed provider here on open (see HubScreen). */}
+      <HubStack.Screen name="SetupTimeline" component={ProviderSetupTimelineScreen} />
       {/* Hub "Manage" links — Profile & highlights, Availability */}
       <HubStack.Screen
         name="ProviderProfileEdit"
         component={ProviderProfileEditScreen}
       />
       <HubStack.Screen name="ProviderSetup" component={ProviderSetupScreen} />
+      {/* Milestone 3 — "Add your service" opens inside the setup stack so it
+          returns to the timeline rather than jumping to the Services tab. */}
+      <HubStack.Screen name="CreateService" component={CreateServiceScreen} />
       {/* Verification lives in the Hub flow too — the §9.1 checklist and the
           tier-unlock card both deep-link here. */}
       <HubStack.Screen name="Kyc" component={KycScreen} />

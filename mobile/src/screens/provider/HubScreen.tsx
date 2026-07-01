@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   AccessibilityInfo,
   Image,
@@ -351,6 +351,22 @@ export default function HubScreen({ navigation }: any) {
       clearError();
     }
   }, [error]);
+
+  // Resumable onboarding: while the provider isn't listed yet, the setup
+  // timeline is their home. Send them there once per Hub mount (re-tapping the
+  // Hub tab resets this stack, so a still-incomplete provider lands on the
+  // timeline again on app reopen). Listed providers are never redirected.
+  const redirectedRef = useRef(false);
+  useEffect(() => {
+    if (
+      !redirectedRef.current &&
+      dashboard?.listing &&
+      !dashboard.listing.listed
+    ) {
+      redirectedRef.current = true;
+      navigation.replace("SetupTimeline");
+    }
+  }, [dashboard]);
 
   const handleAvailToggle = useCallback(
     async (val: boolean) => {

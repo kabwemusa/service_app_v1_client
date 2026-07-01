@@ -10,8 +10,8 @@ import {
   View,
 } from 'react-native';
 import { Text, TextInput } from 'react-native-paper';
-import { locationApi, PlaceCandidate } from '../../api/location';
-import { useHighAccuracyLocation } from '../../hooks/useHighAccuracyLocation';
+import { BiasCoords, locationApi, PlaceCandidate } from '../../api/location';
+import { getSearchBias, useHighAccuracyLocation } from '../../hooks/useHighAccuracyLocation';
 import { palette, radius as r, spacing, typography } from '../../theme';
 import { SkeletonBlock } from './SkeletonBlock';
 
@@ -34,6 +34,10 @@ interface Props {
   onChange: (loc: SelectedLocation | null) => void;
   /** Server-side validation error to show below the input. */
   error?:   string | null;
+  /** Optional proximity bias for search relevance. When omitted the component
+   *  uses a prompt-free last-known device fix; absent that, the backend biases
+   *  to a Lusaka centre. */
+  bias?:    BiasCoords | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -50,12 +54,19 @@ interface Props {
  * Coordinates are never shown to the user. The resolved SelectedLocation
  * carries lat/lng internally for the booking/PostGIS pipeline.
  */
-export function LocationSearch({ value, onChange, error }: Props) {
+export function LocationSearch({ value, onChange, error, bias }: Props) {
   const [query,       setQuery]       = useState(value?.label ?? '');
   const [suggestions, setSuggestions] = useState<PlaceCandidate[]>([]);
   const [searching,   setSearching]   = useState(false);
   const [confirmed,   setConfirmed]   = useState(!!value);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Prompt-free last-known device fix, resolved once and reused as the search
+  // bias when the caller doesn't pass an explicit one.
+  const deviceBiasRef = useRef<BiasCoords | null>(null);
+  useEffect(() => {
+    getSearchBias().then((b) => { deviceBiasRef.current = b; });
+  }, []);
 
   const { loading: locating, error: gpsError, capture } = useHighAccuracyLocation();
 
@@ -81,7 +92,9 @@ export function LocationSearch({ value, onChange, error }: Props) {
     debounceRef.current = setTimeout(async () => {
       setSearching(true);
       try {
-        setSuggestions(await locationApi.search(text.trim()));
+        setSuggestions(
+          await locationApi.search(text.trim(), bias ?? deviceBiasRef.current),
+        );
       } catch {
         setSuggestions([]);
       } finally {

@@ -15,8 +15,10 @@ class NominatimDriver implements ForwardGeocoder, ReverseGeocoder
 {
     private const USER_AGENT = 'SebenzaApp/1.0 (geocoding)';
 
-    public function search(string $query, int $limit = 5, ?string $sessionToken = null): array
+    public function search(string $query, int $limit = 5, ?string $sessionToken = null, ?array $bias = null): array
     {
+        // $bias (device coords) is unused: Nominatim's keyless endpoint offers
+        // no proximity weighting we rely on; Photon is the bias-aware driver.
         $query = trim($query);
         if ($query === '') {
             return [];
@@ -70,6 +72,9 @@ class NominatimDriver implements ForwardGeocoder, ReverseGeocoder
             // v3.2 §3.4 — region at two levels: province for tax/reporting,
             // ward/township for analytics and promoted-slot geography.
             'region_province' => $address['state'] ?? $address['region'] ?? $address['county'] ?? $address['city'] ?? null,
+            // city/town tier for geo-widening (area → city → province)
+            'region_city'     => $address['city'] ?? $address['town'] ?? $address['municipality']
+                              ?? $address['county'] ?? null,
             'region_ward'     => $address['suburb'] ?? $address['neighbourhood'] ?? $address['city_district']
                               ?? $address['village'] ?? $address['town'] ?? null,
             'lat'             => $lat,

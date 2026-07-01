@@ -100,8 +100,9 @@ export interface ServicePayload {
   duration_estimate_mins?: number | null;
   status?:                 ServiceStatus;
   is_pinned?:              boolean;
-  latitude:                number;
-  longitude:               number;
+  // Optional: omit to default to the provider's base location (§4.4).
+  latitude?:               number;
+  longitude?:              number;
   inclusions?:             string[];
   addons?:                 { name: string; price: number }[];
 }

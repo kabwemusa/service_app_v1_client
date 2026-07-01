@@ -6,6 +6,7 @@ use App\Exceptions\Api\ForbiddenException;
 use App\Exceptions\Api\NotFoundException;
 use App\Models\Service;
 use App\Models\User;
+use App\Services\Location\RegionResolver;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 
@@ -20,6 +21,7 @@ class ServiceService
     public function __construct(
         private readonly CommissionService $commission,
         private readonly ProviderProfileService $providerProfile,
+        private readonly RegionResolver $regionResolver,
     ) {}
 
     /**
@@ -160,7 +162,17 @@ class ServiceService
                 'is_pinned'              => $data['is_pinned'] ?? false,
             ]);
 
-            $this->setLocation($service->id, $data['latitude'], $data['longitude']);
+            // Service location defaults to the provider's base location when the
+            // provider doesn't pin a specific spot (dedup — one place to set it),
+            // and can still be overridden per service.
+            $base = $provider->providerProfile;
+            $lat  = $data['latitude']  ?? $base?->base_location_lat;
+            $lng  = $data['longitude'] ?? $base?->base_location_lng;
+
+            if ($lat !== null && $lng !== null) {
+                $this->setLocation($service->id, (float) $lat, (float) $lng);
+            }
+
             $this->replaceInclusions($service, $data['inclusions'] ?? null);
             $this->replaceAddons($service, $data['addons'] ?? null);
 
@@ -271,9 +283,20 @@ class ServiceService
 
     private function setLocation(string $serviceId, float $lat, float $lng): void
     {
+        // Resolve the service's region hierarchy (area → city → province) so the
+        // search geo-widening can tier on it. Off in tests (seeded directly).
+        $region = config('search.geo.auto_resolve_regions', true)
+            ? $this->regionResolver->resolve($lat, $lng)
+            : ['ward' => null, 'city' => null, 'province' => null];
+
         DB::statement(
-            "UPDATE services SET service_location = ST_GeogFromText(?) WHERE id = ?",
-            ["POINT({$lng} {$lat})", $serviceId],
+            'UPDATE services
+                SET service_location = ST_GeogFromText(?),
+                    region_ward      = ?,
+                    region_city      = ?,
+                    region_province  = ?
+              WHERE id = ?',
+            ["POINT({$lng} {$lat})", $region['ward'], $region['city'], $region['province'], $serviceId],
         );
     }
 

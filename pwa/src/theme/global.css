@@ -1,0 +1,115 @@
+/* Tokens as CSS variables. Light is default; [data-theme="dark"] overrides.
+   Auto-follow the OS via prefers-color-scheme unless the user has chosen. */
+:root {
+  --primary: #7B1A3A;
+  --primary-light: #F5E8EE;
+  --secondary: #C2476A;
+  --success: #1E7A50;
+  --success-light: #E6F5EE;
+  --warning: #B86918;
+  --warning-light: #FFF3E0;
+  --danger: #B91C1C;
+  --danger-light: #FEE2E2;
+  --surface: #FFFFFF;
+  --background: #FBF7F8;
+  --border: #EDD5DE;
+  --text-primary: #1A0A12;
+  --text-secondary: #7B4A5C;
+  --text-disabled: #C4A0B0;
+  --skeleton: #EDDBDF;
+  --skeleton-shimmer: #F7EEF1;
+
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-xxl: 48px;
+
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-full: 9999px;
+
+  --font: 'DM Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+[data-theme='dark'] {
+  --primary: #E8779A;
+  --primary-light: #3A1421;
+  --secondary: #C2476A;
+  --success: #3DBE85;
+  --success-light: #13311F;
+  --warning: #E0A155;
+  --warning-light: #3A2A12;
+  --danger: #F1746E;
+  --danger-light: #3A1715;
+  --surface: #1C1116;
+  --background: #140C10;
+  --border: #3A2A31;
+  --text-primary: #FBEFF3;
+  --text-secondary: #C9A6B3;
+  --text-disabled: #7B5A66;
+  --skeleton: #2A1B22;
+  --skeleton-shimmer: #37242C;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  background: var(--background);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+h1, h2, h3, p { margin: 0; }
+
+button { font-family: inherit; cursor: pointer; }
+
+a { color: inherit; text-decoration: none; }
+
+img { max-width: 100%; display: block; }
+
+/* Respect users who reduce motion. */
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+
+/* Type scale (mirrors mobile typography). */
+.t-h1 { font-size: 32px; line-height: 40px; font-weight: 800; }
+.t-h2 { font-size: 24px; line-height: 32px; font-weight: 700; }
+.t-h3 { font-size: 20px; line-height: 28px; font-weight: 600; }
+.t-body { font-size: 16px; line-height: 24px; }
+.t-small { font-size: 14px; line-height: 20px; }
+.t-label { font-size: 14px; line-height: 20px; font-weight: 600; }
+.t-price { font-size: 22px; line-height: 30px; font-weight: 700; }
+.t-muted { color: var(--text-secondary); }
+
+/* App shell layout: single mobile-first column, max 480px, centered. */
+.app-shell {
+  max-width: 480px;
+  margin: 0 auto;
+  min-height: 100%;
+  background: var(--background);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Shared skeleton shimmer for low-data loading states. */
+.skeleton {
+  background: linear-gradient(90deg, var(--skeleton) 25%, var(--skeleton-shimmer) 50%, var(--skeleton) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: var(--radius-sm);
+}
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }

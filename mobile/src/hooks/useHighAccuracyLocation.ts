@@ -23,6 +23,33 @@ function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
 
+/** Accept a last-known fix up to 5 minutes old as a search bias. */
+const BIAS_MAX_AGE_MS = 5 * 60 * 1000;
+
+/**
+ * Cheap, prompt-free device-coordinate hint for forward-search relevance.
+ *
+ * Returns the OS's last-known position ONLY when location permission is already
+ * granted — it never triggers a permission prompt (uses getForegroundPermissions,
+ * not requestForegroundPermissions) and never spins up the GPS chip. Null when
+ * unavailable, in which case the backend biases to its configured centre.
+ *
+ * This is a relevance hint only: the coordinate is never shown and never stored.
+ */
+export async function getSearchBias(): Promise<{ lat: number; lng: number } | null> {
+  try {
+    const { granted } = await Location.getForegroundPermissionsAsync();
+    if (!granted) return null;
+
+    const pos = await Location.getLastKnownPositionAsync({ maxAge: BIAS_MAX_AGE_MS });
+    if (!pos) return null;
+
+    return { lat: pos.coords.latitude, lng: pos.coords.longitude };
+  } catch {
+    return null;
+  }
+}
+
 export interface HighAccuracyLocationState {
   loading: boolean;
   error:   string | null;

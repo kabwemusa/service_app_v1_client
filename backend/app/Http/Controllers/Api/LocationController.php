@@ -27,7 +27,15 @@ class LocationController extends Controller
     /** GET /location/search?q=... — forward geocode / place autocomplete (§4.3). */
     public function search(SearchPlacesRequest $request): JsonResponse
     {
-        $results = $this->location->searchPlaces($request->validated('q'));
+        // Device coords (if supplied) bias relevance only — they stay internal
+        // and never appear in the response (§4.1 label-only principle).
+        $lat  = $request->validated('lat');
+        $lng  = $request->validated('lng');
+        $bias = ($lat !== null && $lng !== null)
+            ? ['lat' => (float) $lat, 'lng' => (float) $lng]
+            : null;
+
+        $results = $this->location->searchPlaces($request->validated('q'), null, $bias);
 
         return ApiResponse::success(
             collect($results)->map(fn (array $r) => [

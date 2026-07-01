@@ -26,8 +26,11 @@ export interface ProviderProfile {
   base_location_lng:    number | null;
   /** Area label for display (never coordinates, §4.1). */
   base_location_label?: string | null;
-  max_radius_km:        number;
-  service_radius_km:    number;
+  /** Region hierarchy resolved from the base location — search widens over
+   *  these (area → city → province). Radius is retired. */
+  region_ward?:         string | null;
+  region_city?:         string | null;
+  region_province?:     string | null;
   availability_matrix:  Record<string, { start: string; end: string }[]> | null;
   cover_image_url:      string | null;
   portfolio_images:     string[];
@@ -46,8 +49,6 @@ export interface ProfilePayload {
   momo_number?:       string;
   base_location_lat?: number;
   base_location_lng?: number;
-  max_radius_km?:     number;
-  service_radius_km?: number;
   highlights?:        Highlights;
   availability_matrix?: Record<string, { start: string; end: string }[]>;
 }

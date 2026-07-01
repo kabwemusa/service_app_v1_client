@@ -12,6 +12,7 @@ use App\Exceptions\Api\ApiException;
 use App\Models\FraudDenylist;
 use App\Models\IdentityDocument;
 use App\Models\ProviderProfile;
+use App\Models\ProviderVerification;
 use App\Models\User;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Hash;
@@ -279,7 +280,8 @@ class KycService
                 // from Tier 3. A second, NRC-anchored identity confirmation
                 // that also pre-validates the payout rail. Mismatch → manual
                 // review, never auto-reject; no wallet data → don't block.
-                if (! $this->momoNameMatches($user, $result->extractedName)) {
+                $momo = $this->momoCheckResult($user, $result->extractedName);
+                if ($momo === 'MATCH_FAIL') {
                     $this->markStatus(
                         $doc,
                         DocStatus::MANUAL_REVIEW,
@@ -292,6 +294,13 @@ class KycService
                 $profile = ProviderProfile::where('user_id', $user->id)->first();
                 if ($profile) {
                     $this->bumpTier($user, $profile, TrustTier::IDENTIFIED);
+                }
+
+                // Bridge to the eligibility gate: identity confirmed, and the
+                // payment identity too when the wallet name actually matched.
+                $this->recordVerification($user->id, 'nrc', null, ['doc_id' => $doc->id]);
+                if ($momo === 'MATCH_OK') {
+                    $this->recordVerification($user->id, 'momo_name_match');
                 }
             } elseif ($result->isLowConfidence()) {
                 $this->markStatus($doc, DocStatus::MANUAL_REVIEW, 'Low confidence — queued for manual review.');
@@ -369,6 +378,14 @@ class KycService
             };
             if ($targetTier) {
                 $this->bumpTier($user, $profile, $targetTier);
+            }
+
+            // Bridge manual identity approvals into the eligibility gate too.
+            if (in_array($doc->doc_type, [DocType::NRC->value, DocType::PASSPORT->value, DocType::DRIVERS_LICENSE->value], true)) {
+                $this->recordVerification($user->id, 'nrc', $reviewer->id, ['doc_id' => $doc->id]);
+                if ($this->momoCheckResult($user, null) === 'MATCH_OK') {
+                    $this->recordVerification($user->id, 'momo_name_match', $reviewer->id);
+                }
             }
         }
     }
@@ -454,26 +471,61 @@ class KycService
      */
     private function momoNameMatches(User $user, ?string $verifiedIdName): bool
     {
+        // Only a real MISMATCH blocks; a positive match or an un-checkable
+        // case (disabled / no wallet / no data) does not.
+        return $this->momoCheckResult($user, $verifiedIdName) !== 'MATCH_FAIL';
+    }
+
+    /**
+     * Tri-state MoMo wallet-name check used by both the gate decision (block on
+     * MATCH_FAIL only) and the verification recorder (record momo_name_match on
+     * MATCH_OK only).
+     *
+     * @return 'MATCH_OK'|'MATCH_FAIL'|'SKIP'
+     */
+    private function momoCheckResult(User $user, ?string $verifiedIdName): string
+    {
         if (! config('trust.momo_name_match.enabled')) {
-            return true;
+            return 'SKIP';
         }
 
         $idName = $verifiedIdName ?: $user->legal_name;
         if (! $idName) {
-            return true;
+            return 'SKIP';
         }
 
         $profile = ProviderProfile::where('user_id', $user->id)->first();
         if (! $profile || empty($profile->momo_provider) || empty($profile->momo_number)) {
-            return true;
+            return 'SKIP';
         }
 
         $walletName = $this->walletNames->lookupName($profile->momo_provider, $profile->momo_number);
         if (! $walletName) {
-            return true;
+            return 'SKIP';
         }
 
-        return self::namesFuzzyMatch($idName, $walletName, (int) config('trust.momo_name_match.max_levenshtein', 2));
+        return self::namesFuzzyMatch($idName, $walletName, (int) config('trust.momo_name_match.max_levenshtein', 2))
+            ? 'MATCH_OK'
+            : 'MATCH_FAIL';
+    }
+
+    /**
+     * Bridge KYC outcomes into the normalized provider_verifications table that
+     * the eligibility gate (RealTrustEngine::checkEligibility) actually reads.
+     * Without this a Tier-1 provider would bump trust_tier yet still fail the
+     * gate (which needs VERIFIED rows for 'nrc' + 'momo_name_match').
+     */
+    private function recordVerification(string $providerId, string $type, ?string $verifiedBy = null, ?array $metadata = null): void
+    {
+        ProviderVerification::updateOrCreate(
+            ['provider_id' => $providerId, 'verification_type' => $type],
+            [
+                'status'      => 'VERIFIED',
+                'verified_at' => now(),
+                'verified_by' => $verifiedBy,
+                'metadata'    => $metadata,
+            ],
+        );
     }
 
     /**

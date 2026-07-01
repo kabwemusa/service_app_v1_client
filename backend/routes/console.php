@@ -5,6 +5,7 @@ use App\Console\Commands\DisputeAutoCompleteWorker;
 use App\Console\Commands\PaymentExpiryWorker;
 use App\Console\Commands\PayoutRetryWorker;
 use App\Jobs\ComputeTrustScoreJob;
+use App\Jobs\ConversationTimeoutJob;
 use App\Services\BookingService;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
@@ -48,6 +49,9 @@ Schedule::call(fn () => app(\App\Services\ServiceRequestService::class)->expireS
 Schedule::command(\App\Console\Commands\MetricsWeeklyCommand::class)
     ->weeklyOn(1, '03:30')
     ->withoutOverlapping();
+
+// WhatsApp conversation timeouts (collecting nudge/expiry, accept window, funding window)
+Schedule::job(new ConversationTimeoutJob)->everyMinute()->withoutOverlapping();
 
 // Dispatch payout for all COMPLETED bookings whose hold window has expired (§8.6 — 4×/day)
 Schedule::call(fn () => app(BookingService::class)->processDuePayouts())

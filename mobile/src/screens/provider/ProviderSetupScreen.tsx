@@ -14,6 +14,7 @@ import { LocationSearch } from '../../components/ui/LocationSearch';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useProfileStore } from '../../store/profileStore';
 import { ScreenHeader } from '../../components/ui/ScreenHeader';
+import { OnboardingProgress } from '../../components/provider/OnboardingProgress';
 import { palette, radius as r, spacing, typography } from '../../theme';
 
 const MOMO_PROVIDERS = ['MTN', 'AIRTEL', 'ZAMTEL'] as const;
@@ -29,7 +30,8 @@ const HOURS = Array.from({ length: 17 }, (_, i) => {
   return `${String(h).padStart(2, '0')}:00`;
 });
 
-export default function ProviderSetupScreen({ navigation }: any) {
+export default function ProviderSetupScreen({ navigation, route }: any) {
+  const onboardingStep: number | undefined = route?.params?.onboardingStep;
   const { profile, loading, error, fetchProfile, upsertProfile, clearError } = useProfileStore();
   const { showSuccess, showError } = useSnackbar();
   const insets = useSafeAreaInsets();
@@ -42,7 +44,6 @@ export default function ProviderSetupScreen({ navigation }: any) {
   const [lat, setLat]                   = useState('');
   const [lng, setLng]                   = useState('');
   const [locationLabel, setLocationLabel] = useState('');
-  const [radius, setRadius]             = useState('5');
   const [availability, setAvailability] = useState<AvailMatrix>({});
 
   useEffect(() => { fetchProfile(); }, []);
@@ -56,7 +57,6 @@ export default function ProviderSetupScreen({ navigation }: any) {
     setMomoNumber(profile.momo_number ?? '');
     setLat(profile.base_location_lat?.toString() ?? '');
     setLng(profile.base_location_lng?.toString() ?? '');
-    setRadius(profile.max_radius_km?.toString() ?? '5');
     setAvailability((profile.availability_matrix as AvailMatrix) ?? {});
   }, [profile?.user_id]);
 
@@ -103,7 +103,6 @@ export default function ProviderSetupScreen({ navigation }: any) {
         momo_number:        momoNumber || undefined,
         base_location_lat:  parsedLat,
         base_location_lng:  parsedLng,
-        max_radius_km:      radius ? parseInt(radius, 10) : undefined,
         availability_matrix: Object.keys(availability).length > 0 ? availability : undefined,
       });
       showSuccess('Profile saved successfully.');
@@ -125,6 +124,8 @@ export default function ProviderSetupScreen({ navigation }: any) {
             subtitle="Set trust details so clients can book confidently"
             back
           />
+
+          {onboardingStep != null && <OnboardingProgress step={onboardingStep} />}
 
           <View style={styles.progressSection}>
             <View style={styles.progressRow}>
@@ -249,16 +250,9 @@ export default function ProviderSetupScreen({ navigation }: any) {
               }}
               error={latErr}
             />
-            <TextInput
-              mode="outlined"
-              label="Max Radius (km)"
-              keyboardType="number-pad"
-              value={radius}
-              onChangeText={setRadius}
-              style={styles.input}
-              outlineStyle={styles.inputOutline}
-              left={<TextInput.Icon icon="map-marker-radius-outline" />}
-            />
+            <Text style={styles.availHint}>
+              We match you to nearby customers by area, then widen out — no distance limit to set.
+            </Text>
           </View>
 
           <Text style={styles.sectionLabel}>Availability</Text>

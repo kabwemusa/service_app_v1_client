@@ -50,7 +50,6 @@ export interface PublicProviderProfile {
   };
   profile: {
     kyc_status:           string;
-    max_radius_km:        number;
     availability_matrix:  Record<string, { start: string; end: string }[]> | null;
     profile_completeness: number;
   };

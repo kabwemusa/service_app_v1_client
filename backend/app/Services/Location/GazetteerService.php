@@ -97,4 +97,64 @@ class GazetteerService
             ];
         }, $rows);
     }
+
+    /**
+     * Canonical region/ward for a coordinate's geohash-6 cell — the gazetteer's
+     * own authority used to SNAP reverse-geocode results (v3.2 §3.1), so the
+     * internal region mapping stays consistent with the matching pipeline's geo
+     * rings rather than trusting the raw OSM administrative name. Returns the
+     * strongest confirmed entry in the cell, or null when we have none.
+     *
+     * @return array{region_province: ?string, region_ward: ?string}|null
+     */
+    public function regionFor(float $lat, float $lng): ?array
+    {
+        $minConfirms = (int) config('location.geocoding.gazetteer_min_confirms', 3);
+
+        try {
+            $row = DB::selectOne('
+                SELECT region_province, region_ward
+                FROM   gazetteer_entries
+                WHERE  geohash6 = ?
+                  AND  confirm_count >= ?
+                  AND  (region_province IS NOT NULL OR region_ward IS NOT NULL)
+                ORDER  BY confirm_count DESC
+                LIMIT  1
+            ', [Geohash::encode($lat, $lng, 6), $minConfirms]);
+        } catch (\Throwable $e) {
+            Log::warning('GazetteerService::regionFor failed', ['error' => $e->getMessage()]);
+            return null;
+        }
+
+        if (! $row) {
+            return null;
+        }
+
+        return [
+            'region_province' => $row->region_province,
+            'region_ward'     => $row->region_ward,
+        ];
+    }
+
+    /**
+     * Optional forward query-rewrite hook (v3.2 §3.1): when a confident
+     * gazetteer entry carries a province the raw query omits, append it
+     * (e.g. "kabwata" → "kabwata, Lusaka Province") to sharpen the downstream
+     * external lookup. Returns the rewritten query, or null when nothing to add.
+     * Gated by config in the orchestrator — off by default.
+     */
+    public function rewriteQuery(string $query): ?string
+    {
+        $top = $this->matches($query, 1);
+        if ($top === []) {
+            return null;
+        }
+
+        $province = $top[0]['region_province'] ?? null;
+        if ($province === null || $province === '' || mb_stripos($query, $province) !== false) {
+            return null;
+        }
+
+        return $query . ', ' . $province;
+    }
 }

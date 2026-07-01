@@ -170,6 +170,9 @@ class Phase1Test extends TestCase
         ]);
 
         $gazetteer = Mockery::mock(GazetteerService::class);
+        // Reverse snapping (v3.2 §3.1) consults the gazetteer for the cell's
+        // canonical region; no entry here ⇒ raw OSM regions are kept.
+        $gazetteer->shouldReceive('regionFor')->andReturn(null);
         $service   = new GeocodingService($gazetteer);
 
         $first = $service->reverseGeocode(-15.41670, 28.28330);

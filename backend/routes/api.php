@@ -8,6 +8,8 @@ use App\Http\Controllers\Api\Admin\AdminServiceController;
 use App\Http\Controllers\Api\Admin\AdminUserController;
 use App\Http\Controllers\Api\Admin\AdminVerificationController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\PawapayCallbackController;
+use App\Http\Controllers\Api\WhatsAppWebhookController;
 use App\Http\Controllers\Api\BookingController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\CategoryController;
@@ -31,6 +33,12 @@ use Illuminate\Support\Facades\Route;
 
 // ── Auth (public) ──────────────────────────────────────────────────────────
 Route::prefix('auth')->group(function () {
+    // Canonical passwordless phone-OTP (identity rule: phone = single account key)
+    Route::post('/otp/request', [AuthController::class, 'requestOtp']);
+    Route::post('/otp/verify',  [AuthController::class, 'verifyPhoneOtp']);
+
+    // Legacy email + password + email-OTP — DEPRECATED, retained dormant for the
+    // superseded Expo app during transition; not maintained going forward.
     Route::post('/register',   [AuthController::class, 'register']);
     Route::post('/verify-otp', [AuthController::class, 'verifyOtp']);
     Route::post('/login',      [AuthController::class, 'login']);
@@ -170,6 +178,13 @@ Route::middleware('auth:admin')->prefix('admin')->group(function () {
     });
 });
 
+// ── WhatsApp Webhook (public — Meta Cloud API callbacks) ──────────────────
+Route::get('/webhook',  [WhatsAppWebhookController::class, 'verify']);
+Route::post('/webhook', [WhatsAppWebhookController::class, 'receive']);
+
+// ── PawaPay Payment Callbacks (public — PawaPay sends deposit/payout/refund status) ──
+Route::post('/pawapay/callback', [PawapayCallbackController::class, 'handle']);
+
 // ── Search & Discovery (public, Phase 3) ───────────────────────────────────
 Route::get('/search',         SearchController::class);
 Route::get('/search/suggest', SearchSuggestController::class);
@@ -281,6 +296,22 @@ Route::middleware('auth:api')->group(function () {
 
     // ── Provider profile (PROVIDER only) ──────────────────────────────────
     Route::middleware('role:PROVIDER')->prefix('provider')->group(function () {
+        // Progressive onboarding (resumable). state + per-step submit.
+        Route::get('/onboarding',          [\App\Http\Controllers\Api\ProviderOnboardingController::class, 'show']);
+        Route::post('/onboarding/about',    [\App\Http\Controllers\Api\ProviderOnboardingController::class, 'about']);
+        Route::post('/onboarding/avatar',   [\App\Http\Controllers\Api\ProviderOnboardingController::class, 'avatar']);
+        Route::post('/onboarding/offer',    [\App\Http\Controllers\Api\ProviderOnboardingController::class, 'offer']);
+        Route::post('/onboarding/identity', [\App\Http\Controllers\Api\ProviderOnboardingController::class, 'identity']);
+        Route::post('/onboarding/service',  [\App\Http\Controllers\Api\ProviderOnboardingController::class, 'service']);
+        Route::post('/onboarding/payout',   [\App\Http\Controllers\Api\ProviderOnboardingController::class, 'payout']);
+        Route::post('/onboarding/go-live',  [\App\Http\Controllers\Api\ProviderOnboardingController::class, 'goLive']);
+
+        // Tier-upgrade / clearance flow (submissions feed the admin queue; the
+        // eligibility flip is on admin approval).
+        Route::get('/verification',                  [\App\Http\Controllers\Api\ProviderVerificationController::class, 'show']);
+        Route::post('/verification/police-clearance', [\App\Http\Controllers\Api\ProviderVerificationController::class, 'policeClearance']);
+        Route::post('/verification/portfolio',        [\App\Http\Controllers\Api\ProviderVerificationController::class, 'portfolio']);
+
         Route::get('/profile',         [ProviderProfileController::class, 'show']);
         Route::put('/profile',         [ProviderProfileController::class, 'upsert']);
         Route::post('/profile/kyc',    [ProviderProfileController::class, 'uploadKyc']);

@@ -18,6 +18,10 @@ expo-env.d.ts
 *.key
 *.mobileprovision
 
+# Firebase / Google services — contain API keys; use secret manager in CI
+google-services.json
+GoogleService-Info.plist
+
 # Metro
 .metro-health-check*
 
@@ -30,8 +34,11 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
-.env*.local
+# local env files — .env.example is safe to commit; all others are not
+.env
+.env.*
+!.env.example
+!.env.*.example
 
 # typescript
 *.tsbuildinfo

@@ -23,6 +23,7 @@ import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useProfileStore } from '../../store/profileStore';
 import { useServiceStore } from '../../store/serviceStore';
 import { ScreenHeader } from '../../components/ui/ScreenHeader';
+import { OnboardingProgress } from '../../components/provider/OnboardingProgress';
 import { palette, radius as r, spacing, typography } from '../../theme';
 
 const SCREEN_W   = Dimensions.get('window').width;
@@ -44,7 +45,8 @@ function emptyToUndefined(value: string): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-export default function ProviderProfileEditScreen({ navigation }: any) {
+export default function ProviderProfileEditScreen({ navigation, route }: any) {
+  const onboardingStep: number | undefined = route?.params?.onboardingStep;
   const {
     profile, dashboard, error,
     fetchProfile, fetchDashboard, upsertProfile,
@@ -58,7 +60,6 @@ export default function ProviderProfileEditScreen({ navigation }: any) {
   const [bio, setBio]                 = useState('');
   const [yearStarted, setYearStarted] = useState('');
   const [languages, setLanguages]     = useState<LanguageCode[]>([]);
-  const [radiusKm, setRadiusKm]       = useState(10);
   const [highlights, setHighlights]   = useState<Highlights>(EMPTY_HIGHLIGHTS);
 
   const [saving, setSaving]                   = useState(false);
@@ -79,7 +80,6 @@ export default function ProviderProfileEditScreen({ navigation }: any) {
     setBio(profile.bio ?? '');
     setYearStarted(profile.year_started ? String(profile.year_started) : '');
     setLanguages(profile.languages ?? []);
-    setRadiusKm(profile.service_radius_km || 10);
     setHighlights(profile.highlights ?? EMPTY_HIGHLIGHTS);
   }, [profile?.user_id]);
 
@@ -106,12 +106,6 @@ export default function ProviderProfileEditScreen({ navigation }: any) {
       }
       return [...prev, code];
     });
-  };
-
-  // ── Service radius (stepper — never raw coordinates, §4.2/§6.6) ─────────
-  const adjustRadius = (delta: number) => {
-    Haptics.selectionAsync();
-    setRadiusKm((prev) => Math.min(50, Math.max(1, prev + delta)));
   };
 
   // ── Profile / cover photo ────────────────────────────────────────────────
@@ -263,7 +257,6 @@ export default function ProviderProfileEditScreen({ navigation }: any) {
         bio:               emptyToUndefined(bio),
         year_started:      yearNum,
         languages:         languages.length > 0 ? languages : undefined,
-        service_radius_km: radiusKm,
         highlights,
       });
       showSuccess('Profile & highlights saved.');
@@ -286,6 +279,8 @@ export default function ProviderProfileEditScreen({ navigation }: any) {
             subtitle="Configure your public profile and what shows first"
             back
           />
+
+          {onboardingStep != null && <OnboardingProgress step={onboardingStep} />}
 
           {/* Public profile */}
           <Text style={styles.sectionLabel}>Public Profile</Text>
@@ -383,20 +378,6 @@ export default function ProviderProfileEditScreen({ navigation }: any) {
             })}
           </View>
 
-          {/* Service radius — stepper only, no map / coordinates (§4.2) */}
-          <Text style={styles.sectionLabel}>How far will you travel?</Text>
-          <View style={[styles.card, styles.radiusRow]}>
-            <TouchableRipple onPress={() => adjustRadius(-1)} borderless style={styles.stepBtn}>
-              <Ionicons name="remove" size={18} color={palette.primary} />
-            </TouchableRipple>
-            <View style={styles.radiusValueWrap}>
-              <Text style={styles.radiusValue}>{radiusKm} km</Text>
-              <Text style={styles.radiusHint}>from your service area</Text>
-            </View>
-            <TouchableRipple onPress={() => adjustRadius(1)} borderless style={styles.stepBtn}>
-              <Ionicons name="add" size={18} color={palette.primary} />
-            </TouchableRipple>
-          </View>
 
           {/* Portfolio manager (§5.3 — max 12 images / 5MB each) */}
           <View style={styles.sectionRowBetween}>

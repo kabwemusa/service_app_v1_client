@@ -8,6 +8,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { DocType, KycDocument } from '../../api/kyc';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useKycStore } from '../../store/kycStore';
+import { OnboardingProgress } from '../../components/provider/OnboardingProgress';
 import { palette, radius as r, spacing, typography } from '../../theme';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -33,7 +34,8 @@ const DOC_LABEL: Record<string, string> = {
 
 // ── Component ──────────────────────────────────────────────────────────────
 
-export default function KycScreen({ navigation }: any) {
+export default function KycScreen({ navigation, route }: any) {
+  const onboardingStep: number | undefined = route?.params?.onboardingStep;
   const { status, loading, error, fetchStatus, submitTier1, submitDocument, clearError } = useKycStore();
   const { showSuccess, showError } = useSnackbar();
 
@@ -250,6 +252,8 @@ export default function KycScreen({ navigation }: any) {
             <RefreshControl refreshing={loading} onRefresh={fetchStatus} tintColor={palette.primary} />
           }
         >
+          {onboardingStep != null && <OnboardingProgress step={onboardingStep} />}
+
           <Text style={styles.heading}>Identity Verification</Text>
           <Text style={styles.sub}>
             Verify your identity to unlock earning on Sebenza. Higher tiers unlock larger bookings and better placement in search.

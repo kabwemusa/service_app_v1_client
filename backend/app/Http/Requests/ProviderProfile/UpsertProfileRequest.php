@@ -29,9 +29,9 @@ class UpsertProfileRequest extends FormRequest
             'momo_number'        => ['sometimes', 'string', 'max:20'],
             'base_location_lat'  => ['sometimes', 'numeric', 'between:-90,90'],
             'base_location_lng'  => ['sometimes', 'numeric', 'between:-180,180'],
-            'max_radius_km'      => ['sometimes', 'integer', 'min:1', 'max:50'],
-            // v3.1 §6.6 — "how far I'll travel": stepper / map-pin only, never raw coordinates
-            'service_radius_km'  => ['sometimes', 'integer', 'min:1', 'max:50'],
+            // Radius retired (v3.1 §4.4): candidacy widens by region tier, not
+            // distance. `max_radius_km` / `service_radius_km` are no longer
+            // accepted or used — the provider's base location is all we need.
             'highlights'                       => ['sometimes', 'array'],
             'highlights.pinned_service_ids'    => ['sometimes', 'array', 'max:6'],
             'highlights.pinned_service_ids.*'  => ['string'],

@@ -38,6 +38,7 @@ import {
 import { LocationPickerSheet } from '../../components/location/LocationPickerSheet';
 import { MarkdownEditor } from '../../components/ui/MarkdownEditor';
 import { ScreenHeader } from '../../components/ui/ScreenHeader';
+import { OnboardingProgress } from '../../components/provider/OnboardingProgress';
 import { TabItem, Tabs } from '../../components/ui/Tabs';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { DeliveryLocation } from '../../store/locationStore';
@@ -69,6 +70,7 @@ interface FieldError { tab: SectionKey; field: string }
 
 export default function CreateServiceScreen({ navigation, route }: any) {
   const editing: Service | undefined = route.params?.service;
+  const onboardingStep: number | undefined = route.params?.onboardingStep;
   const isEdit = !!editing;
   const insets = useSafeAreaInsets();
 
@@ -336,7 +338,8 @@ export default function CreateServiceScreen({ navigation, route }: any) {
     // Required to save at all (backend also enforces these).
     if (!title.trim())   errs.push({ tab: 'details', field: 'title' });
     if (!categoryId)     errs.push({ tab: 'details', field: 'category' });
-    if (!location)       errs.push({ tab: 'details', field: 'location' });
+    // Location is optional — when left blank it defaults to the provider's base
+    // location (set once in your profile). Providers can still override per service.
     // Required only to publish (move to ACTIVE).
     if (forStatus === 'ACTIVE') {
       if (pricingModel !== 'QUOTE' && !(parseFloat(price) > 0)) errs.push({ tab: 'pricing', field: 'price' });
@@ -362,7 +365,7 @@ export default function CreateServiceScreen({ navigation, route }: any) {
       focusFirst(errs);
       showError(status === 'ACTIVE'
         ? 'Complete the highlighted fields to publish.'
-        : 'Add a title, category and location to save.');
+        : 'Add a title and category to save.');
       return;
     }
     setFieldErrors([]);
@@ -384,8 +387,8 @@ export default function CreateServiceScreen({ navigation, route }: any) {
       duration_estimate_mins: durationMins,
       status,
       is_pinned:              isPinned,
-      latitude:               location!.lat,
-      longitude:              location!.lng,
+      // Omitted → backend defaults to the provider's base location.
+      ...(location ? { latitude: location.lat, longitude: location.lng } : {}),
       inclusions,
       addons: addons.map((a) => ({ name: a.name.trim(), price: parseFloat(a.price) || 0 })),
     };
@@ -435,6 +438,10 @@ export default function CreateServiceScreen({ navigation, route }: any) {
         subtitle={(title.trim() || isEdit) ? (title.trim() || editing?.title || undefined) : undefined}
         back
       />
+
+      {onboardingStep != null && (
+        <OnboardingProgress step={onboardingStep} style={{ paddingHorizontal: spacing.lg, marginBottom: spacing.sm }} />
+      )}
 
       <Tabs items={tabs} activeKey={section} onChange={(k) => setSection(k as SectionKey)} scrollable />
 
@@ -486,15 +493,15 @@ export default function CreateServiceScreen({ navigation, route }: any) {
               <TouchableRipple
                 onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setPickerVisible(true); }}
                 borderless
-                style={[styles.rowField, hasError('location') && styles.rowFieldError]}
+                style={styles.rowField}
               >
                 <View style={styles.rowFieldInner}>
                   <Ionicons name="location-outline" size={18} color={palette.primary} />
-                  <Text style={styles.rowFieldText} numberOfLines={1}>{locationLabel ?? 'Choose a location'}</Text>
+                  <Text style={styles.rowFieldText} numberOfLines={1}>{locationLabel ?? 'Same as my base location'}</Text>
                   <Ionicons name="chevron-forward" size={16} color={palette.textSecondary} />
                 </View>
               </TouchableRipple>
-              {hasError('location') && <HelperText type="error" visible>Set where you offer this service.</HelperText>}
+              <HelperText type="info" visible>Leave as-is to use your base location, or set a different spot for this service.</HelperText>
 
               <View style={styles.divider} />
 

@@ -16,15 +16,19 @@ class SearchRequest extends FormRequest
         return [
             // v3.1 §4.6: no customer-facing radius control. `lat`/`lng` are the
             // resolved delivery location L (device GPS, saved place, or search pick) —
-            // never typed by the user. Candidate radius is derived server-side from
-            // the provider's own service_radius_km capped by MAX_SEARCH_RADIUS_KM (§4.4).
+            // never typed by the user. There is NO radius: candidacy widens by
+            // region tier — area → city → province → national (§4.4) — resolved
+            // server-side from lat/lng, or supplied via region_ward/region_city/region.
             'query'       => ['nullable', 'string', 'max:100'],
             'lat'         => ['nullable', 'numeric', 'between:-90,90'],
             'lng'         => ['nullable', 'numeric', 'between:-180,180'],
             'category_id' => ['nullable', 'integer', 'exists:categories,id'],
-            // Province label of the active delivery location — promoted-slot
-            // inventory is auctioned per category × region (v3.2 §1.5).
+            // Delivery-location region tiers. `region` = province (also drives
+            // promoted-slot inventory, §1.5). ward/city are optional finer tiers;
+            // when omitted the server resolves them from lat/lng.
             'region'      => ['nullable', 'string', 'max:60'],
+            'region_city' => ['nullable', 'string', 'max:80'],
+            'region_ward' => ['nullable', 'string', 'max:80'],
             'page'        => ['nullable', 'integer', 'min:1'],
             // Browse filters (v3.1 §6 Filters sheet)
             'max_price'         => ['nullable', 'numeric', 'min:0'],

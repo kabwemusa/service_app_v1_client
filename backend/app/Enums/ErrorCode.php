@@ -10,6 +10,7 @@ enum ErrorCode: string
     case EMAIL_NOT_VERIFIED    = 'EMAIL_NOT_VERIFIED';
     case OTP_INVALID           = 'OTP_INVALID';
     case OTP_EXPIRED           = 'OTP_EXPIRED';
+    case RATE_LIMITED          = 'RATE_LIMITED';          // too many OTP requests/attempts
     case UNAUTHENTICATED       = 'UNAUTHENTICATED';
     case FORBIDDEN             = 'FORBIDDEN';
     case NOT_FOUND             = 'NOT_FOUND';
@@ -47,6 +48,7 @@ enum ErrorCode: string
             self::EMAIL_NOT_VERIFIED  => 403,
             self::OTP_INVALID         => 422,
             self::OTP_EXPIRED         => 422,
+            self::RATE_LIMITED        => 429,
             self::UNAUTHENTICATED     => 401,
             self::FORBIDDEN           => 403,
             self::NOT_FOUND           => 404,

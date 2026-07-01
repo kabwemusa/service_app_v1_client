@@ -54,11 +54,22 @@ class BookingController extends Controller
         return ApiResponse::success(new BookingResource($booking), 'Booking retrieved.');
     }
 
-    /** POST /bookings/{id}/pay — ESCROW: initiate MoMo pay-in */
+    /**
+     * POST /bookings/{id}/pay — ESCROW: hold funds via the PaymentGateway.
+     *
+     * Buyer funds the booking: REQUESTED/QUOTED → PENDING_PAYMENT (PawaPay deposit
+     * initiated, MoMo USSD push sent; the PawaPay callback advances to FUNDS_HELD)
+     * or → FUNDS_HELD directly when the gateway is synchronous (stub/test).
+     */
     public function pay(Request $request, string $id): JsonResponse
     {
-        $booking = $this->bookings->confirmPayment($id, $request->user());
-        return ApiResponse::success(new BookingResource($booking), 'Payment confirmed. Funds held.');
+        $booking = $this->bookings->holdFunds($id, $request->user());
+
+        $message = $booking->status === 'PENDING_PAYMENT'
+            ? 'Check your phone — approve the mobile-money prompt to hold the funds.'
+            : 'Payment confirmed. Funds held in escrow.';
+
+        return ApiResponse::success(new BookingResource($booking), $message);
     }
 
     /** POST /bookings/{id}/accept — DIRECT: provider accepts at listed price */

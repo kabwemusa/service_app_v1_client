@@ -14,7 +14,10 @@ interface ForwardGeocoder
     /**
      * @param  string|null $sessionToken Autocomplete billing session (Google);
      *                                   drivers without sessions ignore it.
+     * @param  array{lat: float, lng: float}|null $bias Device-coordinate
+     *                                   relevance hint; drivers without a
+     *                                   proximity-bias notion ignore it.
      * @return array<int, array{label: string, place_name: string, region_province: ?string, region_ward: ?string, lat: float, lng: float}>
      */
-    public function search(string $query, int $limit = 5, ?string $sessionToken = null): array;
+    public function search(string $query, int $limit = 5, ?string $sessionToken = null, ?array $bias = null): array;
 }

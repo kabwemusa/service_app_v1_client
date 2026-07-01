@@ -145,6 +145,7 @@ type StepState = "done" | "current" | "upcoming";
 function stepStates(status: BookingStatus): StepState[] {
   switch (status) {
     case "ACCEPTED":
+    case "FUNDS_HELD": // ESCROW equivalent of ACCEPTED — booking is confirmed/funded
       return ["done", "upcoming", "upcoming"];
     case "IN_PROGRESS":
       return ["done", "current", "upcoming"];
@@ -963,13 +964,17 @@ function ActionBar({
   onAskReview: () => void;
 }) {
   const status = booking.status;
+  const isDirect = (booking.payment_mode ?? "ESCROW") === "DIRECT";
   const total =
     booking.agreed_amount ?? booking.amount ?? booking.service.base_price ?? 0;
 
   let content: React.ReactNode = null;
 
   if (status === "REQUESTED") {
-    content = (
+    // DIRECT: the provider's Accept confirms the booking (the customer pays later).
+    // ESCROW: the customer funds the request — the provider can't "accept" it, only
+    // send an alternate quote or decline. Funding moves it straight to FUNDS_HELD.
+    content = isDirect ? (
       <>
         <Button
           mode="contained"
@@ -1005,15 +1010,44 @@ function ActionBar({
           </Button>
         </View>
       </>
+    ) : (
+      <>
+        <PassiveNote
+          icon="hourglass-outline"
+          text={`New request · ${buyerName} is funding it into escrow. Send a quote if the price should differ.`}
+        />
+        <View style={styles.barRow}>
+          <Button
+            mode="outlined"
+            style={styles.barRowBtn}
+            contentStyle={styles.primaryBtnContent}
+            textColor={palette.primary}
+            disabled={busy}
+            onPress={onQuote}
+          >
+            Send a quote
+          </Button>
+          <Button
+            mode="outlined"
+            style={[styles.barRowBtn, { borderColor: palette.danger }]}
+            contentStyle={styles.primaryBtnContent}
+            textColor={palette.danger}
+            disabled={busy}
+            onPress={onDecline}
+          >
+            Decline
+          </Button>
+        </View>
+      </>
     );
   } else if (status === "QUOTED") {
     content = (
       <PassiveNote
         icon="hourglass-outline"
-        text={`Quote sent · waiting for ${buyerName} to accept.`}
+        text={`Quote sent · waiting for ${buyerName} to accept${isDirect ? "" : " and pay"}.`}
       />
     );
-  } else if (status === "ACCEPTED") {
+  } else if (status === "ACCEPTED" || status === "FUNDS_HELD") {
     content = (
       <Button
         mode="contained"

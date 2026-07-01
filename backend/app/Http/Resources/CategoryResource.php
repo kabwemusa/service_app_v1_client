@@ -21,6 +21,9 @@ class CategoryResource extends JsonResource
             'icon'             => $this->icon,
             'icon_url'         => $this->icon_url,
             'is_active'        => $this->is_active,
+            // Risk tier (1=remote, 2=public, 3=in-home) — sets the verification
+            // a provider needs to receive jobs in this category (onboarding offer step).
+            'risk_tier'        => $this->risk_tier !== null ? (int) $this->risk_tier : null,
             'display_order'    => $this->display_order,
             'commission_band'  => $this->commission_band,
             'commission_rates' => $this->commission_rates,

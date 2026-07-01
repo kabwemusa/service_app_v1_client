@@ -33,8 +33,10 @@ class StoreServiceRequest extends FormRequest
             'duration_estimate_mins'  => ['nullable', 'integer', 'min:1', 'max:1440'],
             'status'                  => ['sometimes', 'string', 'in:DRAFT,ACTIVE,PAUSED,HIDDEN'],
             'is_pinned'               => ['sometimes', 'boolean'],
-            'latitude'                => ['required', 'numeric', 'between:-90,90'],
-            'longitude'               => ['required', 'numeric', 'between:-180,180'],
+            // Optional: defaults to the provider's base location when omitted
+            // (one place to set "where you offer from"). Both required together.
+            'latitude'                => ['nullable', 'numeric', 'between:-90,90', 'required_with:longitude'],
+            'longitude'               => ['nullable', 'numeric', 'between:-180,180', 'required_with:latitude'],
 
             // §5.2 — "what's included" bullets, ordered by array position
             'inclusions'              => ['sometimes', 'array', 'max:20'],

@@ -124,7 +124,6 @@ class PublicProviderController extends Controller
             ],
             'profile'             => [
                 'kyc_status'           => $profile->kyc_status,
-                'max_radius_km'        => $profile->max_radius_km,
                 'availability_matrix'  => $profile->availability_matrix,
                 'profile_completeness' => $profile->profile_completeness,
             ],

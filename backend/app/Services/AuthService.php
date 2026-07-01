@@ -2,11 +2,15 @@
 
 namespace App\Services;
 
+use App\Contracts\SmsGateway;
+use App\Enums\ErrorCode;
+use App\Exceptions\Api\ApiException;
 use App\Exceptions\Api\EmailNotVerifiedException;
 use App\Exceptions\Api\InvalidCredentialsException;
 use App\Exceptions\Api\OtpException;
 use App\Models\ProviderProfile;
 use App\Models\User;
+use App\Support\PhoneNumber;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Redis;
@@ -18,6 +22,16 @@ class AuthService
     private const OTP_KEY_PREFIX     = 'otp:';
     private const REFRESH_KEY_PREFIX = 'refresh:';
     private const OTP_RATE_PREFIX    = 'otp_rate:';
+    private const OTP_COOLDOWN_PREFIX = 'otp_cd:';
+
+    /** Seconds a caller must wait between OTP sends to the same number. */
+    private const RESEND_COOLDOWN_SECONDS = 60;
+
+    /** Max OTP sends per number within the rolling window before a hard block. */
+    private const MAX_SENDS_PER_WINDOW = 5;
+    private const RATE_WINDOW_SECONDS  = 3600;
+
+    public function __construct(private readonly SmsGateway $sms) {}
 
     public function register(array $data): User
     {
@@ -43,6 +57,99 @@ class AuthService
         $this->sendOtp($user);
 
         return $user;
+    }
+
+    // ── Phone-OTP (canonical, passwordless) ──────────────────────────────────
+
+    /**
+     * Request an OTP for a phone number. Phone is the single account key, so this
+     * find-or-creates the account (identity rule), enforces a resend cooldown +
+     * rolling rate limit, and dispatches the code over SMS.
+     *
+     * @param  string  $intent  'CUSTOMER' | 'PROVIDER' — only used on first sight.
+     * @return array{phone: string, resend_after: int, is_new: bool}
+     */
+    public function requestPhoneOtp(string $rawPhone, string $intent = 'CUSTOMER'): array
+    {
+        $phone = PhoneNumber::normalize($rawPhone);
+        if ($phone === null) {
+            throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Enter a valid Zambian mobile number.');
+        }
+
+        $this->guardOtpRate($phone);
+
+        $existed = User::where('phone', $phone)
+            ->orWhere('phone', 'LIKE', '%' . substr($phone, -9))
+            ->exists();
+
+        $user = User::findOrCreateByPhone($phone, $intent);
+
+        $this->sendPhoneOtp($user->phone);
+
+        return [
+            'phone'        => $user->phone,
+            'resend_after' => self::RESEND_COOLDOWN_SECONDS,
+            'is_new'       => ! $existed,
+        ];
+    }
+
+    /**
+     * Verify a phone OTP and issue a token pair. Marks the phone verified and,
+     * if an anonymous guest token is supplied, merges the in-progress context
+     * (booking draft / saved items) onto the now-identified account.
+     *
+     * @return array{access_token: string, refresh_token: string, user: User}
+     */
+    public function verifyPhoneOtp(string $rawPhone, string $otp, ?string $guestToken = null): array
+    {
+        $phone = PhoneNumber::normalize($rawPhone);
+        if ($phone === null) {
+            throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Enter a valid Zambian mobile number.');
+        }
+
+        $key       = self::OTP_KEY_PREFIX . $phone;
+        $storedOtp = Redis::get($key);
+
+        if ($storedOtp === null) {
+            throw OtpException::expired();
+        }
+        if (! hash_equals((string) $storedOtp, $otp)) {
+            throw OtpException::invalid();
+        }
+
+        $user = User::where('phone', $phone)
+            ->orWhere('phone', 'LIKE', '%' . substr($phone, -9))
+            ->firstOrFail();
+
+        $user->update([
+            'phone_verified_at' => $user->phone_verified_at ?? now(),
+            'is_verified'       => true,
+            'last_active_at'    => now(),
+        ]);
+
+        Redis::del($key);
+        Redis::del(self::OTP_COOLDOWN_PREFIX . $phone);
+
+        if ($guestToken) {
+            $this->mergeAnonymousContext($user, $guestToken);
+        }
+
+        return $this->issueTokenPair($user);
+    }
+
+    /**
+     * Carry an anonymous session's in-progress context onto the identified user.
+     *
+     * The primary "context survives sign-in" mechanism is client-side: the PWA
+     * holds the tapped booking draft and replays it after verify. This hook is
+     * the server-side extension point for any guest-held state (e.g. saved
+     * items) keyed by $guestToken; today it is a no-op placeholder so the
+     * verify endpoint already accepts the token and the contract is stable.
+     */
+    private function mergeAnonymousContext(User $user, string $guestToken): void
+    {
+        // Intentionally minimal — see docblock. Future: move guest saved_locations
+        // / draft service_requests keyed by $guestToken onto $user->id.
     }
 
     public function verifyOtp(User $user, string $otp): array
@@ -147,6 +254,46 @@ class AuthService
         Redis::setex(self::REFRESH_KEY_PREFIX . $token, $expiry * 60, $userId);
 
         return $token;
+    }
+
+    /**
+     * Enforce the resend cooldown and rolling rate limit for a number.
+     * Throws RATE_LIMITED (429) when either is exceeded.
+     */
+    private function guardOtpRate(string $phone): void
+    {
+        $cooldownKey = self::OTP_COOLDOWN_PREFIX . $phone;
+        if (Redis::exists($cooldownKey)) {
+            $ttl = (int) Redis::ttl($cooldownKey);
+            throw new ApiException(
+                ErrorCode::RATE_LIMITED,
+                "Please wait {$ttl}s before requesting another code.",
+            );
+        }
+
+        $rateKey = self::OTP_RATE_PREFIX . $phone;
+        $count   = (int) Redis::incr($rateKey);
+        if ($count === 1) {
+            Redis::expire($rateKey, self::RATE_WINDOW_SECONDS);
+        }
+        if ($count > self::MAX_SENDS_PER_WINDOW) {
+            throw new ApiException(
+                ErrorCode::RATE_LIMITED,
+                'Too many code requests. Please try again later.',
+            );
+        }
+    }
+
+    /** Generate, store and SMS a fresh OTP for an E.164 number; arm the cooldown. */
+    private function sendPhoneOtp(string $phone): void
+    {
+        $otp    = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+        $expiry = (int) config('app.otp_expiry_minutes', 10);
+
+        Redis::setex(self::OTP_KEY_PREFIX . $phone, $expiry * 60, $otp);
+        Redis::setex(self::OTP_COOLDOWN_PREFIX . $phone, self::RESEND_COOLDOWN_SECONDS, '1');
+
+        $this->sms->send($phone, "Your Sebenza code is {$otp}. It expires in {$expiry} minutes.");
     }
 
     private function sendOtp(User $user): void

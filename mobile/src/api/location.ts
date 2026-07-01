@@ -14,6 +14,14 @@ export interface PlaceCandidate {
   lng:        number;
 }
 
+/** Device-coordinate relevance hint for forward search. Internal-only — never
+ *  rendered; the backend uses it to proximity-bias results (falls back to a
+ *  Lusaka centre when absent). */
+export interface BiasCoords {
+  lat: number;
+  lng: number;
+}
+
 export interface PrimaryLocation {
   lat:    number;
   lng:    number;
@@ -53,9 +61,13 @@ export interface SaveLocationParams {
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const locationApi = {
-  /** GET /location/search?q=... — forward geocode / autocomplete (§4.3). */
-  search: (q: string) =>
-    api.get<PlaceCandidate[]>('/location/search', { params: { q } }),
+  /** GET /location/search?q=... — forward geocode / autocomplete (§4.3).
+   *  Pass device coords to proximity-bias results (optimised "near me"
+   *  ranking); omitted → backend falls back to a Lusaka centre. */
+  search: (q: string, bias?: BiasCoords | null) =>
+    api.get<PlaceCandidate[]>('/location/search', {
+      params: { q, lat: bias?.lat, lng: bias?.lng },
+    }),
 
   /** POST /location/reverse — device GPS coords → human label + region (§4.3). */
   reverse: (lat: number, lng: number) =>

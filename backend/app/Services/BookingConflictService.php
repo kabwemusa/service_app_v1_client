@@ -53,9 +53,46 @@ class BookingConflictService
         $start = Carbon::parse($scheduledStart)->setTimezone(self::LUSAKA_TZ);
         $end   = Carbon::parse($scheduledEnd)->setTimezone(self::LUSAKA_TZ);
 
-        $this->checkAvailabilityWindow($start, $end, $availabilityMatrix);
+        if (! empty($availabilityMatrix)) {
+            $this->checkAvailabilityWindow($start, $end, $availabilityMatrix);
+        } else {
+            $this->checkAvailabilityFromRecords($providerId, $start);
+        }
+
         $this->checkOverlap($providerId, $scheduledStart, $scheduledEnd);
         $this->checkTransitBuffer($providerId, $start, $scheduledStart, $deliveryLat, $deliveryLng);
+    }
+
+    private function checkAvailabilityFromRecords(string $providerId, Carbon $start): void
+    {
+        $dayOfWeek = $start->dayOfWeek;
+        $reqStart  = $start->format('H:i');
+
+        $slots = DB::table('provider_availability')
+            ->where('provider_id', $providerId)
+            ->where('day_of_week', $dayOfWeek)
+            ->where('is_recurring', true)
+            ->get();
+
+        if ($slots->isEmpty()) {
+            throw new ApiException(
+                ErrorCode::VALIDATION_ERROR,
+                "This provider is not available on {$start->englishDayOfWeek}s.",
+            );
+        }
+
+        foreach ($slots as $slot) {
+            $slotStart = substr($slot->start_time, 0, 5);
+            $slotEnd   = substr($slot->end_time, 0, 5);
+            if ($reqStart >= $slotStart && $reqStart < $slotEnd) {
+                return;
+            }
+        }
+
+        throw new ApiException(
+            ErrorCode::VALIDATION_ERROR,
+            "The requested time ({$reqStart}) falls outside this provider's availability.",
+        );
     }
 
     // ── Step 1 ───────────────────────────────────────────────────────────────
@@ -80,8 +117,10 @@ class BookingConflictService
         $reqEnd   = $end->format('H:i');
 
         foreach ($windows as $window) {
-            if ($reqStart >= $window['start'] && $reqEnd <= $window['end']) {
-                return; // fits inside this window — OK
+            $winStart = substr($window['start'], 0, 5);
+            $winEnd   = substr($window['end'], 0, 5);
+            if ($reqStart >= $winStart && $reqStart < $winEnd) {
+                return; // start time fits inside this window — OK
             }
         }
 

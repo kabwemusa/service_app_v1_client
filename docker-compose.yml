@@ -59,6 +59,28 @@ services:
       timeout: 5s
       retries: 5
 
+  # Self-hosted Photon geocoder (v3.2 §3.1), Zambia-tuned.
+  # The photon.jar and the search index are provisioned OUT-OF-BAND per
+  # PHOTON_GEOCODING_RUNBOOK.md — the build embeds no dump download. Both are
+  # bind-mounted from ./infra/photon/: photon.jar and the extracted
+  # photon_data/ index (photon_data/elasticsearch/... for the classic build).
+  photon:
+    image: eclipse-temurin:21-jre # Java 21 base
+    container_name: ssm_photon
+    restart: unless-stopped
+    working_dir: /photon
+    command: ["java", "-jar", "photon.jar", "-listen-ip", "0.0.0.0", "-listen-port", "2322"]
+    volumes:
+      - ./infra/photon/photon.jar:/photon/photon.jar:ro
+      - ./infra/photon/photon_data:/photon/photon_data
+    ports:
+      - "2322:2322"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:2322/status | grep -q . || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
 volumes:
   postgres_data:
   redis_data:

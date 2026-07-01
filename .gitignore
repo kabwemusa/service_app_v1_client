@@ -1,2 +1,36 @@
+# planning / spec docs (internal only)
 *.md
 *.phar
+
+# dependencies
+node_modules/
+
+# environment files
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# logs
+*.log
+logs/
+
+# editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code AI project session files (personal, not for repo)
+.claude/
+
+# Photon geocoder — large binaries and runtime data (download separately)
+infra/photon/*.jar
+infra/photon/*.tar.bz2
+infra/photon/*.bz2
+infra/photon/photon_data/

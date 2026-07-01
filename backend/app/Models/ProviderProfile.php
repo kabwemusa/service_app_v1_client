@@ -32,6 +32,12 @@ class ProviderProfile extends Model
         'base_location_lat',
         'base_location_lng',
         'base_location_label',
+        // Structured region hierarchy for geo-widening (area → city → province),
+        // resolved from base_location. Replaces the retired radius filter.
+        'region_ward',
+        'region_city',
+        'region_province',
+        // Retained during the transition window; no longer gate search candidacy.
         'max_radius_km',
         'service_radius_km',
         // Schedule
@@ -52,6 +58,12 @@ class ProviderProfile extends Model
         'profile_completeness',
         'cancellation_rate_30d',
         'repeat_client_rate',
+        // Progressive onboarding (DRAFT → SET_UP → LIVE) — resumable step cursor
+        // + the offering chosen at signup that the go-live tier check runs against.
+        'onboarding_state',
+        'onboarding_step',
+        'onboarding_category_id',
+        'onboarding_service_id',
     ];
 
     protected function casts(): array

@@ -30,11 +30,15 @@ class LocationService
         private readonly GazetteerService $gazetteer,
     ) {}
 
-    public function searchPlaces(string $query, ?string $sessionToken = null): array
+    /**
+     * @param  array{lat: float, lng: float}|null $bias Optional device-coord
+     *         relevance hint from expo-location; coordinates stay internal.
+     */
+    public function searchPlaces(string $query, ?string $sessionToken = null, ?array $bias = null): array
     {
         return array_map(
             fn (array $c) => $this->toApiShape($c),
-            $this->geocoding->search($query, 5, $sessionToken),
+            $this->geocoding->search($query, 5, $sessionToken, $bias),
         );
     }
 

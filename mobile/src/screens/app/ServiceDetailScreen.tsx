@@ -71,7 +71,11 @@ function priceLabel(s: Service): string {
 }
 
 function ctaText(s: Service): string {
-  return s.pricing_model === "QUOTE" ? "Request quote" : "Request booking";
+  if (s.pricing_model === "QUOTE") return "Request quote";
+  // DIRECT: provider confirms the request, customer pays them directly afterwards.
+  if (s.payment_mode === "DIRECT") return "Request booking";
+  // ESCROW: customer funds into escrow up front — surface the price on the CTA.
+  return s.base_price != null ? `Book · ZMW ${s.base_price.toFixed(0)}` : "Book";
 }
 
 function initials(name?: string | null): string {

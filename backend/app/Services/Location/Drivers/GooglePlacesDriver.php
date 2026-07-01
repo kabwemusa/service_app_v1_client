@@ -22,8 +22,10 @@ class GooglePlacesDriver implements ForwardGeocoder
     private const AUTOCOMPLETE_URL = 'https://maps.googleapis.com/maps/api/place/autocomplete/json';
     private const DETAILS_URL      = 'https://maps.googleapis.com/maps/api/place/details/json';
 
-    public function search(string $query, int $limit = 5, ?string $sessionToken = null): array
+    public function search(string $query, int $limit = 5, ?string $sessionToken = null, ?array $bias = null): array
     {
+        // $bias is accepted for interface conformance; Places autocomplete does
+        // its own session-scoped relevance, so we don't forward device coords.
         $query = trim($query);
         $key   = (string) config('location.geocoding.google.key');
 
@@ -73,7 +75,7 @@ class GooglePlacesDriver implements ForwardGeocoder
             return null;
         }
 
-        [$province, $ward] = $this->extractRegions((array) ($result['address_components'] ?? []));
+        [$province, $city, $ward] = $this->extractRegions((array) ($result['address_components'] ?? []));
 
         $name    = (string) ($result['name'] ?? '');
         $address = (string) ($result['formatted_address'] ?? '');
@@ -82,16 +84,18 @@ class GooglePlacesDriver implements ForwardGeocoder
             'label'           => $name !== '' && $ward !== null ? "{$name}, {$ward}" : ($name !== '' ? $name : $address),
             'place_name'      => $address !== '' ? $address : $name,
             'region_province' => $province,
+            'region_city'     => $city,
             'region_ward'     => $ward,
             'lat'             => (float) $location['lat'],
             'lng'             => (float) $location['lng'],
         ];
     }
 
-    /** @return array{0: ?string, 1: ?string} [province, ward] */
+    /** @return array{0: ?string, 1: ?string, 2: ?string} [province, city, ward] */
     private function extractRegions(array $components): array
     {
         $province = null;
+        $city     = null;
         $ward     = null;
 
         foreach ($components as $component) {
@@ -101,6 +105,12 @@ class GooglePlacesDriver implements ForwardGeocoder
             if (in_array('administrative_area_level_1', $types, true)) {
                 $province ??= $name;
             }
+            // city/town tier — locality, else the district (admin level 2)
+            if (in_array('locality', $types, true)
+                || in_array('postal_town', $types, true)
+                || in_array('administrative_area_level_2', $types, true)) {
+                $city ??= $name;
+            }
             if (in_array('sublocality', $types, true)
                 || in_array('sublocality_level_1', $types, true)
                 || in_array('neighborhood', $types, true)) {
@@ -108,7 +118,7 @@ class GooglePlacesDriver implements ForwardGeocoder
             }
         }
 
-        return [$province, $ward];
+        return [$province, $city, $ward];
     }
 
     private function get(string $url, array $params): array

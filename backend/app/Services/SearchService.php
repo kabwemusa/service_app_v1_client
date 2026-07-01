@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Enums\TrustTier;
 use App\Jobs\LogSearchImpressionJob;
+use App\Services\Location\RegionResolver;
 use App\Services\Ranking\PersonalizationService;
 use App\Services\Ranking\PromotedSlotService;
 use App\Services\Ranking\RankingService;
@@ -18,17 +19,21 @@ use Illuminate\Support\Str;
  *
  * The customer never supplies a radius or coordinates. `lat`/`lng` here are the
  * chosen *delivery location* `L` (device GPS, a saved place, or a place search —
- * resolved client-side to coordinates before this call). A provider `p` is a
- * candidate iff `distance(p.base_location, L) ≤ p.service_radius_km` AND
- * `≤ MAX_SEARCH_RADIUS_KM` — i.e. (provider travel radius) ∩ (system cap).
+ * resolved client-side to coordinates before this call). There is NO radius:
+ * candidacy widens by the delivery location's region tier — ward (area) → city
+ * (town) → province → national (§4.4) — stopping at the tightest tier that
+ * clears the target count. The feed never shows an empty state for geography
+ * alone; distance survives only as a soft ranking signal (§1.6).
  *
  * Pipeline:
  *  1. If a keyword is provided → query Typesense for matching service IDs.
  *     If Typesense is unavailable → fall back to PostgreSQL ILIKE.
  *  2. v3 §7.4 hard filters BEFORE scoring: tier ≥ 1, trust_score ≥ 0.40,
- *     account ACTIVE, denylist clear, tier job-cap vs listed price — plus the
- *     §4.4 geography filter and the profile-completeness floor.
- *  3. Retrieve up to `ranking_candidate_limit` candidates with provider metrics.
+ *     account ACTIVE, denylist clear, tier job-cap vs listed price, and the
+ *     profile-completeness floor. Geography is NOT a hard filter — every
+ *     candidate carries a geo_tier and the result is widened, not cut.
+ *  3. Retrieve up to `ranking_candidate_limit` candidates (ordered tightest
+ *     tier first) with provider metrics, then keep the chosen tier(s).
  *  4. Score each candidate with the v3.2 §1.3 normalized composite
  *     (scoreBreakdown — no promoted boost anywhere).
  *  5. 'recommended' sort = S desc, then §1.8 deterministic fairness slots,
@@ -42,6 +47,7 @@ class SearchService
         private readonly PromotedSlotService    $promoted,
         private readonly PersonalizationService $personalization,
         private readonly TypesenseService       $typesense,
+        private readonly RegionResolver         $regionResolver,
     ) {}
 
     /**
@@ -69,12 +75,30 @@ class SearchService
         $lat         = isset($params['lat']) ? (float) $params['lat'] : null;
         $lng         = isset($params['lng']) ? (float) $params['lng'] : null;
         $hasLocation = $lat !== null && $lng !== null;
-        // R_max (v3 §16 / v3.1 §4.4) — internal system cap only, never a user input.
-        $maxRadiusKm = (float) config('search.search.max_radius_km');
         $categoryId  = isset($params['category_id']) ? (int) $params['category_id'] : null;
         $page        = max(1, (int) ($params['page'] ?? 1));
         $perPage     = config('search.search.max_results');
         $limit       = config('search.search.ranking_candidate_limit');
+
+        // ── Delivery region (area → city → province) for geo-widening ────────
+        // The candidate set is no longer a distance radius: search widens the
+        // delivery location's region tiers (§4.4). Callers may pass the tiers
+        // explicitly; otherwise resolve them from the coordinates (geohash-6
+        // cached — off in tests for hermeticity).
+        $dWard     = $this->cleanParam($params['region_ward'] ?? null);
+        $dCity     = $this->cleanParam($params['region_city'] ?? null);
+        $dProvince = $this->cleanParam($params['region'] ?? null);
+
+        if ($hasLocation && $dProvince === null && $dWard === null && $dCity === null
+            && config('search.geo.auto_resolve_regions', true)) {
+            $resolved  = $this->regionResolver->resolve($lat, $lng);
+            $dWard     = $resolved['ward'];
+            $dCity     = $resolved['city'];
+            $dProvince = $resolved['province'];
+        }
+
+        // Province drives promoted-slot inventory (§1.5) and price medians (§1.7).
+        $region = $dProvince;
 
         // ── Step 1: text filter ──────────────────────────────────────────────
         $typesenseIds = null;
@@ -88,16 +112,15 @@ class SearchService
             }
         }
 
-        // ── Step 2 & 3: §4.4 candidate filter + provider quality filter ──────
+        // ── Step 2 & 3: hard filters + geo-tier candidate fetch ──────────────
         $fallbackQuery = ($query !== '' && $typesenseIds === null) ? $query : null;
-
-        $region = isset($params['region']) ? trim((string) $params['region']) : null;
-        $region = $region !== '' ? $region : null;
 
         $rows = $this->fetchCandidates(
             lat:           $lat,
             lng:           $lng,
-            maxRadiusKm:   $maxRadiusKm,
+            dWard:         $dWard,
+            dCity:         $dCity,
+            dProvince:     $dProvince,
             categoryId:    $categoryId,
             region:        $region,
             serviceIds:    $typesenseIds,
@@ -106,33 +129,21 @@ class SearchService
             params:        $params,
         );
 
-        Log::info('rowss: ', $rows);
-        // §4.4 fallback: no providers cover this delivery location → drop the
-        // radius filter and rank nationally by quality signals alone so the
-        // feed never shows an empty state solely because of geography.
-        $isFallback = false;
-
-        if (empty($rows) && $hasLocation) {
-            $rows = $this->fetchCandidates(
-                lat:           null,
-                lng:           null,
-                maxRadiusKm:   $maxRadiusKm,
-                categoryId:    $categoryId,
-                region:        $region,
-                serviceIds:    $typesenseIds,
-                fallbackQuery: $fallbackQuery,
-                limit:         $limit,
-                params:        $params,
-            );
-            if (!empty($rows)) {
-                $isFallback  = true;
-                $hasLocation = false; // treat as no-location for scoring & sorting below
-            }
-        }
-        
         if (empty($rows)) {
             return $this->emptyPage($page, $perPage);
         }
+
+        // §4.4 geo-widening: keep the tightest region tier(s) — ward → city →
+        // province → national — that together clear the target count. The feed
+        // never shows an empty state for geography alone; it only widens. Rows
+        // were fetched ordered by tier, so the tighter tiers are already on top.
+        $target     = (int) config('search.geo.widen_target', 8);
+        $chosenTier = $this->chooseGeoTier($rows, $target);
+        $rows       = array_values(array_filter($rows, fn ($r) => (int) ($r->geo_tier ?? 3) <= $chosenTier));
+
+        // Fallback = we had a located delivery point but had to widen all the way
+        // to national to find providers.
+        $isFallback = $hasLocation && $dProvince !== null && $chosenTier >= 3;
 
         // ── Step 4: collect job counts (cold-start + completion shrinkage) ───
         $providerIds = array_unique(array_column($rows, 'provider_id'));
@@ -177,7 +188,9 @@ class SearchService
                 trustTier:        $trustTier,
                 p50Mins:          $p50Mins,
                 daysInactive:     $daysInactive,
-                distanceKm:       $hasLocation ? (float) ($row->distance_m ?? 0.0) / 1000.0 : null,
+                // null (no delivery location, or a coordless provider matched by
+                // region at a wider tier) → proximity stays neutral, never max.
+                distanceKm:       ($hasLocation && $row->distance_m !== null) ? (float) $row->distance_m / 1000.0 : null,
                 // §1.6 per-category decay constant (categories.proximity_d0_km)
                 d0Km:             isset($row->proximity_d0_km) ? (float) $row->proximity_d0_km : null,
                 completedJobs:    $completedJobs,
@@ -328,10 +341,47 @@ class SearchService
 
     // ── Private helpers ──────────────────────────────────────────────────────
 
+    /** Trim a region param to a non-empty string, or null. */
+    private function cleanParam(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+        $value = trim($value);
+
+        return $value === '' ? null : $value;
+    }
+
+    /**
+     * Pick the tightest geo tier to include: the smallest tier whose cumulative
+     * candidate count (tier 0..t) clears the widen target. Rows are pre-ordered
+     * by tier, so this is "widen only as far as needed". Returns 3 (national)
+     * when even the full set is below target — we still show everyone we have.
+     */
+    private function chooseGeoTier(array $rows, int $target): int
+    {
+        $counts = [0 => 0, 1 => 0, 2 => 0, 3 => 0];
+        foreach ($rows as $row) {
+            $counts[(int) ($row->geo_tier ?? 3)]++;
+        }
+
+        $cumulative = 0;
+        for ($tier = 0; $tier <= 3; $tier++) {
+            $cumulative += $counts[$tier];
+            if ($cumulative >= $target) {
+                return $tier;
+            }
+        }
+
+        return 3;
+    }
+
     private function fetchCandidates(
         ?float  $lat,
         ?float  $lng,
-        float   $maxRadiusKm,
+        ?string $dWard,
+        ?string $dCity,
+        ?string $dProvince,
         ?int    $categoryId,
         ?string $region,
         ?array  $serviceIds,
@@ -352,23 +402,33 @@ class SearchService
             TrustTier::VERIFIED->jobCapZmw(),
         );
 
-        // When a delivery location is known, compute PostGIS distance and filter
-        // by provider travel radius. When unknown (browse feed), skip PostGIS
-        // entirely and rank by quality signals instead.
+        // v3.1 §4.4 — no radius filter. Distance is still computed when a
+        // delivery location is known, but only as a SOFT ranking signal (§1.6);
+        // it never gates candidacy. Geography is handled by the geo_tier column
+        // (widen area → city → province → national) and the ORDER BY below.
         if ($hasLocation) {
             $point         = "ST_GeogFromText('POINT({$lng} {$lat})')";
             $providerPoint = "ST_GeogFromText('POINT(' || pp.base_location_lng || ' ' || pp.base_location_lat || ')')";
-            $distanceCol   = "ST_Distance({$providerPoint}, {$point}) AS distance_m,";
-            $locationConds = "AND pp.base_location_lat IS NOT NULL
-              AND pp.base_location_lng IS NOT NULL
-              -- v3.1 §4.4: distance(p.base_location, L) ≤ p.service_radius_km AND ≤ MAX_SEARCH_RADIUS_KM
-              AND ST_DWithin({$providerPoint}, {$point}, LEAST(pp.service_radius_km, ?) * 1000)";
-            $orderBy       = 'ORDER BY distance_m ASC';
+            $distanceCol   = "CASE
+                WHEN pp.base_location_lat IS NOT NULL AND pp.base_location_lng IS NOT NULL
+                THEN ST_Distance({$providerPoint}, {$point}) END AS distance_m,";
+            $orderBy       = 'ORDER BY geo_tier ASC, distance_m ASC NULLS LAST';
         } else {
             $distanceCol   = 'NULL AS distance_m,';
-            $locationConds = '';
-            $orderBy       = 'ORDER BY pp.trust_score DESC, u.r_raw DESC';
+            $orderBy       = 'ORDER BY geo_tier ASC, pp.trust_score DESC, u.r_raw DESC';
         }
+
+        // geo_tier 0 = same ward (area), 1 = same city/town, 2 = same province,
+        // 3 = national — all within the delivery province where relevant. When
+        // the delivery region is unknown, every candidate falls to tier 3.
+        // Casts are required: a bare `?` in `? IS NOT NULL` has no inferable
+        // type (Postgres 42P18), so every region placeholder is ::text.
+        $geoTierCol = 'CASE
+            WHEN ?::text IS NOT NULL AND lower(s.region_province) = lower(?::text) AND lower(s.region_ward) = lower(?::text) THEN 0
+            WHEN ?::text IS NOT NULL AND lower(s.region_province) = lower(?::text) AND lower(s.region_city) = lower(?::text) THEN 1
+            WHEN ?::text IS NOT NULL AND lower(s.region_province) = lower(?::text) THEN 2
+            ELSE 3
+          END AS geo_tier,';
 
         // v3.2 §1.5 — a promo slot is auctioned per category × region, so it
         // only matches when the search carries a region; without that context
@@ -377,10 +437,16 @@ class SearchService
             ? 'AND ps.region = ?'
             : 'AND 1 = 0';
 
-        $bindings = [];
+        // geo_tier bindings come first — the CASE sits in the SELECT, ahead of
+        // the promo JOIN and the WHERE clause.
+        $bindings = [
+            $dWard, $dProvince, $dWard,   // tier 0: ward guard, province, ward
+            $dCity, $dProvince, $dCity,   // tier 1: city guard, province, city
+            $dProvince, $dProvince,       // tier 2: province guard, province
+        ];
 
         if ($region !== null) {
-            $bindings[] = $region; // JOIN binding — must precede WHERE bindings
+            $bindings[] = $region; // promo JOIN binding — precedes WHERE bindings
         }
 
         $sql = "
@@ -395,6 +461,7 @@ class SearchService
                 s.status,
                 ST_Y(s.service_location::geometry)  AS latitude,
                 ST_X(s.service_location::geometry)  AS longitude,
+                {$geoTierCol}
                 {$distanceCol}
                 u.r_raw,
                 u.r_decayed,
@@ -448,14 +515,9 @@ class SearchService
                     AND  idoc.doc_number_hash IS NOT NULL
                     AND  (fd.expires_at IS NULL OR fd.expires_at > NOW())
               )
-              {$locationConds}
         ";
 
         $bindings[] = $trustFloor;
-
-        if ($hasLocation) {
-            $bindings[] = $maxRadiusKm;
-        }
 
         if ($categoryId !== null) {
             $sql       .= ' AND s.category_id = ?';
@@ -520,6 +582,9 @@ class SearchService
             return DB::select($sql, $bindings);
         } catch (\Throwable $e) {
             Log::error('SearchService::fetchCandidates failed', ['error' => $e->getMessage()]);
+            if (app()->environment('testing')) {
+                throw $e; // surface SQL/binding errors in tests instead of an empty page
+            }
             return [];
         }
     }

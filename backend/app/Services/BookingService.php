@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use App\Contracts\PaymentGateway;
+use App\Contracts\TrustEngine;
 use App\Enums\ErrorCode;
 use App\Enums\TrustTier;
 use App\Events\BookingAccepted;
@@ -32,23 +34,22 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Manages the unified booking lifecycle.
+ * Channel-agnostic booking lifecycle — escrow-first.
  *
- * DIRECT mode (default — config('booking.payment_mode')):
- *   create → REQUESTED → ACCEPTED → IN_PROGRESS → DELIVERED → COMPLETED
- *          ↗ QUOTED (provider proposes alternate price) → ACCEPTED
+ * New bookings (escrow):
+ *   create → REQUESTED → QUOTED? → FUNDS_HELD → IN_PROGRESS → DELIVERED → COMPLETED → DISBURSED
  *          ↘ DECLINED / EXPIRED / CANCELLED / NO_SHOW / DISPUTED
- *   No MoMo calls, no fund custody. Commission ledger = UNCOLLECTED (shadow revenue).
  *
- * ESCROW mode (dormant — activate via PAYMENT_MODE=ESCROW):
- *   create → PENDING_PAYMENT → FUNDS_HELD → IN_PROGRESS → DELIVERED → COMPLETED → DISBURSED
- *          ↘ AWAITING_KYC / CANCELLED / DISPUTED / CHARGEBACK_PENDING
+ * Legacy DIRECT bookings (legacy_payment_mode = 'DIRECT') retain their
+ * original transitions for backward compatibility.
  */
 class BookingService
 {
     public function __construct(
         private readonly BookingConflictService   $conflict,
         private readonly PaymentService           $payment,
+        private readonly PaymentGateway           $gateway,
+        private readonly TrustEngine              $trust,
         private readonly CommissionService        $commission,
         private readonly InsuranceReserveService  $reserve,
         private readonly PersonalizationService   $personalization,
@@ -56,7 +57,7 @@ class BookingService
         private readonly NotificationDispatcher   $notifications,
     ) {}
 
-    // ── Create ───────────────────────────────────────────────────────────────
+    // ── Create (escrow-first) ───────────────────────────────────────────────
 
     public function create(User $buyer, array $data): Booking
     {
@@ -65,7 +66,8 @@ class BookingService
             throw new NotFoundException('Service');
         }
 
-        $provider = User::find($service->provider_id);
+        $providerId = $data['provider_id'] ?? $service->provider_id;
+        $provider = User::find($providerId);
         if (! $provider) {
             throw new NotFoundException('Provider');
         }
@@ -85,6 +87,16 @@ class BookingService
 
         if ($profile->trust_tier < 1) {
             throw new ApiException(ErrorCode::TIER_EXCEEDED, 'This provider has not completed identity verification yet.');
+        }
+
+        // Risk-tier eligibility gate — server-enforced
+        $eligibility = $this->trust->checkEligibility($provider->id, $service->id);
+        if (! $eligibility['eligible']) {
+            $missing = implode(', ', $eligibility['missing']);
+            throw new ApiException(
+                ErrorCode::TIER_EXCEEDED,
+                "This provider does not meet the eligibility requirements for this service (missing: {$missing}).",
+            );
         }
 
         // Compute the correct booking amount based on pricing model + add-ons.
@@ -130,80 +142,39 @@ class BookingService
             availabilityMatrix: $profile->availability_matrix ?? [],
         );
 
-        $mode = config('booking.payment_mode', 'DIRECT');
+        $channel = $data['channel'] ?? 'APP';
 
-        if ($mode === 'DIRECT') {
-            return $this->createDirect($buyer, $provider, $service, $data, $bookingAmount);
-        }
-
-        return $this->createEscrow($buyer, $provider, $service, $data, $bookingAmount);
+        return $this->createEscrowBooking($buyer, $provider, $service, $data, $bookingAmount, $channel);
     }
 
-    private function createDirect(User $buyer, User $provider, Service $service, array $data, float $amount): Booking
-    {
-        $expiresAt = now()->addHours(config('booking.response_window_hours', 24));
-        $addonIds  = ! empty($data['addon_ids']) ? json_encode(array_map('intval', $data['addon_ids'])) : null;
-        $notes     = isset($data['notes']) && trim($data['notes']) !== '' ? trim($data['notes']) : null;
+    private function createEscrowBooking(
+        User $buyer, User $provider, Service $service, array $data, float $amount, string $channel,
+    ): Booking {
+        $protectionFee = $this->commission->buyerProtectionFee($amount, $buyer->id, $provider->id);
+        $addonIds      = ! empty($data['addon_ids']) ? json_encode(array_map('intval', $data['addon_ids'])) : null;
+        $notes         = isset($data['notes']) && trim($data['notes']) !== '' ? trim($data['notes']) : null;
+        $expiresAt     = now()->addHours(config('booking.response_window_hours', 24));
 
-        $booking = DB::transaction(function () use ($buyer, $provider, $service, $data, $amount, $expiresAt, $addonIds, $notes) {
+        // Pre-compute the commission split for escrow
+        $commissionPreview = $this->commission->calculate(
+            gross:      $amount,
+            categoryId: (int) $service->category_id,
+            tier:       (int) ($provider->providerProfile?->trust_tier ?? 1),
+            providerId: $provider->id,
+            buyerId:    $buyer->id,
+        );
+
+        $booking = DB::transaction(function () use (
+            $buyer, $provider, $service, $data, $amount, $protectionFee,
+            $addonIds, $notes, $expiresAt, $channel, $commissionPreview,
+        ) {
             $id = DB::selectOne("
                 INSERT INTO bookings
                     (id, buyer_id, provider_id, service_id,
                      amount, buyer_protection_fee,
                      payment_mode, status, expires_at,
-                     scheduled_start, scheduled_end,
-                     delivery_location,
-                     delivery_location_label, delivery_location_region, delivery_location_source,
-                     notes, selected_addon_ids,
-                     created_at, updated_at)
-                VALUES
-                    (gen_random_uuid(), ?, ?, ?,
-                     ?, 0,
-                     'DIRECT', 'REQUESTED', ?::timestamptz,
-                     ?::timestamptz, ?::timestamptz,
-                     ST_GeogFromText('POINT(' || ? || ' ' || ? || ')'),
-                     ?, ?, ?,
-                     ?, ?::jsonb,
-                     NOW(), NOW())
-                RETURNING id
-            ", [
-                $buyer->id, $provider->id, $service->id,
-                $amount,
-                $expiresAt->toIso8601String(),
-                $data['scheduled_start'],
-                $data['scheduled_end'],
-                $data['delivery_lng'],
-                $data['delivery_lat'],
-                $data['delivery_location_label']  ?? null,
-                $data['delivery_location_region'] ?? null,
-                $data['delivery_location_source'] ?? null,
-                $notes,
-                $addonIds,
-            ])->id;
-
-            return $this->findOrFail($id, $buyer);
-        });
-
-        // Side effects AFTER commit — failures here never orphan the booking
-        $this->notify(new BookingRequested($booking, $this->buyerLabel($buyer)));
-        ExpireBookingJob::dispatch($booking->id)
-            ->delay(now()->addHours(config('booking.response_window_hours', 24)));
-
-        return $booking;
-    }
-
-    private function createEscrow(User $buyer, User $provider, Service $service, array $data, float $amount): Booking
-    {
-        $protectionFee = $this->commission->buyerProtectionFee($amount, $buyer->id, $provider->id);
-        $addonIds      = ! empty($data['addon_ids']) ? json_encode(array_map('intval', $data['addon_ids'])) : null;
-        $notes         = isset($data['notes']) && trim($data['notes']) !== '' ? trim($data['notes']) : null;
-
-        return DB::transaction(function () use ($buyer, $provider, $service, $data, $amount, $protectionFee, $addonIds, $notes) {
-            $id = DB::selectOne("
-                INSERT INTO bookings
-                    (id, buyer_id, provider_id, service_id,
-                     amount, buyer_protection_fee,
-                     payment_mode, status,
+                     commission_split_zmw, provider_split_zmw,
+                     channel,
                      scheduled_start, scheduled_end,
                      delivery_location,
                      delivery_location_label, delivery_location_region, delivery_location_source,
@@ -212,7 +183,9 @@ class BookingService
                 VALUES
                     (gen_random_uuid(), ?, ?, ?,
                      ?, ?,
-                     'ESCROW', 'PENDING_PAYMENT',
+                     'ESCROW', 'REQUESTED', ?::timestamptz,
+                     ?, ?,
+                     ?,
                      ?::timestamptz, ?::timestamptz,
                      ST_GeogFromText('POINT(' || ? || ' ' || ? || ')'),
                      ?, ?, ?,
@@ -222,6 +195,10 @@ class BookingService
             ", [
                 $buyer->id, $provider->id, $service->id,
                 $amount, $protectionFee,
+                $expiresAt->toIso8601String(),
+                round($commissionPreview['commission'] + $commissionPreview['vat'], 2),
+                round($commissionPreview['net_to_provider'], 2),
+                $channel,
                 $data['scheduled_start'],
                 $data['scheduled_end'],
                 $data['delivery_lng'],
@@ -235,6 +212,12 @@ class BookingService
 
             return $this->findOrFail($id, $buyer);
         });
+
+        $this->notify(new BookingRequested($booking, $this->buyerLabel($buyer)));
+        ExpireBookingJob::dispatch($booking->id)
+            ->delay(now()->addHours(config('booking.response_window_hours', 24)));
+
+        return $booking;
     }
 
     // ── List ─────────────────────────────────────────────────────────────────
@@ -258,20 +241,17 @@ class BookingService
     /**
      * §6.8 — incoming requests for the provider dashboard.
      *
-     * DIRECT:  groups REQUESTED+QUOTED as "new" (need response),
-     *          ACCEPTED+IN_PROGRESS as "scheduled" (committed work).
-     * ESCROW:  groups FUNDS_HELD as "new", IN_PROGRESS as "scheduled".
+     * Escrow: groups REQUESTED+QUOTED as "new" (need response),
+     *         FUNDS_HELD+IN_PROGRESS as "scheduled" (committed work).
+     * Legacy DIRECT: groups REQUESTED+QUOTED as "new",
+     *                ACCEPTED+IN_PROGRESS as "scheduled".
      */
     public function incomingRequests(User $provider): array
     {
         $profile = ProviderProfile::where('user_id', $provider->id)->first();
         $tier    = TrustTier::from($profile?->trust_tier ?? 0);
 
-        $mode = config('booking.payment_mode', 'DIRECT');
-
-        $activeStatuses = $mode === 'DIRECT'
-            ? ['REQUESTED', 'QUOTED', 'ACCEPTED', 'IN_PROGRESS']
-            : ['FUNDS_HELD', 'IN_PROGRESS'];
+        $activeStatuses = ['REQUESTED', 'QUOTED', 'ACCEPTED', 'FUNDS_HELD', 'IN_PROGRESS'];
 
         $bookings = Booking::with(['service.category', 'buyer'])
             ->where('provider_id', $provider->id)
@@ -284,43 +264,32 @@ class BookingService
             ->orderBy('scheduled_start')
             ->get();
 
-        $entries = $bookings->map(function (Booking $booking) use ($provider, $profile, $tier, $mode) {
+        $entries = $bookings->map(function (Booking $booking) use ($provider, $profile, $tier) {
             $gross = (float) ($booking->agreed_amount ?? $booking->amount);
+            $isLegacyDirect = $booking->legacy_payment_mode === 'DIRECT';
 
-            if ($mode === 'DIRECT') {
-                // In DIRECT, provider keeps the full agreed amount; show shadow commission rate.
-                $preview = $this->commission->calculate(
-                    gross:      $gross,
-                    categoryId: (int) ($booking->service->category_id ?? 0),
-                    tier:       $tier->value,
-                    providerId: $provider->id,
-                    buyerId:    $booking->buyer_id,
-                );
+            $preview = $this->commission->calculate(
+                gross:      $gross,
+                categoryId: (int) ($booking->service->category_id ?? 0),
+                tier:       $tier->value,
+                providerId: $provider->id,
+                buyerId:    $booking->buyer_id,
+            );
 
-                $statusLabel = match ($booking->status) {
-                    'REQUESTED' => 'New request — accept or decline',
-                    'QUOTED'    => 'Quote sent — awaiting buyer',
-                    'ACCEPTED'  => 'Accepted — start when ready',
-                    default     => 'In progress',
-                };
-            } else {
-                $preview = $this->commission->calculate(
-                    gross:      $gross,
-                    categoryId: (int) ($booking->service->category_id ?? 0),
-                    tier:       $tier->value,
-                    providerId: $provider->id,
-                    buyerId:    $booking->buyer_id,
-                );
-
-                $statusLabel = $booking->status === 'FUNDS_HELD'
-                    ? 'Funds held in escrow — released when the job is marked complete'
-                    : 'In progress — escrow releases on completion';
-            }
+            $statusLabel = match ($booking->status) {
+                'REQUESTED'   => 'New request — respond or decline',
+                'QUOTED'      => 'Quote sent — awaiting customer',
+                'ACCEPTED'    => 'Accepted — start when ready',
+                'FUNDS_HELD'  => 'Funds held in escrow — start when ready',
+                'IN_PROGRESS' => 'In progress',
+                default       => $booking->status,
+            };
 
             return [
                 'booking_id'      => $booking->id,
-                'payment_mode'    => $booking->payment_mode ?? $mode,
+                'payment_mode'    => $isLegacyDirect ? 'DIRECT' : 'ESCROW',
                 'status'          => $booking->status,
+                'channel'         => $booking->channel ?? 'APP',
                 'service_title'   => $booking->service?->title,
                 'pricing_model'   => $booking->service?->pricing_model,
                 'scheduled_start' => $booking->scheduled_start?->toIso8601String(),
@@ -329,7 +298,7 @@ class BookingService
                 'delivery_region' => $booking->delivery_location_region,
                 'distance_km'     => $this->distanceKm($profile, $booking->delivery_lat, $booking->delivery_lng),
                 'gross_zmw'       => round($gross, 2),
-                'net_zmw'         => $mode === 'DIRECT' ? round($gross, 2) : round($preview['net_to_provider'], 2),
+                'net_zmw'         => $isLegacyDirect ? round($gross, 2) : round($preview['net_to_provider'], 2),
                 'commission_rate' => $preview['effective_rate'],
                 'escrow_label'    => $statusLabel,
                 'buyer_label'     => $this->buyerLabel($booking->buyer),
@@ -342,13 +311,8 @@ class BookingService
             ->where('calculated_at', '>=', now()->subDays(7))
             ->sum('net_to_provider');
 
-        if ($mode === 'DIRECT') {
-            $new       = $entries->whereIn('status', ['REQUESTED', 'QUOTED'])->values()->all();
-            $scheduled = $entries->whereIn('status', ['ACCEPTED', 'IN_PROGRESS'])->values()->all();
-        } else {
-            $new       = $entries->where('status', 'FUNDS_HELD')->values()->all();
-            $scheduled = $entries->where('status', 'IN_PROGRESS')->values()->all();
-        }
+        $new       = $entries->whereIn('status', ['REQUESTED', 'QUOTED'])->values()->all();
+        $scheduled = $entries->whereIn('status', ['ACCEPTED', 'FUNDS_HELD', 'IN_PROGRESS'])->values()->all();
 
         return [
             'weekly' => [
@@ -364,45 +328,25 @@ class BookingService
         ];
     }
 
-    // ── DIRECT mode transitions ───────────────────────────────────────────────
-
-    /**
-     * Provider accepts a REQUESTED booking at the listed price.
-     */
-    public function accept(string $id, User $provider): Booking
-    {
-        $booking = $this->loadAndAuthorize($id, $provider, 'provider_id');
-        $this->requireDirectMode($booking);
-        $this->machine->assertTransition($booking, 'ACCEPTED');
-
-        $booking->update([
-            'status'       => 'ACCEPTED',
-            'agreed_amount' => $booking->agreed_amount ?? $booking->amount,
-        ]);
-
-        $result = $this->findOrFail($id, $provider);
-        $this->notify(new BookingAccepted($result));
-        return $result;
-    }
+    // ── Escrow transitions ──────────────────────────────────────────────────
 
     /**
      * Provider sends an alternate-price quote — REQUESTED → QUOTED.
-     * The proposed price is stored in agreed_amount. Buyer calls acceptQuote()
-     * to confirm, or cancel() to decline.
      */
-    public function quote(string $id, User $provider, float $proposedAmount): Booking
+    public function quote(string $id, User $provider, float $proposedAmount, ?string $message = null): Booking
     {
         if ($proposedAmount <= 0) {
             throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Quote amount must be greater than zero.');
         }
 
         $booking = $this->loadAndAuthorize($id, $provider, 'provider_id');
-        $this->requireDirectMode($booking);
         $this->machine->assertTransition($booking, 'QUOTED');
 
         $booking->update([
-            'status'       => 'QUOTED',
-            'agreed_amount' => $proposedAmount,
+            'status'         => 'QUOTED',
+            'quoted_amount'  => $proposedAmount,
+            'agreed_amount'  => $proposedAmount,
+            'quote_message'  => $message,
         ]);
 
         $result = $this->findOrFail($id, $provider);
@@ -411,26 +355,11 @@ class BookingService
     }
 
     /**
-     * Buyer accepts a provider's quote — QUOTED → ACCEPTED.
-     */
-    public function acceptQuote(string $id, User $buyer): Booking
-    {
-        $booking = $this->loadAndAuthorize($id, $buyer, 'buyer_id');
-        $this->requireDirectMode($booking);
-        $this->machine->assertTransition($booking, 'ACCEPTED');
-
-        $booking->update(['status' => 'ACCEPTED']);
-
-        return $this->findOrFail($id, $buyer);
-    }
-
-    /**
-     * Provider declines a REQUESTED booking — REQUESTED → DECLINED.
+     * Provider declines a REQUESTED/QUOTED booking.
      */
     public function decline(string $id, User $provider): Booking
     {
         $booking = $this->loadAndAuthorize($id, $provider, 'provider_id');
-        $this->requireDirectMode($booking);
         $this->machine->assertTransition($booking, 'DECLINED');
 
         $booking->update(['status' => 'DECLINED']);
@@ -441,13 +370,91 @@ class BookingService
     }
 
     /**
-     * Record that direct payment was made/received (DIRECT mode only).
-     *
-     * Two-party + informational: each side confirms independently. A single tap
-     * only records the calling party's confirmation (provider_marked_paid_at OR
-     * customer_marked_paid_at); the booking is "fully settled" only when BOTH are
-     * set. `payment_status` keeps its legacy "at least one side marked" meaning so
-     * other surfaces (customer bookings list) are unaffected. No money moves.
+     * Buyer confirms and holds funds — REQUESTED/QUOTED → FUNDS_HELD.
+     * This is the escrow payment step: customer pays via gateway, funds held.
+     */
+    public function holdFunds(string $id, User $buyer): Booking
+    {
+        $booking = $this->loadAndAuthorize($id, $buyer, 'buyer_id');
+        $booking->load(['buyer', 'service', 'provider.providerProfile']);
+
+        $buyerPhone = $booking->buyer->phone
+            ?? throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Your account has no phone number on file.');
+
+        $amount          = (float) ($booking->agreed_amount ?? $booking->amount);
+        $commissionSplit = (float) ($booking->commission_split_zmw ?? 0);
+        $providerSplit   = (float) ($booking->provider_split_zmw ?? $amount - $commissionSplit);
+
+        $isAsync = config('pawapay.enabled', false);
+
+        if ($isAsync) {
+            $this->machine->assertTransition($booking, 'PENDING_PAYMENT');
+        } else {
+            $this->machine->assertTransition($booking, 'FUNDS_HELD');
+        }
+
+        $holdRef = $this->gateway->holdFunds(
+            $buyerPhone, $amount + (float) $booking->buyer_protection_fee,
+            $booking->id, $commissionSplit, $providerSplit,
+        );
+
+        if ($isAsync) {
+            // PawaPay: deposit initiated, MoMo prompt sent to customer.
+            // Callback will advance to FUNDS_HELD when customer confirms.
+            $booking->update([
+                'status'          => 'PENDING_PAYMENT',
+                'escrow_hold_ref' => $holdRef,
+                'agreed_amount'   => $amount,
+            ]);
+        } else {
+            // Stub: instant success.
+            $booking->update([
+                'status'          => 'FUNDS_HELD',
+                'escrow_hold_ref' => $holdRef,
+                'agreed_amount'   => $amount,
+            ]);
+        }
+
+        return $this->findOrFail($id, $buyer);
+    }
+
+    // ── Legacy DIRECT transitions (backward compat for migrated bookings) ──
+
+    /**
+     * Provider accepts a legacy DIRECT booking — REQUESTED → ACCEPTED.
+     */
+    public function accept(string $id, User $provider): Booking
+    {
+        $booking = $this->loadAndAuthorize($id, $provider, 'provider_id');
+        $this->requireLegacyDirect($booking);
+        $this->machine->assertTransition($booking, 'ACCEPTED');
+
+        $booking->update([
+            'status'        => 'ACCEPTED',
+            'agreed_amount' => $booking->agreed_amount ?? $booking->amount,
+        ]);
+
+        $result = $this->findOrFail($id, $provider);
+        $this->notify(new BookingAccepted($result));
+        return $result;
+    }
+
+    /**
+     * Buyer accepts a provider's quote on a legacy DIRECT booking — QUOTED → ACCEPTED.
+     */
+    public function acceptQuote(string $id, User $buyer): Booking
+    {
+        $booking = $this->loadAndAuthorize($id, $buyer, 'buyer_id');
+        $this->requireLegacyDirect($booking);
+        $this->machine->assertTransition($booking, 'ACCEPTED');
+
+        $booking->update(['status' => 'ACCEPTED']);
+
+        return $this->findOrFail($id, $buyer);
+    }
+
+    /**
+     * Record that direct payment was made/received (legacy DIRECT mode only).
      */
     public function markPaid(string $id, User $user): Booking
     {
@@ -460,7 +467,7 @@ class BookingService
             throw new ForbiddenException('You are not party to this booking.');
         }
 
-        $this->requireDirectMode($booking);
+        $this->requireLegacyDirect($booking);
 
         if (\in_array($booking->status, ['CANCELLED', 'DECLINED', 'EXPIRED'], true)) {
             throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Cannot record payment for a closed booking.');
@@ -470,7 +477,6 @@ class BookingService
             'payment_status'    => 'MARKED_PAID',
             'payment_marked_by' => $user->id,
             'payment_marked_at' => now(),
-            // Record only the calling party's side — never both from one tap.
             $isProvider ? 'provider_marked_paid_at' : 'customer_marked_paid_at' => now(),
         ]);
 
@@ -493,7 +499,7 @@ class BookingService
         }
     }
 
-    // ── ESCROW-only transition ────────────────────────────────────────────────
+    // ── Legacy ESCROW-only transition (kept for old PENDING_PAYMENT bookings) ─
 
     public function confirmPayment(string $id, User $buyer): Booking
     {
@@ -535,8 +541,8 @@ class BookingService
     /**
      * Buyer confirms delivery — DELIVERED → COMPLETED.
      *
-     * DIRECT: records UNCOLLECTED commission; no payout call.
-     * ESCROW: records COLLECTED commission; initiates payout hold.
+     * Escrow: records COLLECTED commission; sets payout hold timer.
+     * Legacy DIRECT: records UNCOLLECTED commission; no payout.
      */
     public function complete(string $id, User $buyer): Booking
     {
@@ -545,9 +551,7 @@ class BookingService
 
         $booking->load(['service.category', 'provider.providerProfile']);
 
-        $mode = $booking->payment_mode ?? 'ESCROW';
-
-        if ($mode === 'DIRECT') {
+        if ($this->machine->isLegacyDirect($booking)) {
             DB::transaction(function () use ($booking) {
                 $booking->update([
                     'status'       => 'COMPLETED',
@@ -562,7 +566,7 @@ class BookingService
             return $result;
         }
 
-        // ESCROW: payout hold logic
+        // Escrow: payout hold logic
         $tier       = (int) ($booking->provider->providerProfile->trust_tier ?? 1);
         $holdHours  = TrustTier::from($tier)->payoutHoldHours();
         $eligibleAt = now()->addHours($holdHours);
@@ -584,10 +588,43 @@ class BookingService
         $this->notify(new BookingCompleted($booking));
 
         if ($eligibleAt->isPast()) {
-            $this->payment->initiatePayout($booking->fresh()->load('service', 'provider'));
+            $this->disbursePayout($booking->fresh()->load('service', 'provider'));
         }
 
         return $this->findOrFail($id, $buyer);
+    }
+
+    /**
+     * Release escrow funds to the provider via the PaymentGateway.
+     */
+    private function disbursePayout(Booking $booking): void
+    {
+        if (! $booking->escrow_hold_ref) {
+            // Fall back to legacy payment service for old ESCROW bookings
+            $this->payment->initiatePayout($booking);
+            return;
+        }
+
+        $profile = $booking->provider->providerProfile;
+        if (! $profile?->momo_number) {
+            Log::error('BookingService::disbursePayout — provider has no MoMo number', ['booking_id' => $booking->id]);
+            return;
+        }
+
+        $amount = (float) ($booking->provider_split_zmw ?? $booking->amount);
+
+        $success = $this->gateway->releaseFunds(
+            $booking->escrow_hold_ref,
+            $profile->momo_number,
+            $amount,
+            $booking->id,
+        );
+
+        if ($success) {
+            $booking->update(['status' => 'DISBURSED', 'disbursed_at' => now()]);
+        } else {
+            Log::error('BookingService::disbursePayout — gateway release failed', ['booking_id' => $booking->id]);
+        }
     }
 
     /**
@@ -627,7 +664,7 @@ class BookingService
     }
 
     /**
-     * Provider requests instant payout — ESCROW only (Tier 3+, waives hold for 1% fee).
+     * Provider requests instant payout — escrow only (Tier 3+, waives hold for 1% fee).
      */
     public function requestInstantPayout(string $id, User $provider): Booking
     {
@@ -637,8 +674,8 @@ class BookingService
             throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Instant payout is only available for COMPLETED bookings.');
         }
 
-        if (($booking->payment_mode ?? 'ESCROW') === 'DIRECT') {
-            throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Instant payout is not available in DIRECT mode.');
+        if ($this->machine->isLegacyDirect($booking)) {
+            throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Instant payout is not available for legacy DIRECT bookings.');
         }
 
         $profile = ProviderProfile::where('user_id', $provider->id)->firstOrFail();
@@ -653,7 +690,8 @@ class BookingService
             'payout_eligible_at'       => now(),
         ]);
 
-        $this->payment->initiatePayout($booking->fresh()->load('service', 'provider'), instantPayout: true);
+        $booking = $booking->fresh()->load('service', 'provider.providerProfile');
+        $this->disbursePayout($booking);
 
         return $this->findOrFail($id, $provider);
     }
@@ -661,16 +699,14 @@ class BookingService
     /**
      * Buyer cancels.
      *
-     * DIRECT: allowed from REQUESTED / QUOTED / ACCEPTED; no refund.
-     * ESCROW: allowed from PENDING_PAYMENT / FUNDS_HELD; refunds if funds held.
+     * Legacy DIRECT: allowed from REQUESTED / QUOTED / ACCEPTED; no refund.
+     * Escrow: allowed from REQUESTED / QUOTED / FUNDS_HELD; refunds if funds held.
      */
     public function cancel(string $id, User $buyer): Booking
     {
         $booking = $this->loadAndAuthorize($id, $buyer, 'buyer_id');
 
-        $mode = $booking->payment_mode ?? 'ESCROW';
-
-        if ($mode === 'DIRECT') {
+        if ($this->machine->isLegacyDirect($booking)) {
             if (! \in_array($booking->status, ['REQUESTED', 'QUOTED', 'ACCEPTED'], true)) {
                 throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Booking can only be cancelled before the provider starts work.');
             }
@@ -678,13 +714,17 @@ class BookingService
             return $this->findOrFail($id, $buyer);
         }
 
-        // ESCROW
-        if (! \in_array($booking->status, ['PENDING_PAYMENT', 'FUNDS_HELD'], true)) {
+        // Escrow cancellation
+        if (! \in_array($booking->status, ['REQUESTED', 'QUOTED', 'FUNDS_HELD'], true)) {
             throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Booking can only be cancelled before it starts.');
         }
 
         DB::transaction(function () use ($booking) {
-            if ($booking->status === 'FUNDS_HELD') {
+            if ($booking->status === 'FUNDS_HELD' && $booking->escrow_hold_ref) {
+                $buyerPhone = $booking->buyer->phone ?? '';
+                $amount     = (float) $booking->amount + (float) $booking->buyer_protection_fee;
+                $this->gateway->refund($booking->escrow_hold_ref, $buyerPhone, $amount);
+            } elseif ($booking->status === 'FUNDS_HELD') {
                 $this->payment->initiateRefund($booking);
             }
             $booking->update(['status' => 'CANCELLED']);
@@ -733,16 +773,17 @@ class BookingService
     // ── Payout batch (ESCROW only) ────────────────────────────────────────────
 
     /**
-     * Process COMPLETED ESCROW bookings whose payout hold has expired.
-     * DIRECT bookings are skipped — there is no platform payout in DIRECT mode.
+     * Process COMPLETED escrow bookings whose payout hold has expired.
+     * Legacy DIRECT bookings are skipped.
      */
     public function processDuePayouts(): array
     {
         $due = Booking::where('status', 'COMPLETED')
             ->where('payment_mode', 'ESCROW')
+            ->whereNull('legacy_payment_mode')
             ->where('payout_eligible_at', '<=', now())
             ->whereNull('disbursed_at')
-            ->with(['service', 'provider'])
+            ->with(['service', 'provider.providerProfile'])
             ->get();
 
         $succeeded = 0;
@@ -750,8 +791,7 @@ class BookingService
 
         foreach ($due as $booking) {
             try {
-                $this->payment->initiatePayout($booking);
-                $booking->update(['status' => 'DISBURSED', 'disbursed_at' => now()]);
+                $this->disbursePayout($booking);
                 $succeeded++;
             } catch (\Throwable $e) {
                 $failed++;
@@ -837,12 +877,12 @@ class BookingService
         }
     }
 
-    private function requireDirectMode(Booking $booking): void
+    private function requireLegacyDirect(Booking $booking): void
     {
-        if (($booking->payment_mode ?? 'ESCROW') !== 'DIRECT') {
+        if (! $this->machine->isLegacyDirect($booking)) {
             throw new ApiException(
                 ErrorCode::VALIDATION_ERROR,
-                'This action is only available for DIRECT mode bookings.',
+                'This action is only available for legacy DIRECT bookings.',
             );
         }
     }

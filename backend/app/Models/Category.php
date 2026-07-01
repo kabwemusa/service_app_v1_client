@@ -15,6 +15,7 @@ class Category extends Model
         'icon',
         'is_active',
         'display_order',
+        'risk_tier',
         'commission_band',
         'commission_rates',
     ];
