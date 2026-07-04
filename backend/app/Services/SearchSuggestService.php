@@ -263,11 +263,13 @@ class SearchSuggestService
 
     private function servicePriceSubtitle(string $model, mixed $price): string
     {
-        if ($model === 'QUOTE' || $price === null) {
-            return 'By quote';
+        // Quote-first models carry no upfront price; HOURLY_CAPPED's base_price
+        // is the spend cap — the bounded worst case, never an open meter.
+        if (in_array($model, ['PROVIDER_SCOPE', 'QUOTE_DEPOSIT'], true) || $price === null) {
+            return 'Quoted after brief';
         }
         $fmt = 'ZMW ' . number_format((float) $price, 0);
-        return $model === 'HOURLY' ? "{$fmt}/hr" : "from {$fmt}";
+        return $model === 'HOURLY_CAPPED' ? "up to {$fmt}" : "from {$fmt}";
     }
 
     private function providerSubtitle(int $tier, ?float $distanceKm): string

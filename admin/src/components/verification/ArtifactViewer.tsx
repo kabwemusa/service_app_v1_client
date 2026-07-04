@@ -1,12 +1,12 @@
 ﻿'use client'
 
 import { useState } from 'react'
-import { ImageOff, Lock, FileText } from 'lucide-react'
+import { IoImageOutline, IoLockClosedOutline, IoDocumentTextOutline, IoOpenOutline } from 'react-icons/io5'
 import { cn } from '@/lib/utils'
 import type { VerificationArtifact, ArtifactKind } from '@/lib/api/verification'
 
 // Reviewer-only rendering of a KYC artifact (ID image, selfie, proof of
-// address, certificate, portfolio item). Handles slow/failed loads gracefully â€”
+// address, certificate, portfolio item). Handles slow/failed loads gracefully —
 // never a broken-image icon. Every artifact carries descriptive alt text.
 //
 // These images are visible ONLY inside this reviewer drawer. They are never
@@ -26,8 +26,37 @@ function ArtifactTile({ artifact }: { artifact: VerificationArtifact }) {
   const kindLabel = KIND_LABEL[artifact.kind]
   const alt = `${kindLabel}: ${artifact.label}`
 
+  // A single-copy ID can be a PDF scan — an <img> can't render it, so show an
+  // inline embed with an "open in new tab" affordance instead.
+  if (artifact.is_pdf) {
+    return (
+      <figure className="overflow-hidden rounded-sm border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/60">
+        <div className="relative aspect-[4/3] w-full">
+          <object data={artifact.url} type="application/pdf" aria-label={alt} className="size-full">
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-slate-400 dark:text-slate-500">
+              <IoDocumentTextOutline className="size-6" />
+              <span className="px-3 text-center text-xs">PDF preview unavailable</span>
+            </div>
+          </object>
+        </div>
+        <figcaption className="flex items-center gap-1.5 border-t border-slate-200 px-3 py-2 text-xs text-slate-600 dark:border-slate-700 dark:text-slate-300">
+          <IoDocumentTextOutline className="size-3.5 shrink-0 text-slate-400" />
+          <span className="truncate">{kindLabel} (PDF)</span>
+          <a
+            href={artifact.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-auto inline-flex shrink-0 items-center gap-1 text-teal-600 hover:underline dark:text-teal-400"
+          >
+            Open <IoOpenOutline className="size-3" />
+          </a>
+        </figcaption>
+      </figure>
+    )
+  }
+
   return (
-    <figure className="overflow-hidden rounded-lg border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/60">
+    <figure className="overflow-hidden rounded-sm border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/60">
       <div className="relative aspect-[4/3] w-full">
         {state !== 'error' && (
           // eslint-disable-next-line @next/next/no-img-element -- signed KYC URL, reviewer-only
@@ -51,14 +80,14 @@ function ArtifactTile({ artifact }: { artifact: VerificationArtifact }) {
           />
         )}
 
-        {/* Graceful failure â€” informative, never a broken image */}
+        {/* Graceful failure — informative, never a broken image */}
         {state === 'error' && (
           <div
             className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-slate-400 dark:text-slate-500"
             role="img"
-            aria-label={`${alt} â€” failed to load`}
+            aria-label={`${alt} — failed to load`}
           >
-            <ImageOff className="size-6" strokeWidth={1.5} />
+            <IoImageOutline className="size-6" />
             <span className="px-3 text-center text-xs">Artifact unavailable</span>
           </div>
         )}
@@ -66,9 +95,9 @@ function ArtifactTile({ artifact }: { artifact: VerificationArtifact }) {
 
       <figcaption className="flex items-center gap-1.5 border-t border-slate-200 px-3 py-2 text-xs text-slate-600 dark:border-slate-700 dark:text-slate-300">
         {artifact.kind === 'certificate' || artifact.kind === 'proof_of_address' ? (
-          <FileText className="size-3.5 shrink-0 text-slate-400" />
+          <IoDocumentTextOutline className="size-3.5 shrink-0 text-slate-400" />
         ) : (
-          <Lock className="size-3.5 shrink-0 text-slate-400" />
+          <IoLockClosedOutline className="size-3.5 shrink-0 text-slate-400" />
         )}
         <span className="truncate">{kindLabel}</span>
         {artifact.doc_type && (
@@ -90,12 +119,12 @@ export function ArtifactViewer({ artifacts }: { artifacts: VerificationArtifact[
           Submitted artifacts
         </h3>
         <span className="inline-flex items-center gap-1 text-xs text-slate-400">
-          <Lock className="size-3" /> Reviewer-only
+          <IoLockClosedOutline className="size-3" /> Reviewer-only
         </span>
       </div>
 
       {artifacts.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-slate-400 dark:border-slate-700">
+        <p className="rounded-sm border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-slate-400 dark:border-slate-700">
           No artifacts attached to this submission.
         </p>
       ) : (

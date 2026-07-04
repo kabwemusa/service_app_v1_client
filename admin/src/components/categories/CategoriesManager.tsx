@@ -3,15 +3,15 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  AlertTriangle,
-  ChevronDown,
-  ChevronRight,
-  GripVertical,
-  Plus,
-  Tag,
-  ArrowUp,
-  ArrowDown,
-} from 'lucide-react'
+  IoWarningOutline,
+  IoChevronDownOutline,
+  IoChevronForwardOutline,
+  IoReorderThreeOutline,
+  IoAddOutline,
+  IoPricetagOutline,
+  IoArrowUpOutline,
+  IoArrowDownOutline,
+} from 'react-icons/io5'
 import { FilterBar } from '@/components/ui/FilterBar'
 import { StatusPill } from '@/components/ui/StatusPill'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -196,7 +196,7 @@ export function CategoriesManager() {
     return (
       <div className="space-y-4">
         <h1 className="text-lg font-medium text-slate-900 dark:text-slate-100">Categories</h1>
-        <EmptyState title="Access denied" description="You do not have permission to manage categories." icon={Tag} />
+        <EmptyState title="Access denied" description="You do not have permission to manage categories." icon={IoPricetagOutline} />
       </div>
     )
   }
@@ -207,7 +207,7 @@ export function CategoriesManager() {
       <div className="flex items-center justify-between gap-3">
         <div>
           <h1 className="flex items-center gap-2 text-lg font-medium text-slate-900 dark:text-slate-100">
-            <Tag className="size-5 text-teal-600" />
+            <IoPricetagOutline className="size-5 text-teal-600" />
             Categories
             {!isLoading && (
               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-normal text-slate-500 dark:bg-slate-800 dark:text-slate-400">
@@ -216,31 +216,31 @@ export function CategoriesManager() {
             )}
           </h1>
           <p className="text-sm text-slate-500 dark:text-slate-400">
-            Hierarchical service categories with commission band assignments (v3 Â§8.1).
+            Hierarchical service categories with commission band assignments.
           </p>
         </div>
         <button
           type="button"
           onClick={openCreate}
-          className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-3 py-2 text-sm font-medium text-white hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 min-h-[44px]"
+          className="flex items-center gap-1.5 rounded-sm bg-teal-600 px-3 py-2 text-sm font-medium text-white hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 min-h-[44px]"
           aria-label="Add category"
         >
-          <Plus className="size-4" />
+          <IoAddOutline className="size-4" />
           Add category
         </button>
       </div>
 
-      {/* Band-less warning banner â€” non-dismissable while gap exists */}
+      {/* Band-less warning banner — non-dismissable while gap exists */}
       {!isLoading && bandlessCount > 0 && (
         <div
           role="alert"
           aria-live="polite"
-          className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm dark:border-amber-800 dark:bg-amber-950/30"
+          className="flex items-start gap-3 rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm dark:border-amber-800 dark:bg-amber-950/30"
         >
-          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+          <IoWarningOutline className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
           <span className="text-amber-800 dark:text-amber-300">
             <strong>{bandlessCount} {bandlessCount === 1 ? 'category has' : 'categories have'} no commission band</strong>
-            {' '}â€” set before they can record revenue (v3 Â§8.1).{' '}
+            {' '}— set before they can record revenue.{' '}
             <button
               type="button"
               className="underline hover:no-underline"
@@ -256,7 +256,7 @@ export function CategoriesManager() {
       <FilterBar
         search={search}
         onSearchChange={(v) => setSearch(v)}
-        searchPlaceholder="Search categoriesâ€¦"
+        searchPlaceholder="Search categories…"
         filters={[
           {
             key: 'status',
@@ -269,7 +269,7 @@ export function CategoriesManager() {
       />
 
       {/* Tree table */}
-      <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+      <div className="overflow-x-auto rounded-sm border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800">
         <table className="w-full min-w-full text-sm" aria-label="Categories tree">
           <thead>
             <tr className="border-b border-slate-200 dark:border-slate-700">
@@ -296,8 +296,8 @@ export function CategoriesManager() {
                 <td colSpan={5} className="px-4 py-12">
                   <EmptyState
                     title={filter === 'needs_band' ? 'All categories have a commission band' : 'No categories found'}
-                    description={filter === 'needs_band' ? 'Great â€” no revenue gaps.' : 'Add a category to get started.'}
-                    icon={Tag}
+                    description={filter === 'needs_band' ? 'Great — no revenue gaps.' : 'Add a category to get started.'}
+                    icon={IoPricetagOutline}
                   />
                 </td>
               </tr>
@@ -333,7 +333,7 @@ export function CategoriesManager() {
   )
 }
 
-// â”€â”€ Individual row â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Individual row ──────────────────────────────────────────
 
 interface RowProps {
   row: AdminCategory & { depth: number; childCount: number }
@@ -370,14 +370,14 @@ function CategoryRow({
       {/* Reorder handle + arrows */}
       <td className="w-10 px-2 py-3">
         <div className="flex flex-col items-center gap-0.5">
-          <GripVertical className="size-3.5 text-slate-300 dark:text-slate-600" aria-hidden="true" />
+          <IoReorderThreeOutline className="size-3.5 text-slate-300 dark:text-slate-600" aria-hidden="true" />
           <button
             type="button"
             onClick={onMoveUp}
             className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700 min-h-[22px] min-w-[22px] flex items-center justify-center"
             aria-label={`Move "${row.name}" up`}
           >
-            <ArrowUp className="size-3" />
+            <IoArrowUpOutline className="size-3" />
           </button>
           <button
             type="button"
@@ -385,7 +385,7 @@ function CategoryRow({
             className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700 min-h-[22px] min-w-[22px] flex items-center justify-center"
             aria-label={`Move "${row.name}" down`}
           >
-            <ArrowDown className="size-3" />
+            <IoArrowDownOutline className="size-3" />
           </button>
         </div>
       </td>
@@ -405,9 +405,9 @@ function CategoryRow({
               aria-expanded={isExpanded}
             >
               {isExpanded ? (
-                <ChevronDown className="size-3.5" />
+                <IoChevronDownOutline className="size-3.5" />
               ) : (
-                <ChevronRight className="size-3.5" />
+                <IoChevronForwardOutline className="size-3.5" />
               )}
             </button>
           )}
@@ -450,7 +450,7 @@ function CategoryRow({
       <td className="px-4 py-3">
         {band ? (
           <StatusPill
-            label={rate ? `${bandLabel(band)} Â· ${rate}` : bandLabel(band)}
+            label={rate ? `${bandLabel(band)} · ${rate}` : bandLabel(band)}
             variant="info"
           />
         ) : (
@@ -464,7 +464,7 @@ function CategoryRow({
           type="button"
           onClick={onToggleStatus}
           aria-label={`${row.is_active ? 'Hide' : 'Activate'} "${row.name}"`}
-          className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700 min-h-[32px]"
+          className="flex items-center gap-1.5 rounded-sm border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700 min-h-[32px]"
         >
           <span
             className={cn(
@@ -482,7 +482,7 @@ function CategoryRow({
         <button
           type="button"
           onClick={onEdit}
-          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700 min-h-[32px]"
+          className="rounded-sm border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700 min-h-[32px]"
           aria-label={`Edit "${row.name}"`}
         >
           Edit

@@ -68,7 +68,7 @@ export interface ProviderRequestFeedEntry {
     id:            string;
     title:         string;
     base_price:    number | null;
-    pricing_model: 'FIXED' | 'HOURLY' | 'QUOTE';
+    pricing_model: 'OUTCOME_FIXED' | 'PROVIDER_SCOPE' | 'HOURLY_CAPPED' | 'QUOTE_DEPOSIT';
   };
   my_response: { id: string; type: 'ACCEPT' | 'QUOTE'; price_zmw: number } | null;
 }

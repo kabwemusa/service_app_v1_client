@@ -15,8 +15,12 @@ class SubmitDocumentRequest extends FormRequest
     {
         return [
             'doc_type'      => ['required', 'in:NRC,PASSPORT,DRIVERS_LICENSE'],
-            'document'      => ['required', 'file', 'image', 'max:5120', 'mimes:jpg,jpeg,png,webp,pdf'],
-            'document_back' => ['nullable', 'file', 'image', 'max:5120', 'mimes:jpg,jpeg,png,webp,pdf'],
+            // A government ID may be submitted as photo(s) OR a single scanned
+            // copy (PDF). NOTE: the `image` rule is deliberately NOT used here —
+            // it rejects PDFs; `mimes` (incl. pdf) is the real allow-list.
+            'document'      => ['required', 'file', 'max:8192', 'mimes:jpg,jpeg,png,webp,pdf'],
+            'document_back' => ['nullable', 'file', 'max:8192', 'mimes:jpg,jpeg,png,webp,pdf'],
+            // The selfie must be a photo (liveness face-match) — images only.
             'selfie'        => ['required', 'file', 'image', 'max:5120', 'mimes:jpg,jpeg,png,webp'],
         ];
     }

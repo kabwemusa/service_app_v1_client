@@ -25,9 +25,10 @@ class TestPaymentGateway implements PaymentGateway
         string $providerPhone,
         float  $amount,
         string $bookingId,
-    ): bool {
-        Log::info('TestPaymentGateway::releaseFunds — auto-released', compact('holdRef', 'providerPhone', 'amount', 'bookingId'));
-        return true;
+    ): ?string {
+        $ref = 'TEST-PAYOUT-' . Str::uuid();
+        Log::info('TestPaymentGateway::releaseFunds — auto-released', compact('holdRef', 'providerPhone', 'amount', 'bookingId', 'ref'));
+        return $ref;
     }
 
     public function refund(

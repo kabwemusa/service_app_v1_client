@@ -8,6 +8,7 @@ const ROLE_LABEL: Record<AdminRole, string> = {
   moderator:    'Moderator',
   support:      'Support',
   analyst:      'Analyst',
+  ops:          'Ops',
 }
 
 const ROLE_CLASSES: Record<AdminRole, string> = {
@@ -17,6 +18,7 @@ const ROLE_CLASSES: Record<AdminRole, string> = {
   moderator:    'bg-blue-50 text-blue-700 border-blue-200',
   support:      'bg-slate-50 text-slate-600 border-slate-200',
   analyst:      'bg-purple-50 text-purple-700 border-purple-200',
+  ops:          'bg-orange-50 text-orange-700 border-orange-200',
 }
 
 interface RoleBadgeProps {

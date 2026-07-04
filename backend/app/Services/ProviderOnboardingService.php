@@ -161,23 +161,42 @@ class ProviderOnboardingService
             throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Choose what you offer before adding a service.');
         }
 
-        $pricingModel = $data['pricing_model'] ?? 'FIXED';
+        $pricingModel = $data['pricing_model'] ?? 'OUTCOME_FIXED';
 
         $service = DB::transaction(function () use ($user, $profile, $categoryId, $data, $pricingModel) {
-            $service = Service::create([
+            $price = $data['price'] ?? null;
+
+            // Outcome-based pricing fields. The quick onboarding listing keeps
+            // it minimal: HOURLY_CAPPED gets the standard 1-hr min / 4-hr cap
+            // defaults and is flagged so the provider reviews the cap in the
+            // full editor; quote-first models carry no upfront price.
+            $pricing = match ($pricingModel) {
+                'HOURLY_CAPPED' => [
+                    'base_price'           => $price !== null ? round($price * 4, 2) : null,
+                    'hourly_rate'          => $price,
+                    'minimum_hours'        => 1,
+                    'cap_hours'            => 4,
+                    'cap_amount'           => $price !== null ? round($price * 4, 2) : null,
+                    'needs_pricing_review' => true,
+                ],
+                'PROVIDER_SCOPE' => ['base_price' => null, 'hourly_rate' => $price],
+                'QUOTE_DEPOSIT'  => ['base_price' => null, 'deposit_percent' => 30],
+                default          => ['base_price' => $price],
+            };
+
+            $service = Service::create(array_merge([
                 'provider_id'   => $user->id,
                 'category_id'   => $categoryId,
                 'title'         => $data['title'],
                 'description'   => $data['description'] ?? null,
                 'pricing_model' => $pricingModel,
-                'base_price'    => $pricingModel === 'QUOTE' ? null : ($data['price'] ?? null),
                 'status'        => 'ACTIVE',
-            ]);
+            ], $pricing));
 
             ProviderService::create([
                 'provider_id'   => $user->id,
                 'service_id'    => $service->id,
-                'price'         => $pricingModel === 'QUOTE' ? null : ($data['price'] ?? null),
+                'price'         => $service->base_price,
                 'pricing_model' => $pricingModel,
                 'status'        => 'ACTIVE',
             ]);

@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Enums\AccountState;
 use App\Enums\ErrorCode;
 use App\Enums\TrustTier;
+use App\Events\AccountModerated;
 use App\Exceptions\Api\ApiException;
 use App\Models\AdminUser;
 use App\Models\FraudDenylist;
@@ -41,7 +42,11 @@ class AdminUserService
 
     private const OPEN_DISPUTE_STATES = ['OPEN', 'UNDER_REVIEW', 'AWAITING_EVIDENCE'];
 
-    public function __construct(private readonly AuditedMutationService $audit) {}
+    public function __construct(
+        private readonly AuditedMutationService $audit,
+        private readonly AuthService $authService,
+        private readonly NotificationDispatcher $notifications,
+    ) {}
 
     // ── List ───────────────────────────────────────────────────────────────────
 
@@ -62,13 +67,21 @@ class AdminUserService
 
         // Search by name / phone / email / id
         if (!empty($filters['search'])) {
-            $term = '%' . $filters['search'] . '%';
-            $query->where(function ($w) use ($term, $filters) {
+            $search = $filters['search'];
+            $term   = '%' . $search . '%';
+            // u.id is a UUID column — comparing it against a non-UUID string
+            // throws in Postgres, so only add that clause when the search
+            // term is actually shaped like a UUID.
+            $isUuid = (bool) preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $search);
+
+            $query->where(function ($w) use ($term, $search, $isUuid) {
                 $w->where('u.legal_name', 'ilike', $term)
                   ->orWhere('pp.display_name', 'ilike', $term)
                   ->orWhere('u.email', 'ilike', $term)
-                  ->orWhere('u.phone', 'ilike', $term)
-                  ->orWhere('u.id', '=', $filters['search']);
+                  ->orWhere('u.phone', 'ilike', $term);
+                if ($isUuid) {
+                    $w->orWhere('u.id', '=', $search);
+                }
             });
         }
 
@@ -282,6 +295,8 @@ class AdminUserService
             mutation: fn () => $user->forceFill(['warned_at' => now()])->save(),
         );
 
+        $this->notifications->dispatch(new AccountModerated($user->id, 'warned', $reason));
+
         return $this->detail($user->fresh(), $actor);
     }
 
@@ -309,6 +324,17 @@ class AdminUserService
                 'suspended_until' => $until,
             ])->save(),
         );
+
+        // Immediate real-time effect: every active session is cut within seconds,
+        // regardless of the JWT's remaining TTL — see EnsureAccountActive.
+        $this->authService->invalidateAllSessions($user->id);
+
+        $this->notifications->dispatch(new AccountModerated(
+            $user->id,
+            'suspended',
+            $reason,
+            $until?->toFormattedDateString(),
+        ));
 
         return $this->detail($user->fresh(), $actor);
     }
@@ -343,6 +369,12 @@ class AdminUserService
             },
         );
 
+        // Immediate real-time effect: every active session is cut within seconds,
+        // regardless of the JWT's remaining TTL — see EnsureAccountActive.
+        $this->authService->invalidateAllSessions($user->id);
+
+        $this->notifications->dispatch(new AccountModerated($user->id, 'banned', $reason));
+
         return $this->detail($user->fresh(), $actor);
     }
 
@@ -365,6 +397,8 @@ class AdminUserService
                 'suspended_until' => null,
             ])->save(),
         );
+
+        $this->notifications->dispatch(new AccountModerated($user->id, 'reinstated', $reason));
 
         return $this->detail($user->fresh(), $actor);
     }

@@ -41,6 +41,8 @@ final class AdminCapabilities
         'manage:admins',
         'read:audit',
         'write:platform_params',
+        // WhatsApp & Conversation Ops module — nothing existing maps to it.
+        'platform.ops',
     ];
 
     /** Capabilities granted to each admin role. */
@@ -106,9 +108,14 @@ final class AdminCapabilities
             'read:reviews',
             'read:insights',
         ],
+
+        'ops' => [
+            'read:dashboard',
+            'platform.ops',
+        ],
     ];
 
-    public const ROLES = ['super_admin', 'trust_safety', 'finance', 'moderator', 'support', 'analyst'];
+    public const ROLES = ['super_admin', 'trust_safety', 'finance', 'moderator', 'support', 'analyst', 'ops'];
 
     /** Resolve the capability list for a role (empty for unknown roles). */
     public static function forRole(string $role): array

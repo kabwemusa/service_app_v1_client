@@ -12,6 +12,7 @@ import {
 import { Text, TouchableRipple } from 'react-native-paper';
 import { storageUrl } from '../../api/client';
 import { SearchResult } from '../../api/search';
+import { isQuoteFirstModel } from './RankedServiceCard';
 import { palette, radius as r, spacing } from '../../theme';
 import { fontFamily } from '../../theme/typography';
 
@@ -195,10 +196,10 @@ export const ServiceDiscoveryCard = React.memo(function ServiceDiscoveryCard({ r
         <View style={st.divider} />
 
         {/* ── 4. Book button ───────────────────────────────────────── */}
-        <Pressable onPress={onBook} style={st.bookRow} accessibilityRole="button" accessibilityLabel={result.pricing_model === 'QUOTE' ? 'Request quote' : 'Book now'}>
+        <Pressable onPress={onBook} style={st.bookRow} accessibilityRole="button" accessibilityLabel={isQuoteFirstModel(result.pricing_model) ? 'Get a quote' : 'Book now'}>
           <Ionicons name="calendar-outline" size={16} color="#fff" />
           <Text style={st.bookText}>
-            {result.pricing_model === 'QUOTE' ? 'Request quote' : 'Book now'}
+            {isQuoteFirstModel(result.pricing_model) ? 'Get a quote' : 'Book now'}
           </Text>
         </Pressable>
       </View>

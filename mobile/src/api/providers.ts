@@ -4,7 +4,7 @@ export interface PublicService {
   id:            string;
   title:         string;
   description:   string | null;
-  pricing_model: 'FIXED' | 'HOURLY' | 'QUOTE';
+  pricing_model: 'OUTCOME_FIXED' | 'PROVIDER_SCOPE' | 'HOURLY_CAPPED' | 'QUOTE_DEPOSIT';
   base_price:    number | null;
   category:      { id: number; name: string };
   /** Provider pinned this service via highlights (shown first). */

@@ -16,7 +16,9 @@ class StoreBookingRequest extends FormRequest
         return [
             'service_id'      => ['required', 'uuid', 'exists:services,id'],
             'scheduled_start' => ['required', 'date', 'after:now'],
-            'scheduled_end'   => ['required', 'date', 'after:scheduled_start'],
+            // Optional — duration is a provider-set guide, never a customer input.
+            // Omitted: derived from the service's estimate / cap hours.
+            'scheduled_end'   => ['sometimes', 'nullable', 'date', 'after:scheduled_start'],
             'delivery_lat'             => ['required', 'numeric', 'between:-90,90'],
             'delivery_lng'             => ['required', 'numeric', 'between:-180,180'],
             'delivery_location_label'  => ['required', 'string', 'max:255'],
@@ -25,6 +27,11 @@ class StoreBookingRequest extends FormRequest
             'addon_ids'                => ['sometimes', 'array'],
             'addon_ids.*'              => ['integer', 'exists:service_addons,id'],
             'notes'                    => ['nullable', 'string', 'max:2000'],
+            // PROVIDER_SCOPE / QUOTE_DEPOSIT — structured brief answers
+            // (question/answer pairs from the provider's scope prompts).
+            'scope_brief'              => ['sometimes', 'array', 'max:12'],
+            'scope_brief.*.question'   => ['required_with:scope_brief', 'string', 'max:200'],
+            'scope_brief.*.answer'     => ['required_with:scope_brief', 'string', 'max:500'],
         ];
     }
 }

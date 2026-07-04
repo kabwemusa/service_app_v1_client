@@ -20,6 +20,18 @@ class BookingResource extends JsonResource
             'agreed_amount'   => $this->agreed_amount !== null ? (float) $this->agreed_amount : null,
             'amount'          => $this->amount !== null ? (float) $this->amount : null,
             'buyer_protection_fee' => (float) ($this->buyer_protection_fee ?? 0),
+            // ── Outcome-based pricing ────────────────────────────────────────
+            // Customer's structured brief + the provider's scoped quote
+            // (PROVIDER_SCOPE / QUOTE_DEPOSIT).
+            'scope_brief'         => $this->scope_brief,
+            'provider_quote'      => $this->provider_quote,
+            // HOURLY_CAPPED settlement: provider-logged time and the final charge.
+            'actual_hours_logged' => $this->actual_hours_logged !== null ? (float) $this->actual_hours_logged : null,
+            'actual_charge_zmw'   => $this->actual_charge_zmw !== null ? (float) $this->actual_charge_zmw : null,
+            // QUOTE_DEPOSIT two-phase escrow.
+            'deposit_amount'      => $this->deposit_amount !== null ? (float) $this->deposit_amount : null,
+            'balance_amount'      => $this->balance_amount !== null ? (float) $this->balance_amount : null,
+            'escrow_phase'        => $this->escrow_phase,
             'scheduled_start' => $this->scheduled_start?->toISOString(),
             'scheduled_end'   => $this->scheduled_end?->toISOString(),
             'expires_at'      => $this->expires_at?->toISOString(),
@@ -40,6 +52,11 @@ class BookingResource extends JsonResource
                 'title'         => $this->service->title,
                 'pricing_model' => $this->service->pricing_model,
                 'base_price'    => $this->service->base_price,
+                'hourly_rate'   => $this->service->hourly_rate !== null ? (float) $this->service->hourly_rate : null,
+                'minimum_hours' => $this->service->minimum_hours !== null ? (float) $this->service->minimum_hours : null,
+                'cap_hours'     => $this->service->cap_hours !== null ? (float) $this->service->cap_hours : null,
+                'cap_amount'    => $this->service->cap_amount !== null ? (float) $this->service->cap_amount : null,
+                'deposit_percent' => $this->service->deposit_percent,
                 'category_name' => $this->service->category?->name,
                 'category_icon' => $this->service->category?->icon_url,
             ]),

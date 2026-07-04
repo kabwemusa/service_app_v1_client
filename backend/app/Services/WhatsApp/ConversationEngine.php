@@ -447,6 +447,36 @@ class ConversationEngine
     {
         $action = $this->resolveAction($inbound);
 
+        // Structured brief in progress (quote-first models) — every text reply
+        // is the answer to the current question.
+        if ($c->sub_state === 'brief') {
+            if ($action === 'back_menu') {
+                $this->resetToMenu($c);
+                return;
+            }
+            $this->handleBriefAnswer($inbound, $c);
+            return;
+        }
+
+        // Scoped-quote response buttons.
+        if (str_starts_with($action, 'quote_accept_')) {
+            $this->handleCustomerQuoteAccept($c);
+            return;
+        }
+        if (str_starts_with($action, 'quote_decline_')) {
+            $this->handleCustomerQuoteDecline($c);
+            return;
+        }
+
+        if ($c->sub_state === 'await_quote') {
+            $this->templates->sendMessage(
+                $c->whatsapp_id,
+                "We're still waiting for the provider's quote — we'll message you the moment it lands.",
+                $c,
+            );
+            return;
+        }
+
         if ($action === 'back_menu') {
             $this->resetToMenu($c);
             return;
@@ -482,19 +512,40 @@ class ConversationEngine
         $c->setContextValue('selected_price', $provider['price'] ?? null);
         $c->save();
 
+        $service = $this->catalog->serviceDetail($c->getContextValue('selected_service_id'));
+
+        // Quote-first models (PROVIDER_SCOPE / QUOTE_DEPOSIT): no price exists yet.
+        // Collect the structured brief (one question per turn — never free-text
+        // hours), then the provider quotes and the customer approves before any
+        // money moves.
+        if ($service && \in_array($service->pricing_model, ['PROVIDER_SCOPE', 'QUOTE_DEPOSIT'], true)) {
+            $this->startBriefCollection($c, $provider, $service);
+            return;
+        }
+
         $tierLabel = $provider['tier_label'] ?? 'Verified';
         $providerName = $provider['name'] ?? 'a provider';
-        $price = number_format($provider['price'] ?? 0, 2);
+
+        // Model-aware price line: HOURLY_CAPPED shows rate + cap, never a bare hourly.
+        $priceLine = $this->priceLineFor($service, $provider['price'] ?? 0);
 
         $matchCaption = "✅ Found a match!\n\n"
             . "*{$providerName}* — {$tierLabel}\n"
-            . "Price: ZMW {$price}\n\n"
+            . "{$priceLine}\n\n"
             . "Notifying the provider and preparing your booking...";
 
         // Lead with the provider's face when available — builds trust and reads faster
         // than text. Falls back to the same copy as a plain message.
         $providerUser = User::find($provider['provider_id']);
         $this->sendImageOrText($c->whatsapp_id, $this->providerAvatarUrl($providerUser), $matchCaption, $c);
+
+        // The booking must exist BEFORE the provider offer goes out — the offer's
+        // Accept/Decline button ids and the provider conversation both carry the
+        // booking id (a null id makes the whole response loop dead-end).
+        $booking = $this->createBookingFromContext($c);
+        if (! $booking) {
+            return; // createBookingFromContext already messaged + reset
+        }
 
         try {
             $this->sendProviderOffer($c, $provider);
@@ -507,6 +558,440 @@ class ConversationEngine
 
         $this->transitionTo($c, 'FUNDING');
         $this->initiateFunding($c);
+    }
+
+    // ── Outcome-based pricing helpers ────────────────────────────────────────
+
+    /**
+     * Model-aware price line — HOURLY_CAPPED always shows rate + minimum + cap
+     * (the customer's hold is the cap, actual time is charged); quote-first
+     * models show no number until the provider's scoped quote.
+     */
+    private function priceLineFor(?object $service, float $fallbackPrice): string
+    {
+        if (! $service) {
+            return 'Price: ZMW ' . number_format($fallbackPrice, 2);
+        }
+
+        return match ($service->pricing_model ?? null) {
+            'HOURLY_CAPPED' => sprintf(
+                'Rate: ZMW %s/hr · %s-hr minimum · max ZMW %s',
+                number_format((float) $service->hourly_rate, 0),
+                rtrim(rtrim(number_format((float) $service->minimum_hours, 1), '0'), '.'),
+                number_format((float) ($service->cap_amount ?? $fallbackPrice), 0),
+            ),
+            'PROVIDER_SCOPE' => 'Price: quoted after your brief — nothing is charged until you approve',
+            'QUOTE_DEPOSIT'  => sprintf(
+                'Price: quoted after your brief · %d%% deposit to confirm',
+                (int) ($service->deposit_percent ?? 30),
+            ),
+            default => 'Price: ZMW ' . number_format((float) ($service->base_price ?? $fallbackPrice), 2),
+        };
+    }
+
+    /** Default brief questions when the provider hasn't configured scope prompts. */
+    private function briefQuestions(?object $service): array
+    {
+        $prompts = $service->scope_prompts ?? null;
+        if (is_string($prompts)) {
+            $prompts = json_decode($prompts, true);
+        }
+
+        return (is_array($prompts) && $prompts !== [])
+            ? array_values($prompts)
+            : [
+                'What exactly needs doing?',
+                'How big is the job? (rooms, items, or size)',
+                'Any special conditions the provider should know about?',
+            ];
+    }
+
+    /**
+     * PROVIDER_SCOPE / QUOTE_DEPOSIT: structured brief — one question per turn.
+     * Runs inside DISPATCHING (sub_state 'brief'); the provider quotes against
+     * the answers, and escrow only holds after the customer approves.
+     */
+    private function startBriefCollection(ConversationState $c, array $provider, object $service): void
+    {
+        $questions = $this->briefQuestions($service);
+
+        if ($c->state !== 'DISPATCHING') {
+            $this->transitionTo($c, 'DISPATCHING');
+        }
+        $c->sub_state = 'brief';
+        $c->setContextValue('brief_questions', $questions);
+        $c->setContextValue('brief_answers', []);
+        $c->setContextValue('brief_index', 0);
+        $c->save();
+
+        $providerName = $provider['name'] ?? 'The provider';
+        $intro = $service->pricing_model === 'QUOTE_DEPOSIT'
+            ? "*{$providerName}* will send you a full quote after a few quick questions. You'll pay a "
+              . (int) ($service->deposit_percent ?? 30) . "% deposit to confirm — the balance is due on completion."
+            : "*{$providerName}* will send you a fixed quote after a few quick questions. Nothing is charged until you approve it.";
+
+        $this->templates->sendMessage($c->whatsapp_id, $intro, $c);
+        $this->askNextBriefQuestion($c);
+    }
+
+    private function askNextBriefQuestion(ConversationState $c): void
+    {
+        $questions = $c->getContextValue('brief_questions', []);
+        $index     = (int) $c->getContextValue('brief_index', 0);
+        $total     = count($questions);
+
+        $this->templates->sendMessage(
+            $c->whatsapp_id,
+            '*Question ' . ($index + 1) . " of {$total}*\n" . $questions[$index],
+            $c,
+        );
+    }
+
+    private function handleBriefAnswer(array $inbound, ConversationState $c): void
+    {
+        if ($inbound['type'] !== 'text' || trim($inbound['text'] ?? '') === '') {
+            $this->askNextBriefQuestion($c);
+            return;
+        }
+
+        $questions = $c->getContextValue('brief_questions', []);
+        $index     = (int) $c->getContextValue('brief_index', 0);
+        $answers   = $c->getContextValue('brief_answers', []);
+
+        $answers[] = [
+            'question' => $questions[$index] ?? 'Details',
+            'answer'   => trim($inbound['text']),
+        ];
+        $c->setContextValue('brief_answers', $answers);
+        $c->setContextValue('brief_index', $index + 1);
+        $c->save();
+
+        if ($index + 1 < count($questions)) {
+            $this->askNextBriefQuestion($c);
+            return;
+        }
+
+        $this->finishBrief($c);
+    }
+
+    /**
+     * Brief complete → create the SCOPE_PENDING booking and hand the brief to
+     * the provider to quote (via the bot or the app — same endpoint).
+     */
+    private function finishBrief(ConversationState $c): void
+    {
+        $c->sub_state = 'await_quote';
+        $c->save();
+
+        $booking = $this->createBookingFromContext($c);
+        if (! $booking) {
+            return;
+        }
+
+        $this->templates->sendMessage(
+            $c->whatsapp_id,
+            "📋 Brief sent! We'll message you as soon as the provider sends their quote. "
+            . "You'll see the price, how long it'll take and what's included — nothing is charged until you approve.",
+            $c,
+        );
+
+        $this->sendProviderBriefRequest($c, $booking);
+    }
+
+    /** Send the customer's brief to the provider with quoting instructions. */
+    private function sendProviderBriefRequest(ConversationState $c, Booking $booking): void
+    {
+        $providerUser = User::find($c->getContextValue('selected_provider_id'));
+        if (! $providerUser || ! $providerUser->phone) {
+            Log::warning('ConversationEngine: cannot send brief — provider has no phone', [
+                'booking_id' => $booking->id,
+            ]);
+            return;
+        }
+
+        $providerWa    = ltrim($providerUser->phone, '+');
+        $providerConvo = ConversationState::firstOrCreate(
+            ['whatsapp_id' => $providerWa],
+            ['state' => 'MENU', 'context' => []],
+        );
+
+        $briefLines = collect($c->getContextValue('brief_answers', []))
+            ->map(fn ($qa) => "• {$qa['question']}\n  _{$qa['answer']}_")
+            ->implode("\n");
+
+        $scheduledLabel = $booking->scheduled_start
+            ? $booking->scheduled_start->copy()->setTimezone('Africa/Lusaka')->format('D, M j \\a\\t H:i')
+            : 'To be confirmed';
+
+        $text = "🔔 *New Job Brief — quote to win it*\n\n"
+            . 'Service: ' . ($booking->service->title ?? 'Service') . "\n"
+            . "Date: {$scheduledLabel}\n"
+            . 'Location: ' . ($booking->delivery_location_label ?? 'Shared location') . "\n\n"
+            . "*Customer's brief:*\n{$briefLines}\n\n"
+            . "Reply with your quote like:\n*quote 450*\n(total price in ZMW — you can add a note after the amount)";
+
+        $this->templates->sendMessage($providerWa, $text, $providerConvo);
+        $this->sendJobLocationPin($providerWa, $c);
+
+        $providerConvo->update([
+            'state'      => 'DISPATCHING',
+            'sub_state'  => 'await_quote_amount',
+            'booking_id' => $booking->id,
+            'timeout_at' => now()->addMinutes((int) config('dispatch.accept_window.default_minutes', 15) * 4),
+            'context'    => array_merge($providerConvo->context ?? [], [
+                'role'             => 'provider',
+                'customer_wa'      => $c->whatsapp_id,
+                'offer_booking_id' => $booking->id,
+            ]),
+        ]);
+    }
+
+    /**
+     * Provider replied "quote 450" (or a bare number) to a brief — record the
+     * scoped quote and put it in front of the customer with Accept/Decline.
+     */
+    private function handleProviderQuoteReply(array $inbound, ConversationState $c): void
+    {
+        $text = trim($inbound['text'] ?? '');
+        if ($text === '' || ! preg_match('/(?:^|\s)(?:quote\s+)?(\d+(?:[.,]\d{1,2})?)(?:\s+(.+))?$/i', $text, $m)) {
+            $this->templates->sendMessage(
+                $c->whatsapp_id,
+                "To send your quote, reply like:\n*quote 450*\n(the total price in ZMW)",
+                $c,
+            );
+            return;
+        }
+
+        $amount   = (float) str_replace(',', '.', $m[1]);
+        $note     = isset($m[2]) ? trim($m[2]) : null;
+        $provider = $c->user_id ? User::find($c->user_id) : null;
+        $booking  = $c->booking_id ? Booking::with('service')->find($c->booking_id) : null;
+
+        if (! $provider || ! $booking) {
+            $this->templates->sendMessage($c->whatsapp_id, 'We could not find that job anymore — it may have expired.', $c);
+            $this->resetToMenu($c);
+            return;
+        }
+
+        try {
+            $booking = $this->bookingService->quote($booking->id, $provider, $amount, $note);
+        } catch (\Throwable $e) {
+            Log::error('ConversationEngine: provider quote failed', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+            $this->templates->sendMessage($c->whatsapp_id, 'We could not record that quote: please check the amount and try again.', $c);
+            return;
+        }
+
+        $c->sub_state = 'await_customer_quote';
+        $c->save();
+
+        $this->templates->sendMessage(
+            $c->whatsapp_id,
+            'Quote of ZMW ' . number_format($amount, 2) . " sent — we'll notify you when the customer responds.",
+            $c,
+        );
+
+        // Put the quote in front of the customer.
+        $customerWa    = $c->getContextValue('customer_wa');
+        $customerConvo = $customerWa ? ConversationState::where('whatsapp_id', $customerWa)->first() : null;
+        if (! $customerConvo) {
+            return;
+        }
+
+        $isDeposit = $booking->service?->pricing_model === 'QUOTE_DEPOSIT';
+        $lines = ["💬 *Your quote is in!*", ''];
+        $lines[] = 'Service: ' . ($booking->service->title ?? 'Service');
+        $lines[] = 'Quoted price: ZMW ' . number_format($amount, 2);
+        if ($note) {
+            $lines[] = "Provider's note: {$note}";
+        }
+        if ($isDeposit) {
+            $lines[] = '';
+            $lines[] = 'Pay ZMW ' . number_format((float) $booking->deposit_amount, 2) . ' deposit now to confirm.';
+            $lines[] = 'Balance of ZMW ' . number_format((float) $booking->balance_amount, 2) . ' is due on completion.';
+        } else {
+            $lines[] = '';
+            $lines[] = 'The full amount is held securely and only released when you confirm the job is done.';
+        }
+
+        $acceptLabel = $isDeposit
+            ? 'Pay deposit'
+            : 'Accept quote';
+
+        $this->templates->sendInteractive(
+            $customerWa,
+            MessageBuilder::replyButtons(
+                implode("\n", $lines),
+                [
+                    ['id' => 'quote_accept_' . $booking->id,  'title' => $acceptLabel],
+                    ['id' => 'quote_decline_' . $booking->id, 'title' => 'Decline'],
+                ],
+            ),
+            $customerConvo,
+        );
+    }
+
+    /** Customer approved the scoped quote → escrow hold (deposit or full). */
+    private function handleCustomerQuoteAccept(ConversationState $c): void
+    {
+        $this->transitionTo($c, 'FUNDING');
+        $this->initiateFunding($c);
+    }
+
+    /** Customer declined the scoped quote → cancelled, nothing charged. */
+    private function handleCustomerQuoteDecline(ConversationState $c): void
+    {
+        $booking = $c->booking_id ? Booking::find($c->booking_id) : null;
+        $user    = $this->resolveUser($c);
+
+        if ($booking && $user) {
+            try {
+                $this->bookingService->declineQuote($booking->id, $user);
+            } catch (\Throwable $e) {
+                Log::warning('ConversationEngine: quote decline failed', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+            }
+        }
+
+        $this->transitionTo($c, 'CANCELLED');
+        $this->templates->sendMessage($c->whatsapp_id, 'No problem — the booking was cancelled and nothing was charged.', $c);
+
+        // Tell the provider their quote was declined.
+        $providerUser = User::find($c->getContextValue('selected_provider_id'));
+        if ($providerUser?->phone) {
+            $providerWa    = ltrim($providerUser->phone, '+');
+            $providerConvo = ConversationState::where('whatsapp_id', $providerWa)->first();
+            $this->templates->sendMessage($providerWa, 'The customer declined your quote this time. You can keep taking new jobs as usual.', $providerConvo);
+            if ($providerConvo) {
+                $this->resetToMenu($providerConvo);
+            }
+        }
+
+        $this->sendMenu($c);
+    }
+
+    /**
+     * Dispatch cascade — a shortlisted provider declined or let the offer time
+     * out. Reassign the booking to the next candidate, offer them the job, and
+     * tell the customer transparently. Falls back to NO_PROVIDERS (with refund
+     * when funds are already held) when the shortlist is exhausted.
+     */
+    public function cascadeToNextProvider(string $bookingId): void
+    {
+        $customerConvo = ConversationState::where('booking_id', $bookingId)
+            ->where(function ($q) {
+                $q->whereNull('context')
+                  ->orWhereRaw("COALESCE(context->>'role', '') <> 'provider'");
+            })
+            ->first();
+
+        $next = $this->dispatch->cascade($bookingId);
+
+        if (! $next) {
+            Log::info('ConversationEngine: provider cascade exhausted', ['booking_id' => $bookingId]);
+            $this->handleCascadeExhausted($bookingId, $customerConvo);
+            return;
+        }
+
+        if (! $customerConvo) {
+            Log::warning('ConversationEngine: cascade found next provider but no customer conversation', [
+                'booking_id' => $bookingId,
+            ]);
+            return;
+        }
+
+        // Pull the full shortlist entry (name/tier/price) for the offer + copy.
+        $shortlist = $customerConvo->getContextValue('shortlist', []);
+        $entry = collect($shortlist)->firstWhere('provider_id', $next['provider_id'])
+            ?? ['provider_id' => $next['provider_id'], 'price' => $next['price'] ?? 0];
+
+        try {
+            $this->bookingService->reassignProvider($bookingId, $entry['provider_id']);
+        } catch (\Throwable $e) {
+            Log::error('ConversationEngine: cascade reassign failed', [
+                'booking_id' => $bookingId, 'error' => $e->getMessage(),
+            ]);
+            return;
+        }
+
+        $customerConvo->setContextValue('selected_provider_id', $entry['provider_id']);
+        $customerConvo->save();
+
+        $booking = Booking::with('service')->find($bookingId);
+        $quoteFirst = $booking?->service
+            && \in_array($booking->service->pricing_model, ['PROVIDER_SCOPE', 'QUOTE_DEPOSIT'], true);
+
+        $name      = $entry['name'] ?? 'another provider';
+        $tierLabel = $entry['tier_label'] ?? 'Verified';
+        $this->templates->sendMessage(
+            $customerConvo->whatsapp_id,
+            $quoteFirst
+                ? "That provider couldn't take the job, so we've sent your brief to *{$name}* — {$tierLabel}. "
+                  . "They'll send you their own quote to approve. No action needed from you yet."
+                : "That provider couldn't take the job, so we've matched you with *{$name}* — {$tierLabel}. "
+                  . "Same service, date and price. No action needed from you.",
+            $customerConvo,
+        );
+
+        try {
+            // Quote-first bookings carry no price — the next provider gets the
+            // customer's brief and quotes fresh, not a priced offer.
+            if ($quoteFirst && $booking) {
+                $customerConvo->sub_state = 'await_quote';
+                $customerConvo->save();
+                $this->sendProviderBriefRequest($customerConvo, $booking);
+            } else {
+                $this->sendProviderOffer($customerConvo, $entry);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('ConversationEngine: cascade offer send failed', [
+                'provider_id' => $entry['provider_id'], 'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function handleCascadeExhausted(string $bookingId, ?ConversationState $customerConvo): void
+    {
+        $booking   = Booking::find($bookingId);
+        $wasFunded = $booking && $booking->status === 'FUNDS_HELD';
+
+        // If the customer already paid, release the hold — never strand money.
+        if ($wasFunded) {
+            $buyer = User::find($booking->buyer_id);
+            if ($buyer) {
+                try {
+                    $this->bookingService->cancel($bookingId, $buyer);
+                } catch (\Throwable $e) {
+                    $wasFunded = false; // refund didn't go through — don't promise it
+                    Log::error('ConversationEngine: cascade-exhausted refund failed', [
+                        'booking_id' => $bookingId, 'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+        } elseif ($booking && \in_array($booking->status, ['REQUESTED', 'QUOTED', 'PENDING_PAYMENT'], true)) {
+            $booking->update(['status' => 'CANCELLED']);
+        }
+
+        if ($customerConvo) {
+            $refundNote = $wasFunded
+                ? " Your payment is being refunded to your Mobile Money."
+                : '';
+
+            $customerConvo->state = 'NO_PROVIDERS';
+            $customerConvo->sub_state = null;
+            $customerConvo->timeout_at = null;
+            $customerConvo->save();
+
+            $this->templates->sendInteractive(
+                $customerConvo->whatsapp_id,
+                MessageBuilder::replyButtons(
+                    "Sorry — none of the available providers could take this job.{$refundNote}\n\nWould you like to try again?",
+                    [
+                        ['id' => 'retry_match', 'title' => 'Try Again'],
+                        ['id' => 'back_menu',   'title' => 'Main Menu'],
+                    ],
+                ),
+                $customerConvo,
+            );
+        }
     }
 
     private function sendProviderOffer(ConversationState $c, array $provider): void
@@ -527,10 +1012,15 @@ class ConversationEngine
         $serviceId = $c->getContextValue('selected_service_id');
         $service   = $this->catalog->serviceDetail($serviceId);
 
+        $scheduledStart = $c->getContextValue('scheduled_start');
+        $scheduledLabel = $scheduledStart
+            ? Carbon::parse($scheduledStart)->setTimezone('Africa/Lusaka')->format('D, M j \\a\\t H:i')
+            : 'To be confirmed';
+
         $offerData = [
             'booking_id'      => $c->booking_id,
             'service_title'   => $service->title ?? $service->name ?? 'Service',
-            'scheduled_start' => $c->getContextValue('scheduled_start'),
+            'scheduled_start' => $scheduledLabel,
             'delivery_label'  => $c->getContextValue('location_label', 'Location shared'),
             'amount'          => $provider['price'] ?? 0,
         ];
@@ -583,6 +1073,34 @@ class ConversationEngine
         ]);
     }
 
+    /**
+     * Best-effort WhatsApp nudge to the provider once escrow funds are held.
+     * Never throws — payment confirmation to the customer must not depend on it.
+     */
+    private function notifyProviderFundsHeld(Booking $booking): void
+    {
+        try {
+            $providerUser = $booking->provider;
+            if (! $providerUser?->phone) {
+                return;
+            }
+
+            $providerWa    = ltrim($providerUser->phone, '+');
+            $providerConvo = ConversationState::where('whatsapp_id', $providerWa)->first();
+
+            $text = "💰 Payment confirmed — the customer's money is held securely.\n\n"
+                . "Job: " . ($booking->service->title ?? 'Service') . "\n"
+                . "Date: " . ($booking->scheduled_start?->setTimezone('Africa/Lusaka')->format('D, M j \\a\\t H:i') ?? 'TBC') . "\n\n"
+                . "You'll be paid to your Mobile Money after the customer confirms completion.";
+
+            $this->templates->sendMessage($providerWa, $text, $providerConvo);
+        } catch (\Throwable $e) {
+            Log::warning('ConversationEngine: provider funds-held notice failed', [
+                'booking_id' => $booking->id, 'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
     // ── FUNDING ─────────────────────────────────────────────────────────────
 
     private function handleFunding(array $inbound, ConversationState $c): void
@@ -590,6 +1108,7 @@ class ConversationEngine
         $action = $this->resolveAction($inbound);
 
         if ($action === 'cancel_booking') {
+            $this->cancelUnpaidBooking($c);
             $this->transitionTo($c, 'CANCELLED');
             $this->templates->sendMessage($c->whatsapp_id, "Booking cancelled. No payment was taken.", $c);
             $this->sendMenu($c);
@@ -598,6 +1117,36 @@ class ConversationEngine
 
         if ($action === 'retry_payment') {
             $this->transitionTo($c, 'FUNDING');
+            $this->initiateFunding($c);
+            return;
+        }
+
+        if ($action === 'use_other_number') {
+            $this->askForAlternateNumber($c);
+            return;
+        }
+
+        // Alternate MoMo wallet capture (after "Use another number").
+        if ($c->sub_state === 'await_msisdn' && $inbound['type'] === 'text') {
+            $msisdn = $this->parseZambianMsisdn($inbound['text'] ?? '');
+            if (! $msisdn) {
+                $this->templates->sendMessage(
+                    $c->whatsapp_id,
+                    "That doesn't look like a Zambian mobile number. Please send it like 0977123456 or 260977123456.",
+                    $c,
+                );
+                return;
+            }
+
+            $c->setContextValue('payment_msisdn', $msisdn);
+            $c->sub_state = null;
+            $c->save();
+
+            $this->templates->sendMessage(
+                $c->whatsapp_id,
+                "Thanks — we'll send the payment prompt to " . $msisdn . " instead.",
+                $c,
+            );
             $this->initiateFunding($c);
             return;
         }
@@ -612,7 +1161,52 @@ class ConversationEngine
         );
     }
 
-    private function initiateFunding(ConversationState $c): void
+    /** Put the conversation into alternate-wallet capture mode. */
+    private function askForAlternateNumber(ConversationState $c): void
+    {
+        $c->state     = 'FUNDING';
+        $c->sub_state = 'await_msisdn';
+        $c->save();
+
+        $this->templates->sendMessage(
+            $c->whatsapp_id,
+            "Which Mobile Money number should we charge instead? Reply with the number (e.g. 0977123456). Airtel, MTN and Zamtel wallets are supported.",
+            $c,
+        );
+    }
+
+    /** Best-effort cancel of a booking that has not captured funds yet. */
+    private function cancelUnpaidBooking(ConversationState $c): void
+    {
+        $booking = $c->booking_id ? Booking::find($c->booking_id) : null;
+        if ($booking && \in_array($booking->status, ['REQUESTED', 'QUOTED', 'PENDING_PAYMENT', 'PAYMENT_FAILED'], true)) {
+            $booking->update(['status' => 'CANCELLED']);
+        }
+    }
+
+    /** Normalise a typed Zambian mobile number to 2609XXXXXXXX / 2607XXXXXXXX. */
+    private function parseZambianMsisdn(string $raw): ?string
+    {
+        $digits = preg_replace('/\D/', '', $raw);
+
+        if (str_starts_with($digits, '260')) {
+            $digits = substr($digits, 3);
+        }
+        $digits = ltrim($digits, '0');
+
+        // Zambian mobiles: 9 digits starting 9x or 7x (095/096/097/075/076/077…)
+        if (! preg_match('/^(9|7)\d{8}$/', $digits)) {
+            return null;
+        }
+
+        return '260' . $digits;
+    }
+
+    /**
+     * Resolve the WhatsApp user for this conversation (auto-linked by the
+     * webhook for new numbers; fallback lookup for older conversations).
+     */
+    private function resolveUser(ConversationState $c): ?User
     {
         $user = $c->user_id ? User::find($c->user_id) : null;
 
@@ -624,90 +1218,60 @@ class ConversationEngine
             }
         }
 
+        return $user;
+    }
+
+    /**
+     * Create the escrow booking from the conversation context (REQUESTED).
+     * Separated from funding so the provider offer can carry a real booking id.
+     */
+    private function createBookingFromContext(ConversationState $c): ?Booking
+    {
+        if ($c->booking_id) {
+            $existing = Booking::find($c->booking_id);
+            // Reuse only a live booking — a retry after expiry/cancellation
+            // must start a fresh one (closed bookings can't re-enter payment).
+            if ($existing && ! \in_array($existing->status, ['CANCELLED', 'EXPIRED', 'DECLINED'], true)) {
+                return $existing;
+            }
+            $c->booking_id = null;
+            $c->save();
+        }
+
+        $user = $this->resolveUser($c);
+
         if (! $user) {
             $this->templates->sendMessage(
                 $c->whatsapp_id,
-                "We need to link your account before processing payment. Please register on the app first, then try again.",
+                "We couldn't link this number to an account. Please try again in a moment.",
                 $c,
             );
             $this->resetToMenu($c);
-            return;
+            return null;
         }
 
-        $serviceId  = $c->getContextValue('selected_service_id');
-        $providerId = $c->getContextValue('selected_provider_id');
-
-        // Acknowledge before the synchronous create + fund-hold (the slowest step) so the
-        // chat isn't silent while it runs.
         $this->templates->sendMessage($c->whatsapp_id, "🧾 Setting up your booking…", $c);
 
         try {
             $booking = $this->bookingService->create($user, [
-                'service_id'              => $serviceId,
-                'provider_id'             => $providerId,
+                'service_id'              => $c->getContextValue('selected_service_id'),
+                'provider_id'             => $c->getContextValue('selected_provider_id'),
                 'scheduled_start'         => $c->getContextValue('scheduled_start'),
                 'scheduled_end'           => $c->getContextValue('scheduled_end'),
                 'delivery_lat'            => $c->getContextValue('location_lat'),
                 'delivery_lng'            => $c->getContextValue('location_lng'),
                 'delivery_location_label' => $c->getContextValue('location_label'),
                 'notes'                   => $c->getContextValue('need_description'),
+                // Structured brief answers (quote-first models) — stored on the
+                // booking so the provider can quote from any surface.
+                'scope_brief'             => $c->getContextValue('brief_answers') ?: null,
                 'channel'                 => 'WHATSAPP',
             ]);
 
             $c->booking_id = $booking->id;
             $c->save();
 
-            try {
-                $this->bookingService->holdFunds($booking->id, $user);
-
-                if (config('pawapay.enabled', false)) {
-                    // Async: MoMo prompt sent to customer's phone, waiting for PIN confirmation.
-                    $this->templates->sendMessage(
-                        $c->whatsapp_id,
-                        MessageBuilder::paymentPrompt([
-                            'service_title'        => $booking->service->title ?? 'Service',
-                            'amount'               => $booking->amount,
-                            'buyer_protection_fee'  => $booking->buyer_protection_fee,
-                        ]),
-                        $c,
-                    );
-                    $this->templates->sendMessage(
-                        $c->whatsapp_id,
-                        "A Mobile Money prompt has been sent to your phone. Please enter your PIN to confirm payment.\n\nWe'll notify you once the payment is confirmed.",
-                        $c,
-                    );
-                } else {
-                    // Stub: instant success.
-                    $this->templates->sendMessage(
-                        $c->whatsapp_id,
-                        MessageBuilder::paymentPrompt([
-                            'service_title'        => $booking->service->title ?? 'Service',
-                            'amount'               => $booking->amount,
-                            'buyer_protection_fee'  => $booking->buyer_protection_fee,
-                        ]),
-                        $c,
-                    );
-                    $this->onFundsHeld($c);
-                }
-            } catch (\Throwable $e) {
-                // A failure here is at payment *initiation* (bad request, auth, operator
-                // not enabled) — a system-side issue, NOT the customer's balance. Genuine
-                // payer-side failures (e.g. insufficient funds) arrive later via the
-                // PawaPay callback, which reports the real reason to the customer.
-                Log::error('ConversationEngine: holdFunds failed', ['error' => $e->getMessage()]);
-                $this->transitionTo($c, 'PAYMENT_FAILED');
-                $this->templates->sendInteractive(
-                    $c->whatsapp_id,
-                    MessageBuilder::replyButtons(
-                        "We couldn't start the Mobile Money payment just now — this is on our side, not your account. Please try again in a moment.",
-                        [
-                            ['id' => 'retry_payment', 'title' => 'Retry Payment'],
-                            ['id' => 'cancel_booking', 'title' => 'Cancel'],
-                        ],
-                    ),
-                    $c,
-                );
-            }
+            return $booking;
         } catch (\Throwable $e) {
             Log::error('ConversationEngine: booking creation failed', ['error' => $e->getMessage()]);
             $this->templates->sendInteractive(
@@ -719,7 +1283,115 @@ class ConversationEngine
                 $c,
             );
             $this->resetToMenu($c);
+            return null;
         }
+    }
+
+    private function initiateFunding(ConversationState $c): void
+    {
+        $user = $this->resolveUser($c);
+
+        if (! $user) {
+            $this->templates->sendMessage(
+                $c->whatsapp_id,
+                "We couldn't link this number to an account. Please try again in a moment.",
+                $c,
+            );
+            $this->resetToMenu($c);
+            return;
+        }
+
+        $booking = $this->createBookingFromContext($c);
+        if (! $booking) {
+            return;
+        }
+
+        try {
+            // Optional alternate wallet captured after a PAYMENT_FAILED
+            // ("Use another number") — falls back to the account phone.
+            $payerOverride = $c->getContextValue('payment_msisdn');
+            $this->bookingService->holdFunds($booking->id, $user, $payerOverride);
+
+                // The MoMo approval window is finite — arm the conversation
+                // timeout so an unanswered PIN prompt expires cleanly.
+                $c->timeout_at = now()->addMinutes((int) config('whatsapp.funding_window_minutes', 30));
+                $c->save();
+
+            $prompt = $this->paymentPromptFor($booking->fresh(['service']));
+
+            if (config('pawapay.enabled', false)) {
+                // Async: MoMo prompt sent to customer's phone, waiting for PIN confirmation.
+                $this->templates->sendMessage($c->whatsapp_id, $prompt, $c);
+                $this->templates->sendMessage(
+                    $c->whatsapp_id,
+                    "A Mobile Money prompt has been sent to your phone. Please enter your PIN to confirm payment.\n\nWe'll notify you once the payment is confirmed.",
+                    $c,
+                );
+            } else {
+                // Stub: instant success.
+                $this->templates->sendMessage($c->whatsapp_id, $prompt, $c);
+                $this->onFundsHeld($c);
+            }
+        } catch (\Throwable $e) {
+            // A failure here is at payment *initiation* (bad request, auth, operator
+            // not enabled) — a system-side issue, NOT the customer's balance. Genuine
+            // payer-side failures (e.g. insufficient funds) arrive later via the
+            // PawaPay callback, which reports the real reason to the customer.
+            Log::error('ConversationEngine: holdFunds failed', ['error' => $e->getMessage()]);
+            $this->transitionTo($c, 'PAYMENT_FAILED');
+            $this->templates->sendInteractive(
+                $c->whatsapp_id,
+                MessageBuilder::replyButtons(
+                    "We couldn't start the Mobile Money payment just now — this is on our side, not your account. Please try again in a moment.",
+                    [
+                        ['id' => 'retry_payment',    'title' => 'Retry Payment'],
+                        ['id' => 'use_other_number', 'title' => 'Use another number'],
+                        ['id' => 'cancel_booking',   'title' => 'Cancel'],
+                    ],
+                ),
+                $c,
+            );
+        }
+    }
+
+    /**
+     * Model-aware MoMo payment prompt — the hold means something different per
+     * pricing model, and the copy must say so before the PIN prompt lands.
+     */
+    private function paymentPromptFor(Booking $booking): string
+    {
+        $service = $booking->service;
+        $title   = $service->title ?? 'Service';
+        $fee     = (float) $booking->buyer_protection_fee;
+
+        if ($service?->pricing_model === 'HOURLY_CAPPED') {
+            $hold = (float) ($booking->agreed_amount ?? $booking->amount) + $fee;
+            return "*Payment Required*\n\n"
+                . "Service: {$title}\n"
+                . 'Rate: ZMW ' . number_format((float) $service->hourly_rate, 0) . '/hr · '
+                . rtrim(rtrim(number_format((float) $service->minimum_hours, 1), '0'), '.') . "-hr minimum\n"
+                . 'Hold: ZMW ' . number_format($hold, 2) . " (the maximum)\n\n"
+                . "Your hold will be ZMW " . number_format($hold, 2) . '. '
+                . "You're only charged for the actual time worked — any unused amount is refunded to your Mobile Money automatically.\n\n"
+                . '_Payment window: 30 minutes_';
+        }
+
+        if ($service?->pricing_model === 'QUOTE_DEPOSIT' && $booking->deposit_amount !== null) {
+            $deposit = (float) $booking->deposit_amount + $fee;
+            return "*Deposit Required*\n\n"
+                . "Service: {$title}\n"
+                . 'Quote: ZMW ' . number_format((float) ($booking->agreed_amount ?? $booking->amount), 2) . "\n"
+                . 'Deposit now: ZMW ' . number_format($deposit, 2) . "\n"
+                . 'Balance on completion: ZMW ' . number_format((float) $booking->balance_amount, 2) . "\n\n"
+                . "Pay the deposit to confirm your booking. The balance is collected only when the job is done.\n\n"
+                . '_Payment window: 30 minutes_';
+        }
+
+        return MessageBuilder::paymentPrompt([
+            'service_title'        => $title,
+            'amount'               => $booking->agreed_amount ?? $booking->amount,
+            'buyer_protection_fee' => $booking->buyer_protection_fee,
+        ]);
     }
 
     /**
@@ -735,6 +1407,14 @@ class ConversationEngine
         $booking = $c->booking_id ? Booking::with(['service', 'provider.providerProfile'])->find($c->booking_id) : null;
 
         if (! $booking) return;
+
+        // Funding window resolved — disarm the conversation timeout.
+        $c->timeout_at = null;
+        $c->save();
+
+        // Best-effort: tell the provider the money is secured (their earlier
+        // accept message said "the customer is completing payment").
+        $this->notifyProviderFundsHeld($booking);
 
         $providerPhone = null;
         $profile = $booking->provider?->providerProfile;
@@ -813,44 +1493,50 @@ class ConversationEngine
 
     private function handleProviderInProgress(string $action, ConversationState $c): void
     {
-        if ($action === 'mark_done') {
-            $booking = $c->booking_id ? Booking::find($c->booking_id) : null;
-            $provider = $c->user_id ? User::find($c->user_id) : null;
-
-            if ($booking && $provider) {
-                try {
-                    $this->bookingService->markDelivered($booking->id, $provider);
-
-                    $this->templates->sendMessage(
-                        $c->whatsapp_id,
-                        "Job marked as delivered! The customer will be asked to confirm. Payment will be released once confirmed.",
-                        $c,
-                    );
-
-                    $customerWa = $c->getContextValue('customer_wa');
-                    if ($customerWa) {
-                        $customerConvo = ConversationState::where('whatsapp_id', $customerWa)->first();
-                        if ($customerConvo) {
-                            $this->templates->sendInteractive(
-                                $customerWa,
-                                MessageBuilder::replyButtons(
-                                    "Your provider has marked the job as completed. Are you satisfied with the work?",
-                                    [
-                                        ['id' => 'confirm_complete', 'title' => 'Yes, confirm'],
-                                        ['id' => 'report_issue',    'title' => 'Report issue'],
-                                    ],
-                                ),
-                                $customerConvo,
-                            );
-                        }
-                    }
-
-                    $this->transitionTo($c, 'COMPLETED');
-                } catch (\Throwable $e) {
-                    Log::error('ConversationEngine: markDelivered failed', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
-                    $this->templates->sendMessage($c->whatsapp_id, "Sorry, something went wrong on our side — please try marking it done again in a moment.", $c);
-                }
+        // HOURLY_CAPPED: mark-done asked for the actual time — parse it (0.5-hr
+        // steps) and deliver with the logged hours.
+        if ($c->sub_state === 'log_hours') {
+            $hours = $this->parseLoggedHours($action);
+            if ($hours === null) {
+                $this->templates->sendMessage(
+                    $c->whatsapp_id,
+                    "Please reply with the time worked in half-hour steps — e.g. *1*, *1.5*, *2*, *2.5*.",
+                    $c,
+                );
+                return;
             }
+            $c->sub_state = null;
+            $c->save();
+            $this->providerMarkDone($c, $hours);
+            return;
+        }
+
+        if ($action === 'mark_done') {
+            $booking = $c->booking_id ? Booking::with('service')->find($c->booking_id) : null;
+
+            if ($booking && $booking->status === 'PENDING_PAYMENT') {
+                $this->templates->sendMessage(
+                    $c->whatsapp_id,
+                    "The customer hasn't completed payment yet — we'll let you know the moment it's confirmed. You can mark the job done after that.",
+                    $c,
+                );
+                return;
+            }
+
+            // HOURLY_CAPPED: the provider logs actual time (never the customer).
+            if ($booking && $booking->service?->pricing_model === 'HOURLY_CAPPED') {
+                $capHours = rtrim(rtrim(number_format((float) ($booking->service->cap_hours ?? 0), 1), '0'), '.');
+                $c->sub_state = 'log_hours';
+                $c->save();
+                $this->templates->sendMessage(
+                    $c->whatsapp_id,
+                    "How many hours did the job actually take?\n\nReply with a number in half-hour steps (e.g. *2* or *2.5*). Maximum: {$capHours} hours (the booked cap).",
+                    $c,
+                );
+                return;
+            }
+
+            $this->providerMarkDone($c, null);
             return;
         }
 
@@ -862,6 +1548,101 @@ class ConversationEngine
             ),
             $c,
         );
+    }
+
+    /** Accepts "2", "2.5", "2,5", "2 hours", "2.5 hrs" — must land on a 0.5 step. */
+    private function parseLoggedHours(string $text): ?float
+    {
+        if (! preg_match('/(\d+(?:[.,]\d)?)/', $text, $m)) {
+            return null;
+        }
+        $hours = (float) str_replace(',', '.', $m[1]);
+        if ($hours <= 0 || fmod($hours * 10, 5) > 0.001) {
+            return null;
+        }
+        return $hours;
+    }
+
+    /** Shared mark-done: start if needed, deliver (with hours when hourly-capped), notify customer. */
+    private function providerMarkDone(ConversationState $c, ?float $actualHours): void
+    {
+        $booking  = $c->booking_id ? Booking::with('service')->find($c->booking_id) : null;
+        $provider = $c->user_id ? User::find($c->user_id) : null;
+
+        if (! $booking || ! $provider) {
+            return;
+        }
+
+        try {
+            // WhatsApp providers don't have a separate "start job" tap —
+            // held bookings move through IN_PROGRESS on mark-done.
+            if (\in_array($booking->status, ['FUNDS_HELD', 'DEPOSIT_HELD'], true)) {
+                $this->bookingService->markInProgress($booking->id, $provider);
+            }
+            $booking = $this->bookingService->markDelivered($booking->id, $provider, $actualHours);
+
+            $this->templates->sendMessage(
+                $c->whatsapp_id,
+                "Job marked as delivered! The customer will be asked to confirm. Payment will be released once confirmed.",
+                $c,
+            );
+
+            $customerWa = $c->getContextValue('customer_wa');
+            if ($customerWa) {
+                $customerConvo = ConversationState::where('whatsapp_id', $customerWa)->first();
+                if ($customerConvo) {
+                    $this->templates->sendInteractive(
+                        $customerWa,
+                        MessageBuilder::replyButtons(
+                            $this->customerDeliveredMessage($booking),
+                            [
+                                ['id' => 'confirm_complete', 'title' => 'Yes, confirm'],
+                                ['id' => 'report_issue',    'title' => 'Report issue'],
+                            ],
+                        ),
+                        $customerConvo,
+                    );
+                }
+            }
+
+            $this->transitionTo($c, 'COMPLETED');
+        } catch (\Throwable $e) {
+            Log::error('ConversationEngine: markDelivered failed', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+            $this->templates->sendMessage($c->whatsapp_id, "Sorry, something went wrong on our side — please try marking it done again in a moment.", $c);
+        }
+    }
+
+    /**
+     * Delivered notice to the customer. HOURLY_CAPPED shows the full settlement
+     * breakdown (actual time, final charge, refund) BEFORE they confirm release.
+     */
+    private function customerDeliveredMessage(Booking $booking): string
+    {
+        $service = $booking->service;
+
+        if ($service?->pricing_model === 'HOURLY_CAPPED' && $booking->actual_hours_logged !== null) {
+            $held   = (float) ($booking->agreed_amount ?? $booking->amount);
+            $charge = (float) $booking->actual_charge_zmw;
+            $refund = max($held - $charge, 0);
+            $hours  = rtrim(rtrim(number_format((float) $booking->actual_hours_logged, 1), '0'), '.');
+
+            $msg = "Your provider has marked the job as completed.\n\n"
+                . "*Time logged:* {$hours} hr\n"
+                . '*Final charge:* ZMW ' . number_format($charge, 2) . "\n";
+            if ($refund >= 0.01) {
+                $msg .= '*Refund to you:* ZMW ' . number_format($refund, 2) . " (unused part of your hold)\n";
+            }
+            return $msg . "\nConfirm to release the payment — your refund is sent automatically.";
+        }
+
+        if ($service?->pricing_model === 'QUOTE_DEPOSIT' && $booking->balance_amount !== null) {
+            return "Your provider has marked the job as completed.\n\n"
+                . '*Balance due:* ZMW ' . number_format((float) $booking->balance_amount, 2)
+                . " (your deposit of ZMW " . number_format((float) $booking->deposit_amount, 2) . " is already held)\n\n"
+                . "Confirm you're satisfied — we'll then send a Mobile Money prompt for the balance.";
+        }
+
+        return "Your provider has marked the job as completed. Are you satisfied with the work?";
     }
 
     // ── TERMINAL states ─────────────────────────────────────────────────────
@@ -881,15 +1662,35 @@ class ConversationEngine
             return;
         }
 
+        if ($action === 'use_other_number') {
+            $this->askForAlternateNumber($c);
+            return;
+        }
+
         if ($action === 'confirm_complete' && $c->booking_id) {
             $user = $c->user_id ? User::find($c->user_id) : null;
             if ($user) {
                 try {
-                    $this->bookingService->complete($c->booking_id, $user);
+                    $booking = $this->bookingService->complete($c->booking_id, $user);
                     $this->transitionTo($c, 'COMPLETED');
+
+                    $doneMsg = "Booking completed! Thank you for using Sebenza. We'd love to hear your feedback.";
+                    if ($booking->service?->pricing_model === 'HOURLY_CAPPED' && $booking->actual_charge_zmw !== null) {
+                        $refund = max((float) ($booking->amount) - (float) $booking->actual_charge_zmw, 0);
+                        if ($refund >= 0.01) {
+                            $doneMsg = 'Booking completed! Your refund of ZMW ' . number_format($refund, 2)
+                                . " (unused part of your hold) is on its way to your Mobile Money.\n\n"
+                                . "Thank you for using Sebenza — we'd love to hear your feedback.";
+                        }
+                    } elseif ($booking->service?->pricing_model === 'QUOTE_DEPOSIT' && (float) $booking->balance_amount >= 0.01) {
+                        $doneMsg = 'Booking completed! Check your phone — a Mobile Money prompt for the balance of ZMW '
+                            . number_format((float) $booking->balance_amount, 2) . " has been sent.\n\n"
+                            . "Thank you for using Sebenza — we'd love to hear your feedback.";
+                    }
+
                     $this->templates->sendMessage(
                         $c->whatsapp_id,
-                        "Booking completed! Thank you for using Sebenza. We'd love to hear your feedback.",
+                        $doneMsg,
                         $c,
                     );
                     $this->templates->sendTemplateMessage(
@@ -918,6 +1719,14 @@ class ConversationEngine
         $this->acknowledgeInbound($inbound);
 
         $action = $this->resolveAction($inbound);
+
+        // Quote-first flow: the provider has a brief in hand and replies with
+        // "quote 450" (or a bare amount) to send their scoped quote.
+        if (\in_array($c->sub_state, ['await_quote_amount', 'await_customer_quote'], true)
+            && $inbound['type'] === 'text') {
+            $this->handleProviderQuoteReply($inbound, $c);
+            return;
+        }
 
         if (str_starts_with($action, 'offer_accept_')) {
             $bookingId = substr($action, 13);
@@ -949,6 +1758,13 @@ class ConversationEngine
                         : null;
                     if ($customerConvo) {
                         $this->sendJobLocationPin($c->whatsapp_id, $customerConvo);
+
+                        // Keep the customer in the loop — their provider committed.
+                        $this->templates->sendMessage(
+                            $customerWa,
+                            "👍 Your provider has accepted the job and will be there as scheduled.",
+                            $customerConvo,
+                        );
                     }
                 }
             }
@@ -965,9 +1781,8 @@ class ConversationEngine
             );
             $this->resetToMenu($c);
 
-            $next = $this->dispatch->cascade($bookingId);
-            if (! $next) {
-                Log::info('ConversationEngine: provider cascade exhausted', ['booking_id' => $bookingId]);
+            if ($bookingId !== '') {
+                $this->cascadeToNextProvider($bookingId);
             }
             return;
         }

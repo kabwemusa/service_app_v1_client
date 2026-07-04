@@ -99,19 +99,11 @@ class BookingService
             );
         }
 
-        // Compute the correct booking amount based on pricing model + add-ons.
-        $basePrice = (float) $service->base_price;
-
-        if ($service->pricing_model === 'HOURLY') {
-            $start    = new \DateTime($data['scheduled_start']);
-            $end      = new \DateTime($data['scheduled_end']);
-            $diffSecs = $end->getTimestamp() - $start->getTimestamp();
-            $hours    = max($diffSecs / 3600, 0);
-            $serviceCost = $basePrice * $hours;
-        } else {
-            $serviceCost = $basePrice;
-        }
-
+        // Outcome-based pricing — the customer NEVER inputs hours. The booking
+        // amount is derived entirely from provider-set price parameters:
+        //   OUTCOME_FIXED  → fixed outcome price (+ confirmed add-ons)
+        //   HOURLY_CAPPED  → the spend cap is held; actual time charged at completion
+        //   PROVIDER_SCOPE / QUOTE_DEPOSIT → no amount yet; brief → scoped quote
         $addonTotal = 0.0;
         $addonIds   = $data['addon_ids'] ?? [];
         if (! empty($addonIds)) {
@@ -120,18 +112,32 @@ class BookingService
                 ->sum('price');
         }
 
-        $bookingAmount = round($serviceCost + $addonTotal, 2);
+        $quoteFirst = $service->needsScopeQuote();
 
+        $bookingAmount = match ($service->pricing_model) {
+            'HOURLY_CAPPED' => round((float) ($service->cap_amount ?? ((float) $service->hourly_rate * (float) $service->cap_hours)) + $addonTotal, 2),
+            'PROVIDER_SCOPE', 'QUOTE_DEPOSIT' => 0.0,
+            // OUTCOME_FIXED (and any legacy FIXED rows not yet migrated)
+            default => round((float) $service->base_price + $addonTotal, 2),
+        };
+
+        // Tier job cap: enforced now for priced models; quote-first models are
+        // checked when the provider sends the scoped quote (price known then).
         $tier = TrustTier::from($profile->trust_tier);
         $cap  = $tier->jobCapZmw();
 
-        if ($cap !== null && $bookingAmount > $cap) {
+        if (! $quoteFirst && $cap !== null && $bookingAmount > $cap) {
             throw new ApiException(
                 ErrorCode::TIER_EXCEEDED,
                 "This provider's current tier limits bookings to ZMW {$cap}. "
                 . 'They need additional verification to accept this booking.',
             );
         }
+
+        // Scheduled end is a system-derived guide (provider's estimate / cap hours),
+        // never a customer duration input. Clients may omit it entirely.
+        $data['scheduled_end'] = $data['scheduled_end']
+            ?? $this->deriveScheduledEnd($service, $data['scheduled_start']);
 
         $this->conflict->check(
             providerId:         $provider->id,
@@ -147,15 +153,39 @@ class BookingService
         return $this->createEscrowBooking($buyer, $provider, $service, $data, $bookingAmount, $channel);
     }
 
+    /**
+     * Duration is a provider-set guide: the estimate for fixed outcomes, the
+     * cap for hourly-capped, and a 2-hour placeholder for quote-first models
+     * (refined when the provider's scoped quote lands).
+     */
+    private function deriveScheduledEnd(Service $service, string $scheduledStart): string
+    {
+        $mins = match ($service->pricing_model) {
+            'HOURLY_CAPPED' => (int) round(((float) ($service->cap_hours ?? 2)) * 60),
+            default         => $service->duration_estimate_mins ?? 120,
+        };
+
+        return (new \DateTimeImmutable($scheduledStart))
+            ->modify("+{$mins} minutes")
+            ->format(\DateTimeInterface::ATOM);
+    }
+
     private function createEscrowBooking(
         User $buyer, User $provider, Service $service, array $data, float $amount, string $channel,
     ): Booking {
-        $protectionFee = $this->commission->buyerProtectionFee($amount, $buyer->id, $provider->id);
+        $quoteFirst    = $service->needsScopeQuote();
+        $protectionFee = $quoteFirst ? 0.0 : $this->commission->buyerProtectionFee($amount, $buyer->id, $provider->id);
         $addonIds      = ! empty($data['addon_ids']) ? json_encode(array_map('intval', $data['addon_ids'])) : null;
         $notes         = isset($data['notes']) && trim($data['notes']) !== '' ? trim($data['notes']) : null;
         $expiresAt     = now()->addHours(config('booking.response_window_hours', 24));
 
-        // Pre-compute the commission split for escrow
+        // Quote-first models start at SCOPE_PENDING with the customer's structured
+        // brief; the money fields are settled when the provider's quote is approved.
+        $initialStatus = $quoteFirst ? 'SCOPE_PENDING' : 'REQUESTED';
+        $scopeBrief    = ! empty($data['scope_brief']) ? json_encode($data['scope_brief']) : null;
+
+        // Pre-compute the commission split for escrow (recomputed at quote/completion
+        // whenever the final gross differs from this initial amount).
         $commissionPreview = $this->commission->calculate(
             gross:      $amount,
             categoryId: (int) $service->category_id,
@@ -167,6 +197,7 @@ class BookingService
         $booking = DB::transaction(function () use (
             $buyer, $provider, $service, $data, $amount, $protectionFee,
             $addonIds, $notes, $expiresAt, $channel, $commissionPreview,
+            $initialStatus, $scopeBrief,
         ) {
             $id = DB::selectOne("
                 INSERT INTO bookings
@@ -178,23 +209,24 @@ class BookingService
                      scheduled_start, scheduled_end,
                      delivery_location,
                      delivery_location_label, delivery_location_region, delivery_location_source,
-                     notes, selected_addon_ids,
+                     notes, selected_addon_ids, scope_brief,
                      created_at, updated_at)
                 VALUES
                     (gen_random_uuid(), ?, ?, ?,
                      ?, ?,
-                     'ESCROW', 'REQUESTED', ?::timestamptz,
+                     'ESCROW', ?, ?::timestamptz,
                      ?, ?,
                      ?,
                      ?::timestamptz, ?::timestamptz,
                      ST_GeogFromText('POINT(' || ? || ' ' || ? || ')'),
                      ?, ?, ?,
-                     ?, ?::jsonb,
+                     ?, ?::jsonb, ?::jsonb,
                      NOW(), NOW())
                 RETURNING id
             ", [
                 $buyer->id, $provider->id, $service->id,
                 $amount, $protectionFee,
+                $initialStatus,
                 $expiresAt->toIso8601String(),
                 round($commissionPreview['commission'] + $commissionPreview['vat'], 2),
                 round($commissionPreview['net_to_provider'], 2),
@@ -208,6 +240,7 @@ class BookingService
                 $data['delivery_location_source'] ?? null,
                 $notes,
                 $addonIds,
+                $scopeBrief,
             ])->id;
 
             return $this->findOrFail($id, $buyer);
@@ -251,7 +284,7 @@ class BookingService
         $profile = ProviderProfile::where('user_id', $provider->id)->first();
         $tier    = TrustTier::from($profile?->trust_tier ?? 0);
 
-        $activeStatuses = ['REQUESTED', 'QUOTED', 'ACCEPTED', 'FUNDS_HELD', 'IN_PROGRESS'];
+        $activeStatuses = ['REQUESTED', 'QUOTED', 'SCOPE_PENDING', 'QUOTE_SENT', 'ACCEPTED', 'FUNDS_HELD', 'DEPOSIT_HELD', 'IN_PROGRESS'];
 
         $bookings = Booking::with(['service.category', 'buyer'])
             ->where('provider_id', $provider->id)
@@ -277,12 +310,15 @@ class BookingService
             );
 
             $statusLabel = match ($booking->status) {
-                'REQUESTED'   => 'New request — respond or decline',
-                'QUOTED'      => 'Quote sent — awaiting customer',
-                'ACCEPTED'    => 'Accepted — start when ready',
-                'FUNDS_HELD'  => 'Funds held in escrow — start when ready',
-                'IN_PROGRESS' => 'In progress',
-                default       => $booking->status,
+                'REQUESTED'     => 'New request — respond or decline',
+                'QUOTED'        => 'Quote sent — awaiting customer',
+                'SCOPE_PENDING' => 'Brief received — review and send your quote',
+                'QUOTE_SENT'    => 'Quote sent — awaiting customer approval',
+                'ACCEPTED'      => 'Accepted — start when ready',
+                'FUNDS_HELD'    => 'Funds held in escrow — start when ready',
+                'DEPOSIT_HELD'  => 'Deposit held in escrow — balance collected at completion',
+                'IN_PROGRESS'   => 'In progress',
+                default         => $booking->status,
             };
 
             return [
@@ -311,8 +347,8 @@ class BookingService
             ->where('calculated_at', '>=', now()->subDays(7))
             ->sum('net_to_provider');
 
-        $new       = $entries->whereIn('status', ['REQUESTED', 'QUOTED'])->values()->all();
-        $scheduled = $entries->whereIn('status', ['ACCEPTED', 'FUNDS_HELD', 'IN_PROGRESS'])->values()->all();
+        $new       = $entries->whereIn('status', ['REQUESTED', 'QUOTED', 'SCOPE_PENDING', 'QUOTE_SENT'])->values()->all();
+        $scheduled = $entries->whereIn('status', ['ACCEPTED', 'FUNDS_HELD', 'DEPOSIT_HELD', 'IN_PROGRESS'])->values()->all();
 
         return [
             'weekly' => [
@@ -331,27 +367,114 @@ class BookingService
     // ── Escrow transitions ──────────────────────────────────────────────────
 
     /**
-     * Provider sends an alternate-price quote — REQUESTED → QUOTED.
+     * Provider sends a quote.
+     *
+     * Quote-first models (PROVIDER_SCOPE / QUOTE_DEPOSIT): a *scoped* quote —
+     * price + duration + what's included — SCOPE_PENDING → QUOTE_SENT. For
+     * QUOTE_DEPOSIT the deposit/balance split is fixed here from the service's
+     * deposit_percent. Escrow is only held after the customer approves.
+     *
+     * Legacy path (REQUESTED → QUOTED) is kept for alternate-price quotes on
+     * priced models.
      */
-    public function quote(string $id, User $provider, float $proposedAmount, ?string $message = null): Booking
-    {
+    public function quote(
+        string $id, User $provider, float $proposedAmount, ?string $message = null,
+        ?int $durationMins = null, array $inclusions = [],
+    ): Booking {
         if ($proposedAmount <= 0) {
             throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Quote amount must be greater than zero.');
         }
 
         $booking = $this->loadAndAuthorize($id, $provider, 'provider_id');
-        $this->machine->assertTransition($booking, 'QUOTED');
+        $booking->load(['service', 'provider.providerProfile']);
 
-        $booking->update([
-            'status'         => 'QUOTED',
-            'quoted_amount'  => $proposedAmount,
-            'agreed_amount'  => $proposedAmount,
-            'quote_message'  => $message,
-        ]);
+        // Tier job cap — quote-first bookings skip the check at create (no price
+        // yet), so the provider's quote is where it must hold.
+        $tier = TrustTier::from((int) ($booking->provider->providerProfile?->trust_tier ?? 1));
+        $cap  = $tier->jobCapZmw();
+        if ($cap !== null && $proposedAmount > $cap) {
+            throw new ApiException(
+                ErrorCode::TIER_EXCEEDED,
+                "Your current tier limits bookings to ZMW {$cap}. Complete additional verification to quote higher.",
+            );
+        }
+
+        $isScoped = $booking->status === 'SCOPE_PENDING';
+        $this->machine->assertTransition($booking, $isScoped ? 'QUOTE_SENT' : 'QUOTED');
+
+        // The quote changes the gross — recompute protection fee and the escrow
+        // split so the eventual hold and payout match the agreed price.
+        $protectionFee = $this->commission->buyerProtectionFee($proposedAmount, $booking->buyer_id, $provider->id);
+        $preview       = $this->commission->calculate(
+            gross:      $proposedAmount,
+            categoryId: (int) ($booking->service->category_id ?? 0),
+            tier:       $tier->value,
+            providerId: $provider->id,
+            buyerId:    $booking->buyer_id,
+        );
+
+        $fields = [
+            'status'               => $isScoped ? 'QUOTE_SENT' : 'QUOTED',
+            'quoted_amount'        => $proposedAmount,
+            'agreed_amount'        => $proposedAmount,
+            'amount'               => $proposedAmount,
+            'buyer_protection_fee' => $protectionFee,
+            'quote_message'        => $message,
+            'commission_split_zmw' => round($preview['commission'] + $preview['vat'], 2),
+            'provider_split_zmw'   => round($preview['net_to_provider'], 2),
+            'provider_quote'       => [
+                'price'          => $proposedAmount,
+                'duration_mins'  => $durationMins,
+                'inclusions'     => array_values($inclusions),
+                'message'        => $message,
+                'quoted_at'      => now()->toIso8601String(),
+            ],
+        ];
+
+        // QUOTE_DEPOSIT: two-phase escrow — deposit % now, balance at completion.
+        if ($booking->service->pricing_model === 'QUOTE_DEPOSIT') {
+            $pct     = (int) ($booking->service->deposit_percent ?? 30);
+            $deposit = round($proposedAmount * $pct / 100, 2);
+            $fields['deposit_amount'] = $deposit;
+            $fields['balance_amount'] = round($proposedAmount - $deposit, 2);
+        }
+
+        // Refine the guide end-time with the provider's scoped duration.
+        if ($durationMins !== null && $booking->scheduled_start) {
+            $fields['scheduled_end'] = $booking->scheduled_start->copy()->addMinutes($durationMins);
+        }
+
+        $booking->update($fields);
 
         $result = $this->findOrFail($id, $provider);
         $this->notify(new BookingQuoted($result));
         return $result;
+    }
+
+    /**
+     * Customer approves the scoped quote — QUOTE_SENT → escrow hold.
+     * Funds are only ever held AFTER this approval (deposit for QUOTE_DEPOSIT,
+     * full amount otherwise).
+     */
+    public function approveQuote(string $id, User $buyer, ?string $payerPhoneOverride = null): Booking
+    {
+        $booking = $this->loadAndAuthorize($id, $buyer, 'buyer_id');
+        $this->requireStatus($booking, 'QUOTE_SENT');
+
+        return $this->holdFunds($id, $buyer, $payerPhoneOverride);
+    }
+
+    /**
+     * Customer declines the scoped quote — QUOTE_SENT → CANCELLED, no charge.
+     */
+    public function declineQuote(string $id, User $buyer): Booking
+    {
+        $booking = $this->loadAndAuthorize($id, $buyer, 'buyer_id');
+        $this->requireStatus($booking, 'QUOTE_SENT');
+
+        $booking->update(['status' => 'CANCELLED']);
+
+        return $this->findOrFail($id, $buyer);
     }
 
     /**
@@ -370,48 +493,126 @@ class BookingService
     }
 
     /**
+     * Dispatch cascade — move the booking to the next shortlisted provider
+     * after a decline/timeout. Keeps the customer's agreed amount, but
+     * recomputes the escrow split for the new provider's tier so the payout
+     * is correct. Only valid while no work has started.
+     */
+    public function reassignProvider(string $id, string $newProviderId): Booking
+    {
+        $booking = Booking::with('service')->find($id);
+        if (! $booking) {
+            throw new NotFoundException('Booking');
+        }
+
+        if (! \in_array($booking->status, ['REQUESTED', 'QUOTED', 'SCOPE_PENDING', 'QUOTE_SENT', 'PENDING_PAYMENT', 'FUNDS_HELD'], true)) {
+            throw new ApiException(ErrorCode::VALIDATION_ERROR, 'This booking can no longer be reassigned.');
+        }
+
+        $newProvider = User::with('providerProfile')->find($newProviderId);
+        if (! $newProvider || ! $newProvider->providerProfile) {
+            throw new NotFoundException('Provider');
+        }
+
+        $gross = (float) ($booking->agreed_amount ?? $booking->amount);
+        $preview = $this->commission->calculate(
+            gross:      $gross,
+            categoryId: (int) ($booking->service->category_id ?? 0),
+            tier:       (int) $newProvider->providerProfile->trust_tier,
+            providerId: $newProvider->id,
+            buyerId:    $booking->buyer_id,
+        );
+
+        $fields = [
+            'provider_id'          => $newProvider->id,
+            'commission_split_zmw' => round($preview['commission'] + $preview['vat'], 2),
+            'provider_split_zmw'   => round($preview['net_to_provider'], 2),
+        ];
+
+        // Quote-first: a prior provider's quote doesn't transfer — the new
+        // provider reviews the same brief and quotes fresh.
+        if (\in_array($booking->status, ['SCOPE_PENDING', 'QUOTE_SENT'], true)) {
+            $fields['status']         = 'SCOPE_PENDING';
+            $fields['provider_quote'] = null;
+            $fields['quoted_amount']  = null;
+            $fields['agreed_amount']  = null;
+        }
+
+        $booking->update($fields);
+
+        return $booking->fresh();
+    }
+
+    /**
      * Buyer confirms and holds funds — REQUESTED/QUOTED → FUNDS_HELD.
      * This is the escrow payment step: customer pays via gateway, funds held.
      */
-    public function holdFunds(string $id, User $buyer): Booking
+    public function holdFunds(string $id, User $buyer, ?string $payerPhoneOverride = null): Booking
     {
         $booking = $this->loadAndAuthorize($id, $buyer, 'buyer_id');
         $booking->load(['buyer', 'service', 'provider.providerProfile']);
 
-        $buyerPhone = $booking->buyer->phone
+        // Quote-first models must never take money before the customer approves
+        // a scoped quote (SCOPE_PENDING has no price to hold).
+        if ($booking->status === 'SCOPE_PENDING') {
+            throw new ApiException(
+                ErrorCode::VALIDATION_ERROR,
+                'This booking is waiting for the provider\'s quote — payment comes after you approve it.',
+            );
+        }
+
+        // The override lets a customer retry with a different Mobile Money
+        // wallet (e.g. their MNO is down) without changing the account phone.
+        $buyerPhone = $payerPhoneOverride
+            ?? $booking->buyer->phone
             ?? throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Your account has no phone number on file.');
 
         $amount          = (float) ($booking->agreed_amount ?? $booking->amount);
         $commissionSplit = (float) ($booking->commission_split_zmw ?? 0);
         $providerSplit   = (float) ($booking->provider_split_zmw ?? $amount - $commissionSplit);
 
+        // QUOTE_DEPOSIT holds only the deposit at confirm; the balance is a
+        // second collection at completion (two-phase escrow).
+        $isDeposit  = $booking->service?->pricing_model === 'QUOTE_DEPOSIT' && $booking->deposit_amount !== null;
+        $holdAmount = ($isDeposit ? (float) $booking->deposit_amount : $amount)
+            + (float) $booking->buyer_protection_fee;
+        $heldState  = $isDeposit ? 'DEPOSIT_HELD' : 'FUNDS_HELD';
+
         $isAsync = config('pawapay.enabled', false);
 
         if ($isAsync) {
-            $this->machine->assertTransition($booking, 'PENDING_PAYMENT');
+            // "Resend payment prompt" calls holdFunds again while the booking is
+            // still PENDING_PAYMENT (the first MoMo prompt was never answered).
+            // That's a retry, not a state change — skip the assertion when we're
+            // already there instead of treating it as illegal.
+            if ($booking->status !== 'PENDING_PAYMENT') {
+                $this->machine->assertTransition($booking, 'PENDING_PAYMENT');
+            }
         } else {
-            $this->machine->assertTransition($booking, 'FUNDS_HELD');
+            $this->machine->assertTransition($booking, $heldState);
         }
 
         $holdRef = $this->gateway->holdFunds(
-            $buyerPhone, $amount + (float) $booking->buyer_protection_fee,
+            $buyerPhone, $holdAmount,
             $booking->id, $commissionSplit, $providerSplit,
         );
 
         if ($isAsync) {
-            // PawaPay: deposit initiated, MoMo prompt sent to customer.
-            // Callback will advance to FUNDS_HELD when customer confirms.
+            // PawaPay: deposit initiated, MoMo prompt sent to customer. Callback
+            // advances to FUNDS_HELD / DEPOSIT_HELD (per escrow_phase) on confirm.
             $booking->update([
                 'status'          => 'PENDING_PAYMENT',
                 'escrow_hold_ref' => $holdRef,
                 'agreed_amount'   => $amount,
+                'escrow_phase'    => $isDeposit ? 'DEPOSIT' : 'FULL',
             ]);
         } else {
             // Stub: instant success.
             $booking->update([
-                'status'          => 'FUNDS_HELD',
+                'status'          => $heldState,
                 'escrow_hold_ref' => $holdRef,
                 'agreed_amount'   => $amount,
+                'escrow_phase'    => $isDeposit ? 'DEPOSIT' : 'FULL',
             ]);
         }
 
@@ -527,15 +728,68 @@ class BookingService
 
     /**
      * Provider marks job delivered — IN_PROGRESS → DELIVERED (both modes).
+     *
+     * HOURLY_CAPPED: the provider logs the actual time worked here (structured,
+     * 0.5-hr increments, never customer input). The final charge is
+     * max(actual, minimum) × rate, capped at the held cap; the difference is
+     * refunded to the customer at completion.
      */
-    public function markDelivered(string $id, User $provider): Booking
+    public function markDelivered(string $id, User $provider, ?float $actualHours = null): Booking
     {
         $booking = $this->loadAndAuthorize($id, $provider, 'provider_id');
+        $booking->load('service');
         $this->machine->assertTransition($booking, 'DELIVERED');
-        $booking->update(['status' => 'DELIVERED']);
+
+        $fields = ['status' => 'DELIVERED'];
+
+        if ($booking->service?->pricing_model === 'HOURLY_CAPPED' && ! $this->machine->isLegacyDirect($booking)) {
+            if ($actualHours === null) {
+                throw new ApiException(
+                    ErrorCode::VALIDATION_ERROR,
+                    'Log the actual time worked (in half-hour steps) to mark this job done.',
+                );
+            }
+            if (fmod($actualHours * 10, 5) > 0.001 || $actualHours <= 0) {
+                throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Actual time must be in 0.5-hour increments.');
+            }
+            $capHours = (float) ($booking->service->cap_hours ?? $actualHours);
+            if ($actualHours > $capHours) {
+                throw new ApiException(
+                    ErrorCode::VALIDATION_ERROR,
+                    "Actual time can't exceed the booked cap of {$capHours} hours.",
+                );
+            }
+
+            $fields['actual_hours_logged'] = $actualHours;
+            $fields['actual_charge_zmw']   = $this->hourlyCappedCharge($booking, $actualHours);
+        }
+
+        $booking->update($fields);
         $result = $this->findOrFail($id, $provider);
         $this->notify(new BookingDelivered($result));
         return $result;
+    }
+
+    /**
+     * HOURLY_CAPPED final charge: max(actual, minimum) × rate, plus the
+     * confirmed add-ons, never above the held amount.
+     */
+    private function hourlyCappedCharge(Booking $booking, float $actualHours): float
+    {
+        $service  = $booking->service;
+        $rate     = (float) ($service->hourly_rate ?? 0);
+        $billable = max($actualHours, (float) ($service->minimum_hours ?? 0));
+
+        $addonTotal = 0.0;
+        if (! empty($booking->selected_addon_ids)) {
+            $addonTotal = (float) ServiceAddon::where('service_id', $service->id)
+                ->whereIn('id', $booking->selected_addon_ids)
+                ->sum('price');
+        }
+
+        $held = (float) ($booking->agreed_amount ?? $booking->amount);
+
+        return round(min($billable * $rate + $addonTotal, $held), 2);
     }
 
     /**
@@ -547,9 +801,42 @@ class BookingService
     public function complete(string $id, User $buyer): Booking
     {
         $booking = $this->loadAndAuthorize($id, $buyer, 'buyer_id');
+        $this->finalizeCompletion($booking);
+        return $this->findOrFail($id, $buyer);
+    }
+
+    /**
+     * System-initiated completion (dispute-window auto-complete). Runs the SAME
+     * money flow as a customer confirmation — commission, payout timer, hourly
+     * refund, balance collection — so auto-completed bookings actually pay out.
+     * (Previously the worker only flipped the status and called the legacy
+     * transaction-based payout, which stranded every PawaPay booking.)
+     */
+    public function autoComplete(string $bookingId): void
+    {
+        $booking = Booking::find($bookingId);
+        if (! $booking) {
+            return;
+        }
+        $this->finalizeCompletion($booking);
+    }
+
+    /**
+     * DELIVERED → COMPLETED for any pricing model.
+     *
+     * Escrow money flow at completion:
+     *   OUTCOME_FIXED / PROVIDER_SCOPE — release the agreed amount (after hold).
+     *   HOURLY_CAPPED — final charge = provider-logged actual time; the unused
+     *     part of the cap is refunded to the customer via the gateway, and the
+     *     commission/payout split is recomputed on the actual charge.
+     *   QUOTE_DEPOSIT — the balance (quote − deposit) is collected as a second
+     *     gateway deposit; the payout is gated on escrow_phase = FULL.
+     */
+    private function finalizeCompletion(Booking $booking): void
+    {
         $this->machine->assertTransition($booking, 'COMPLETED');
 
-        $booking->load(['service.category', 'provider.providerProfile']);
+        $booking->load(['service.category', 'buyer', 'provider.providerProfile']);
 
         if ($this->machine->isLegacyDirect($booking)) {
             DB::transaction(function () use ($booking) {
@@ -561,9 +848,19 @@ class BookingService
             });
 
             $this->personalization->invalidate($booking->buyer_id);
-            $result = $this->findOrFail($id, $buyer);
-            $this->notify(new BookingCompleted($result));
-            return $result;
+            $this->notify(new BookingCompleted($booking->fresh()->load('service')));
+            return;
+        }
+
+        $model     = $booking->service?->pricing_model;
+        $heldGross = (float) ($booking->agreed_amount ?? $booking->amount);
+
+        // HOURLY_CAPPED: settle on the actual charge computed at delivery.
+        $finalGross   = $heldGross;
+        $refundAmount = 0.0;
+        if ($model === 'HOURLY_CAPPED' && $booking->actual_charge_zmw !== null) {
+            $finalGross   = (float) $booking->actual_charge_zmw;
+            $refundAmount = round(max($heldGross - $finalGross, 0), 2);
         }
 
         // Escrow: payout hold logic
@@ -571,34 +868,132 @@ class BookingService
         $holdHours  = TrustTier::from($tier)->payoutHoldHours();
         $eligibleAt = now()->addHours($holdHours);
 
-        DB::transaction(function () use ($booking, $eligibleAt) {
-            $booking->update([
+        DB::transaction(function () use ($booking, $eligibleAt, $finalGross, $heldGross) {
+            $fields = [
                 'status'             => 'COMPLETED',
                 'completed_at'       => now(),
                 'payout_eligible_at' => $eligibleAt,
-            ]);
-            $this->commission->record($booking, 'ESCROW', 'COLLECTED');
+            ];
+
+            // Settle the booking on the final gross and keep the payout split in
+            // sync — disbursePayout releases provider_split_zmw verbatim.
+            if (abs($finalGross - $heldGross) >= 0.01) {
+                $preview = $this->commission->calculate(
+                    gross:      $finalGross,
+                    categoryId: (int) ($booking->service->category_id ?? 0),
+                    tier:       (int) ($booking->provider->providerProfile->trust_tier ?? 1),
+                    providerId: $booking->provider_id,
+                    buyerId:    $booking->buyer_id,
+                );
+                $fields['agreed_amount']        = $finalGross;
+                $fields['commission_split_zmw'] = round($preview['commission'] + $preview['vat'], 2);
+                $fields['provider_split_zmw']   = round($preview['net_to_provider'], 2);
+            }
+
+            $booking->update($fields);
+            $this->commission->record($booking->fresh(['service.category', 'provider.providerProfile']), 'ESCROW', 'COLLECTED');
 
             if ($booking->buyer_protection_fee > 0) {
                 $this->reserve->credit($booking);
             }
         });
 
-        $this->personalization->invalidate($booking->buyer_id);
-        $this->notify(new BookingCompleted($booking));
-
-        if ($eligibleAt->isPast()) {
-            $this->disbursePayout($booking->fresh()->load('service', 'provider'));
+        // HOURLY_CAPPED: return the unused part of the cap to the customer.
+        // Best-effort — a failed refund is logged for manual reconciliation and
+        // never blocks the completion itself.
+        if ($refundAmount >= 0.01 && $booking->escrow_hold_ref) {
+            try {
+                $ok = $this->gateway->refund(
+                    $booking->escrow_hold_ref,
+                    $booking->buyer?->phone ?? '',
+                    $refundAmount,
+                );
+                Log::info('BookingService: hourly-capped unused-cap refund ' . ($ok ? 'initiated' : 'FAILED'), [
+                    'booking_id' => $booking->id, 'refund_zmw' => $refundAmount,
+                ]);
+            } catch (\Throwable $e) {
+                Log::error('BookingService: hourly-capped refund failed — needs manual reconciliation', [
+                    'booking_id' => $booking->id, 'refund_zmw' => $refundAmount, 'error' => $e->getMessage(),
+                ]);
+            }
         }
 
-        return $this->findOrFail($id, $buyer);
+        // QUOTE_DEPOSIT: second collection for the balance (deposit was held at
+        // confirm). The payout stays gated until the balance deposit completes.
+        if ($model === 'QUOTE_DEPOSIT' && (float) $booking->balance_amount >= 0.01
+            && $booking->escrow_phase !== 'FULL') {
+            $this->collectBalance($booking);
+        }
+
+        $this->personalization->invalidate($booking->buyer_id);
+        $this->notify(new BookingCompleted($booking->fresh()->load('service')));
+
+        if ($eligibleAt->isPast()) {
+            $this->disbursePayout($booking->fresh()->load('service', 'provider.providerProfile'));
+        }
     }
 
     /**
-     * Release escrow funds to the provider via the PaymentGateway.
+     * QUOTE_DEPOSIT phase 2 — collect the balance via a second gateway deposit
+     * against the same booking reference. Async gateways confirm through the
+     * PawaPay callback (balance_hold_ref → escrow_phase FULL); the stub confirms
+     * inline. A failure leaves escrow_phase = DEPOSIT so it can be retried.
      */
-    private function disbursePayout(Booking $booking): void
+    public function collectBalance(Booking $booking): void
     {
+        $booking->loadMissing(['buyer', 'service']);
+
+        $buyerPhone = $booking->buyer?->phone;
+        if (! $buyerPhone) {
+            Log::error('BookingService::collectBalance — buyer has no phone', ['booking_id' => $booking->id]);
+            return;
+        }
+
+        try {
+            $balanceRef = $this->gateway->holdFunds(
+                $buyerPhone,
+                (float) $booking->balance_amount,
+                $booking->id,
+                0.0,
+                (float) $booking->balance_amount,
+            );
+        } catch (\Throwable $e) {
+            Log::error('BookingService::collectBalance — balance collection failed, will retry', [
+                'booking_id' => $booking->id, 'error' => $e->getMessage(),
+            ]);
+            return;
+        }
+
+        $booking->update([
+            'balance_hold_ref' => $balanceRef,
+            'escrow_phase'     => config('pawapay.enabled', false) ? 'BALANCE' : 'FULL',
+        ]);
+
+        Log::info('BookingService: balance collection initiated', [
+            'booking_id' => $booking->id,
+            'balanceRef' => $balanceRef,
+            'amount'     => (float) $booking->balance_amount,
+        ]);
+    }
+
+    /**
+     * Release escrow funds to the provider via the PaymentGateway. Public so
+     * the admin Finance module can retry a failed payout (AdminFinanceService)
+     * — same logic, no new disbursement path.
+     */
+    public function disbursePayout(Booking $booking): void
+    {
+        // QUOTE_DEPOSIT: never release until BOTH collections are custodied
+        // (deposit at confirm + balance at completion → escrow_phase FULL).
+        if ($booking->balance_amount !== null
+            && (float) $booking->balance_amount >= 0.01
+            && $booking->escrow_phase !== 'FULL') {
+            Log::info('BookingService::disbursePayout — waiting for balance collection', [
+                'booking_id' => $booking->id, 'escrow_phase' => $booking->escrow_phase,
+            ]);
+            return;
+        }
+
         if (! $booking->escrow_hold_ref) {
             // Fall back to legacy payment service for old ESCROW bookings
             $this->payment->initiatePayout($booking);
@@ -613,15 +1008,20 @@ class BookingService
 
         $amount = (float) ($booking->provider_split_zmw ?? $booking->amount);
 
-        $success = $this->gateway->releaseFunds(
+        $payoutRef = $this->gateway->releaseFunds(
             $booking->escrow_hold_ref,
             $profile->momo_number,
             $amount,
             $booking->id,
         );
 
-        if ($success) {
-            $booking->update(['status' => 'DISBURSED', 'disbursed_at' => now()]);
+        if ($payoutRef !== null) {
+            // Persist the payout reference BEFORE the async callback can arrive —
+            // PawapayCallbackController::handlePayoutCallback looks the booking
+            // up by this column, the same reliable pattern escrow_hold_ref uses
+            // for deposits.
+            $booking->update(['status' => 'DISBURSED', 'disbursed_at' => now(), 'payout_ref' => $payoutRef]);
+            $this->notify(new \App\Events\PayoutReleased($booking));
         } else {
             Log::error('BookingService::disbursePayout — gateway release failed', ['booking_id' => $booking->id]);
         }
@@ -714,16 +1114,19 @@ class BookingService
             return $this->findOrFail($id, $buyer);
         }
 
-        // Escrow cancellation
-        if (! \in_array($booking->status, ['REQUESTED', 'QUOTED', 'FUNDS_HELD'], true)) {
+        // Escrow cancellation — quote-first states (SCOPE_PENDING / QUOTE_SENT)
+        // carry no funds; DEPOSIT_HELD refunds the deposit.
+        if (! \in_array($booking->status, ['REQUESTED', 'QUOTED', 'SCOPE_PENDING', 'QUOTE_SENT', 'FUNDS_HELD', 'DEPOSIT_HELD'], true)) {
             throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Booking can only be cancelled before it starts.');
         }
 
         DB::transaction(function () use ($booking) {
-            if ($booking->status === 'FUNDS_HELD' && $booking->escrow_hold_ref) {
+            if (\in_array($booking->status, ['FUNDS_HELD', 'DEPOSIT_HELD'], true) && $booking->escrow_hold_ref) {
                 $buyerPhone = $booking->buyer->phone ?? '';
-                $amount     = (float) $booking->amount + (float) $booking->buyer_protection_fee;
-                $this->gateway->refund($booking->escrow_hold_ref, $buyerPhone, $amount);
+                $held       = $booking->status === 'DEPOSIT_HELD'
+                    ? (float) $booking->deposit_amount
+                    : (float) ($booking->agreed_amount ?? $booking->amount);
+                $this->gateway->refund($booking->escrow_hold_ref, $buyerPhone, $held + (float) $booking->buyer_protection_fee);
             } elseif ($booking->status === 'FUNDS_HELD') {
                 $this->payment->initiateRefund($booking);
             }

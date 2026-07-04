@@ -37,6 +37,28 @@ class PaymentExpiryWorker extends Command
                 "booking_id" => $booking->id,
                 "created_at" => $booking->created_at,
             ]);
+
+            // WhatsApp bookings: tell the customer and release the conversation
+            // so it isn't stuck in FUNDING (and the timeout job doesn't double-fire).
+            try {
+                $convo = \App\Models\ConversationState::where("booking_id", $booking->id)
+                    ->whereIn("state", ["FUNDING", "PAYMENT_FAILED"])
+                    ->first();
+
+                if ($convo) {
+                    app(\App\Services\WhatsApp\TemplateManager::class)->sendMessage(
+                        $convo->whatsapp_id,
+                        "Your payment window has expired and the booking was cancelled — no money was taken. You can start a new booking anytime.",
+                        $convo,
+                    );
+                    $convo->update(["state" => "EXPIRED", "sub_state" => null, "timeout_at" => null]);
+                }
+            } catch (\Throwable $e) {
+                Log::warning("PaymentExpiryWorker: customer notify failed", [
+                    "booking_id" => $booking->id,
+                    "error"      => $e->getMessage(),
+                ]);
+            }
         }
 
         $this->info("Expired {$expired->count()} payment(s).");

@@ -2,14 +2,14 @@
 
 import { useQueryClient, useMutation } from '@tanstack/react-query'
 import {
-  ShieldCheck,
-  Ban,
-  HelpCircle,
-  UserPlus,
-  Lock,
-  BadgeCheck,
-  Clock,
-} from 'lucide-react'
+  IoShieldCheckmarkOutline,
+  IoBanOutline,
+  IoHelpCircleOutline,
+  IoPersonAddOutline,
+  IoLockClosedOutline,
+  IoRibbonOutline,
+  IoTimeOutline,
+} from 'react-icons/io5'
 import { Avatar } from '@/components/ui/Avatar'
 import { StatusPill } from '@/components/ui/StatusPill'
 import { AuditTrail } from '@/components/ui/AuditTrail'
@@ -33,7 +33,7 @@ import { VerificationTimeline } from '@/components/verification/VerificationTime
 
 const AUDIT_TARGET_TYPE = 'verification_submission'
 
-// Empty decision payload â€” the audited-mutation wrapper appends { reason }.
+// Empty decision payload — the audited-mutation wrapper appends { reason }.
 // No artifact data ever enters this payload.
 type DecisionPayload = Record<string, never>
 
@@ -60,7 +60,7 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
     queryClient.invalidateQueries({ queryKey: ['verification', detail.id] })
   }
 
-  // â”€â”€ Claim / assignment (not a state decision â†’ no reason required) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Claim / assignment (not a state decision → no reason required) ──────
   const claimMutation = useMutation({
     mutationFn: () => verificationApi.claim(detail.id),
     onSuccess: () => {
@@ -70,7 +70,7 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
     onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not claim submission.'),
   })
 
-  // â”€â”€ Decisions â€” all via the audited-mutation wrapper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Decisions — all via the audited-mutation wrapper ────────────────────
   const approve = useAuditedMutation<DecisionPayload, Detail>({
     capability: 'write:verification',
     audit: {
@@ -115,7 +115,7 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
     return (
       <div className="space-y-4">
         {Array.from({ length: 4 }).map((_, i) => (
-          <div key={i} className="h-24 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800" />
+          <div key={i} className="h-24 animate-pulse rounded-sm bg-slate-100 dark:bg-slate-800" />
         ))}
       </div>
     )
@@ -123,9 +123,9 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
 
   return (
     <div className="space-y-6">
-      {/* â”€â”€ Applicant summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Applicant summary ──────────────────────────────────────────── */}
       <section className="flex items-start gap-3">
-        {/* Initials avatar â€” NEVER the KYC selfie */}
+        {/* Initials avatar — NEVER the KYC selfie */}
         <Avatar name={applicant.display_name} size="lg" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -188,22 +188,22 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
       </section>
 
       {/* Submission meta */}
-      <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
-        <BadgeCheck className="size-3.5 shrink-0 text-slate-400" />
+      <div className="flex items-center gap-2 rounded-sm bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
+        <IoRibbonOutline className="size-3.5 shrink-0 text-slate-400" />
         <span>{typeLabel}</span>
-        <span aria-hidden="true">Â·</span>
-        <Clock className="size-3.5 shrink-0 text-slate-400" />
+        <span aria-hidden="true">·</span>
+        <IoTimeOutline className="size-3.5 shrink-0 text-slate-400" />
         <span>Submitted {fmtRelative(detail.submitted_at)}</span>
       </div>
 
-      {/* â”€â”€ Progression timeline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Progression timeline ───────────────────────────────────────── */}
       <VerificationTimeline events={detail.timeline ?? []} />
 
-      {/* â”€â”€ Resolved banner (read-only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Resolved banner (read-only) ────────────────────────────────── */}
       {resolved && detail.decision && (
         <div
           className={cn(
-            'rounded-lg border px-4 py-3 text-sm',
+            'rounded-sm border px-4 py-3 text-sm',
             detail.decision.outcome === 'approved'
               ? 'border-teal-200 bg-teal-50 text-teal-800 dark:border-teal-800 dark:bg-teal-900/20 dark:text-teal-300'
               : 'border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300',
@@ -211,22 +211,22 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
         >
           <p className="font-medium">
             {detail.decision.outcome === 'approved' ? 'Approved' : 'Rejected'} by{' '}
-            {detail.decision.decided_by} Â· {fmtDatetime(detail.decision.decided_at)}
+            {detail.decision.decided_by} · {fmtDatetime(detail.decision.decided_at)}
           </p>
           <p className="mt-1 text-xs opacity-90">Reason: {detail.decision.reason}</p>
         </div>
       )}
 
-      {/* â”€â”€ Submitted artifacts (reviewer-only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Submitted artifacts (reviewer-only) ────────────────────────── */}
       <ArtifactViewer artifacts={detail.artifacts} />
 
-      {/* â”€â”€ Certification metadata (Â§5.2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Certification metadata (§5.2) ──────────────────────────────── */}
       {detail.certification && (
         <section className="space-y-1.5">
           <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
             Certification details
           </h3>
-          <dl className="rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700">
+          <dl className="rounded-sm border border-slate-200 px-3 py-2 text-sm dark:border-slate-700">
             <div className="flex justify-between gap-2 py-1">
               <dt className="text-slate-400">Title</dt>
               <dd className="text-slate-700 dark:text-slate-300">{detail.certification.title}</dd>
@@ -257,13 +257,13 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
         </section>
       )}
 
-      {/* â”€â”€ Tier 4 prerequisite gate (Â§4.5) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Tier 4 prerequisite gate (§4.5) ────────────────────────────── */}
       {detail.tier4 && <Tier4Prerequisites prereqs={detail.tier4} />}
 
-      {/* â”€â”€ Automated checks (advisory, read-only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Automated checks (advisory, read-only) ─────────────────────── */}
       <AutomatedChecks checks={detail.automated} />
 
-      {/* â”€â”€ Audit trail for this submission â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Audit trail for this submission ────────────────────────────── */}
       <section className="space-y-2">
         <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
           Audit trail
@@ -271,12 +271,12 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
         <AuditTrail targetType={AUDIT_TARGET_TYPE} targetId={detail.id} />
       </section>
 
-      {/* â”€â”€ Decision actions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Decision actions ───────────────────────────────────────────── */}
       <Can
         do="write:verification"
         fallback={
-          <p className="rounded-lg border border-dashed border-slate-200 px-3 py-3 text-center text-xs text-slate-400 dark:border-slate-700">
-            <Lock className="mr-1 inline size-3" />
+          <p className="rounded-sm border border-dashed border-slate-200 px-3 py-3 text-center text-xs text-slate-400 dark:border-slate-700">
+            <IoLockClosedOutline className="mr-1 inline size-3" />
             You have read-only access to verifications.
           </p>
         }
@@ -287,7 +287,7 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
               This submission is resolved and read-only. See the audit trail above for the decision.
             </p>
           ) : claimedByOther ? (
-            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-center text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400">
+            <p className="rounded-sm border border-amber-200 bg-amber-50 px-3 py-2 text-center text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400">
               In review by {detail.claimed_by!.name}. Another reviewer is handling this item.
             </p>
           ) : !claimedByMe ? (
@@ -295,10 +295,10 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
               type="button"
               onClick={() => claimMutation.mutate()}
               disabled={claimMutation.isPending}
-              className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-teal-600 text-sm font-medium text-white transition-colors hover:bg-teal-700 disabled:opacity-50"
+              className="flex h-11 w-full items-center justify-center gap-2 rounded-sm bg-teal-600 text-sm font-medium text-white transition-colors hover:bg-teal-700 disabled:opacity-50"
             >
-              <UserPlus className="size-4" />
-              {claimMutation.isPending ? 'Claimingâ€¦' : 'Claim to review'}
+              <IoPersonAddOutline className="size-4" />
+              {claimMutation.isPending ? 'Claiming…' : 'Claim to review'}
             </button>
           ) : (
             <div className="grid grid-cols-3 gap-2">
@@ -307,9 +307,9 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
                 onClick={() => approve.trigger({})}
                 disabled={!canAct || anyPending}
                 aria-label={`Approve ${typeLabel} for ${applicant.display_name}`}
-                className="flex h-11 items-center justify-center gap-1.5 rounded-lg bg-teal-600 text-sm font-medium text-white transition-colors hover:bg-teal-700 disabled:opacity-50"
+                className="flex h-11 items-center justify-center gap-1.5 rounded-sm bg-teal-600 text-sm font-medium text-white transition-colors hover:bg-teal-700 disabled:opacity-50"
               >
-                <ShieldCheck className="size-4" />
+                <IoShieldCheckmarkOutline className="size-4" />
                 Approve
               </button>
               <button
@@ -317,9 +317,9 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
                 onClick={() => requestInfo.trigger({})}
                 disabled={!canAct || anyPending}
                 aria-label={`Request more information from ${applicant.display_name}`}
-                className="flex h-11 items-center justify-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-400"
+                className="flex h-11 items-center justify-center gap-1.5 rounded-sm border border-amber-300 bg-amber-50 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-400"
               >
-                <HelpCircle className="size-4" />
+                <IoHelpCircleOutline className="size-4" />
                 More info
               </button>
               <button
@@ -327,9 +327,9 @@ export function VerificationDetail({ detail, currentUserId, isLoading }: Props) 
                 onClick={() => reject.trigger({})}
                 disabled={!canAct || anyPending}
                 aria-label={`Reject ${typeLabel} for ${applicant.display_name}`}
-                className="flex h-11 items-center justify-center gap-1.5 rounded-lg border border-red-300 bg-red-50 text-sm font-medium text-red-700 transition-colors hover:bg-red-100 disabled:opacity-50 dark:border-red-700 dark:bg-red-900/20 dark:text-red-400"
+                className="flex h-11 items-center justify-center gap-1.5 rounded-sm border border-red-300 bg-red-50 text-sm font-medium text-red-700 transition-colors hover:bg-red-100 disabled:opacity-50 dark:border-red-700 dark:bg-red-900/20 dark:text-red-400"
               >
-                <Ban className="size-4" />
+                <IoBanOutline className="size-4" />
                 Reject
               </button>
             </div>

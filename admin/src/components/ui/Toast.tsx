@@ -1,15 +1,15 @@
 ﻿'use client'
 
 import { useEffect } from 'react'
-import { CheckCircle2, XCircle, AlertTriangle, Info, X } from 'lucide-react'
+import { IoCheckmarkCircleOutline, IoCloseCircleOutline, IoWarningOutline, IoInformationCircleOutline, IoCloseOutline } from 'react-icons/io5'
 import { cn } from '@/lib/utils'
 import { useToastStore, type ToastType } from '@/lib/store/toast-store'
 
-const ICON: Record<ToastType, typeof CheckCircle2> = {
-  success: CheckCircle2,
-  error:   XCircle,
-  warning: AlertTriangle,
-  info:    Info,
+const ICON: Record<ToastType, typeof IoCheckmarkCircleOutline> = {
+  success: IoCheckmarkCircleOutline,
+  error:   IoCloseCircleOutline,
+  warning: IoWarningOutline,
+  info:    IoInformationCircleOutline,
 }
 
 const STYLES: Record<ToastType, string> = {
@@ -47,7 +47,7 @@ function ToastItem({ id, type, message, duration = DEFAULT_DURATION }: {
       role="alert"
       aria-live="polite"
       className={cn(
-        'flex items-start gap-3 rounded-lg border px-4 py-3 min-w-72 max-w-sm',
+        'flex items-start gap-3 rounded-sm border px-4 py-3 min-w-72 max-w-sm',
         STYLES[type],
       )}
     >
@@ -58,7 +58,7 @@ function ToastItem({ id, type, message, duration = DEFAULT_DURATION }: {
         className="shrink-0 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
         aria-label="Dismiss"
       >
-        <X className="size-3.5" />
+        <IoCloseOutline className="size-3.5" />
       </button>
     </div>
   )

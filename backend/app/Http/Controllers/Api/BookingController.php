@@ -9,6 +9,7 @@ use App\Http\Resources\BookingResource;
 use App\Services\BookingService;
 use App\Services\DisputeService;
 use App\Support\ApiResponse;
+use App\Support\PhoneNumber;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -60,10 +61,30 @@ class BookingController extends Controller
      * Buyer funds the booking: REQUESTED/QUOTED → PENDING_PAYMENT (PawaPay deposit
      * initiated, MoMo USSD push sent; the PawaPay callback advances to FUNDS_HELD)
      * or → FUNDS_HELD directly when the gateway is synchronous (stub/test).
+     *
+     * `momo_number` is optional — lets the buyer send the collection request to a
+     * different Mobile Money wallet than their account phone (e.g. a shared family
+     * line, or their own number is down). Falls back to the account phone when omitted.
      */
     public function pay(Request $request, string $id): JsonResponse
     {
-        $booking = $this->bookings->holdFunds($id, $request->user());
+        $data = $request->validate([
+            'momo_number' => ['sometimes', 'nullable', 'string'],
+        ]);
+
+        $momoNumber = null;
+        if (! empty($data['momo_number'])) {
+            $momoNumber = PhoneNumber::normalize($data['momo_number']);
+            if (! $momoNumber) {
+                return ApiResponse::error(
+                    'Enter a valid Zambian Mobile Money number (e.g. 0977123456).',
+                    'VALIDATION_ERROR',
+                    422,
+                );
+            }
+        }
+
+        $booking = $this->bookings->holdFunds($id, $request->user(), $momoNumber);
 
         $message = $booking->status === 'PENDING_PAYMENT'
             ? 'Check your phone — approve the mobile-money prompt to hold the funds.'
@@ -79,11 +100,30 @@ class BookingController extends Controller
         return ApiResponse::success(new BookingResource($booking), 'Booking accepted.');
     }
 
-    /** POST /bookings/{id}/quote — DIRECT: provider sends an alternate-price quote */
+    /**
+     * POST /bookings/{id}/quote — provider sends a quote.
+     * PROVIDER_SCOPE / QUOTE_DEPOSIT: a scoped quote (price + duration + what's
+     * included) against the customer's brief — SCOPE_PENDING → QUOTE_SENT.
+     * Legacy/priced models: an alternate-price quote — REQUESTED → QUOTED.
+     */
     public function quote(Request $request, string $id): JsonResponse
     {
-        $request->validate(['quoted_amount' => 'required|numeric|min:1']);
-        $booking = $this->bookings->quote($id, $request->user(), (float) $request->quoted_amount);
+        $data = $request->validate([
+            'quoted_amount'  => ['required', 'numeric', 'min:1'],
+            'duration_mins'  => ['sometimes', 'nullable', 'integer', 'min:15', 'max:10080'],
+            'inclusions'     => ['sometimes', 'array', 'max:20'],
+            'inclusions.*'   => ['string', 'max:120'],
+            'message'        => ['sometimes', 'nullable', 'string', 'max:500'],
+        ]);
+
+        $booking = $this->bookings->quote(
+            $id,
+            $request->user(),
+            (float) $data['quoted_amount'],
+            $data['message'] ?? null,
+            isset($data['duration_mins']) ? (int) $data['duration_mins'] : null,
+            $data['inclusions'] ?? [],
+        );
         return ApiResponse::success(new BookingResource($booking), 'Quote sent to buyer.');
     }
 
@@ -92,6 +132,43 @@ class BookingController extends Controller
     {
         $booking = $this->bookings->acceptQuote($id, $request->user());
         return ApiResponse::success(new BookingResource($booking), 'Quote accepted.');
+    }
+
+    /**
+     * POST /bookings/{id}/approve-quote — customer approves the scoped quote
+     * (QUOTE_SENT). Escrow hold starts here: full amount, or the deposit for
+     * QUOTE_DEPOSIT services. Optional momo_number override as with /pay.
+     */
+    public function approveQuote(Request $request, string $id): JsonResponse
+    {
+        $data = $request->validate(['momo_number' => ['sometimes', 'nullable', 'string']]);
+
+        $momoNumber = null;
+        if (! empty($data['momo_number'])) {
+            $momoNumber = PhoneNumber::normalize($data['momo_number']);
+            if (! $momoNumber) {
+                return ApiResponse::error(
+                    'Enter a valid Zambian Mobile Money number (e.g. 0977123456).',
+                    'VALIDATION_ERROR',
+                    422,
+                );
+            }
+        }
+
+        $booking = $this->bookings->approveQuote($id, $request->user(), $momoNumber);
+
+        $message = $booking->status === 'PENDING_PAYMENT'
+            ? 'Check your phone — approve the mobile-money prompt to hold the funds.'
+            : 'Quote approved. Funds held in escrow.';
+
+        return ApiResponse::success(new BookingResource($booking), $message);
+    }
+
+    /** POST /bookings/{id}/decline-quote — customer declines the scoped quote; no charge. */
+    public function declineQuote(Request $request, string $id): JsonResponse
+    {
+        $booking = $this->bookings->declineQuote($id, $request->user());
+        return ApiResponse::success(new BookingResource($booking), 'Quote declined — booking cancelled, nothing was charged.');
     }
 
     /** POST /bookings/{id}/decline — DIRECT: provider declines */
@@ -115,10 +192,22 @@ class BookingController extends Controller
         return ApiResponse::success(new BookingResource($booking), 'Booking marked as in progress.');
     }
 
-    /** POST /bookings/{id}/deliver */
+    /**
+     * POST /bookings/{id}/deliver
+     * HOURLY_CAPPED requires `actual_hours` (0.5-hr increments) — the provider
+     * logs actual time here; the customer is never asked for hours.
+     */
     public function deliver(Request $request, string $id): JsonResponse
     {
-        $booking = $this->bookings->markDelivered($id, $request->user());
+        $data = $request->validate([
+            'actual_hours' => ['sometimes', 'nullable', 'numeric', 'min:0.5', 'max:24', 'multiple_of:0.5'],
+        ]);
+
+        $booking = $this->bookings->markDelivered(
+            $id,
+            $request->user(),
+            isset($data['actual_hours']) ? (float) $data['actual_hours'] : null,
+        );
         return ApiResponse::success(new BookingResource($booking), 'Booking marked as delivered.');
     }
 

@@ -105,8 +105,11 @@ class RealDispatchService implements DispatchService
         $booking = Booking::with('service')->find($bookingId);
         if (! $booking) return null;
 
+        // The CUSTOMER conversation owns the shortlist; the provider's own
+        // conversation may carry the same booking_id — never cascade off it.
         $convoState = DB::table('conversation_states')
             ->where('booking_id', $bookingId)
+            ->whereRaw("COALESCE(context->>'role', '') <> 'provider'")
             ->whereNull('deleted_at')
             ->first();
 

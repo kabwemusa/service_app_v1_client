@@ -1,10 +1,10 @@
 ﻿'use client'
 
-import { CheckCircle2, XCircle } from 'lucide-react'
+import { IoCheckmarkCircleOutline, IoCloseCircleOutline } from 'react-icons/io5'
 import { cn } from '@/lib/utils'
 import type { Tier4Prerequisites as Prereqs } from '@/lib/api/verification'
 
-// Â§4.5 Professional-tier gate shown alongside the skill proof. The platform
+// §4.5 Professional-tier gate shown alongside the skill proof. The platform
 // track-record path requires 20 completed jobs at â‰¥4.5 average with zero upheld
 // disputes. We surface progress so the reviewer can see prerequisite status
 // next to the uploaded credential.
@@ -18,7 +18,7 @@ function PrereqRow({
   met: boolean
   value: string
 }) {
-  const Icon = met ? CheckCircle2 : XCircle
+  const Icon = met ? IoCheckmarkCircleOutline : IoCloseCircleOutline
   return (
     <div className="flex items-center gap-2 py-1.5">
       <Icon
@@ -47,7 +47,7 @@ export function Tier4Prerequisites({ prereqs }: { prereqs: Prereqs }) {
           id="tier4-heading"
           className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400"
         >
-          Tier 4 prerequisites Â· Â§4.5
+          Tier 4 prerequisites
         </h3>
         <span
           className={cn(
@@ -61,7 +61,7 @@ export function Tier4Prerequisites({ prereqs }: { prereqs: Prereqs }) {
         </span>
       </div>
 
-      <div className="rounded-lg border border-slate-200 px-3 dark:border-slate-700">
+      <div className="rounded-sm border border-slate-200 px-3 dark:border-slate-700">
         <PrereqRow
           label={`Completed jobs (â‰¥ ${prereqs.required_jobs})`}
           met={prereqs.jobs_met}
@@ -80,7 +80,7 @@ export function Tier4Prerequisites({ prereqs }: { prereqs: Prereqs }) {
           <PrereqRow
             label={`Average rating (â‰¥ ${prereqs.required_rating.toFixed(1)})`}
             met={prereqs.rating_met}
-            value={prereqs.avg_rating !== null ? prereqs.avg_rating.toFixed(2) : 'â€”'}
+            value={prereqs.avg_rating !== null ? prereqs.avg_rating.toFixed(2) : '—'}
           />
         </div>
         <div className="border-t border-slate-100 dark:border-slate-800">
@@ -92,7 +92,7 @@ export function Tier4Prerequisites({ prereqs }: { prereqs: Prereqs }) {
         </div>
       </div>
       <p className="text-xs text-slate-400 dark:text-slate-500">
-        The track-record path is one of three Â§4.5 routes; a verified trade certificate or portfolio
+        The track-record path is one of three routes; a verified trade certificate or portfolio
         review can substitute. Review the skill proof above before deciding.
       </p>
     </section>

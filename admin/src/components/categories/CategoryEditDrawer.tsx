@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Plus, X } from 'lucide-react'
+import { IoAddOutline, IoCloseOutline } from 'react-icons/io5'
 import { DetailPanel } from '@/components/ui/DetailPanel'
 import { StatusPill } from '@/components/ui/StatusPill'
 import { useAuditedMutation } from '@/lib/audit/audited-mutation'
@@ -188,7 +188,7 @@ export function CategoryEditDrawer({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+            className="rounded-sm px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
           >
             Cancel
           </button>
@@ -197,7 +197,7 @@ export function CategoryEditDrawer({
             onClick={handleSubmit(onSubmit)}
             disabled={saveMutation.isPending || (!isDirty && !isCreate)}
             className={cn(
-              'rounded-lg px-4 py-2 text-sm font-medium transition-colors min-h-[44px]',
+              'rounded-sm px-4 py-2 text-sm font-medium transition-colors min-h-[44px]',
               saveMutation.isPending || (!isDirty && !isCreate)
                 ? 'cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-slate-700'
                 : 'bg-teal-600 text-white hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-500',
@@ -217,7 +217,7 @@ export function CategoryEditDrawer({
         {serverError && (
           <div
             role="alert"
-            className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-400"
+            className="rounded-sm border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-400"
           >
             {serverError}
           </div>
@@ -227,7 +227,7 @@ export function CategoryEditDrawer({
         {activationBlocked && (
           <div
             role="alert"
-            className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300"
+            className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300"
           >
             A commission band is required before this category can be activated (v3 §8.1).
           </div>
@@ -395,10 +395,10 @@ export function CategoryEditDrawer({
               <button
                 type="button"
                 onClick={addSynonym}
-                className="flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700 min-h-[44px]"
+                className="flex items-center gap-1 rounded-sm border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700 min-h-[44px]"
                 aria-label="Add synonym"
               >
-                <Plus className="size-4" />
+                <IoAddOutline className="size-4" />
               </button>
             </div>
 
@@ -417,7 +417,7 @@ export function CategoryEditDrawer({
                       className="ml-0.5 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
                       aria-label={`Remove synonym "${s}"`}
                     >
-                      <X className="size-3" />
+                      <IoCloseOutline className="size-3" />
                     </button>
                   </span>
                 ))}
@@ -435,7 +435,7 @@ export function CategoryEditDrawer({
 
 function inputCls(hasError: boolean) {
   return cn(
-    'w-full rounded-lg border px-3 py-2 text-sm transition-colors',
+    'w-full rounded-sm border px-3 py-2 text-sm transition-colors',
     'bg-white text-slate-900 placeholder:text-slate-400',
     'dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500',
     'focus:outline-none focus:ring-2 focus:ring-teal-500',

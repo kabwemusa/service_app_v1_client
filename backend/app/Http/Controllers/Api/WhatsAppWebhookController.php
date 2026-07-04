@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ConversationState;
 use App\Models\ProcessedMessage;
 use App\Models\User;
+use App\Models\WhatsAppWebhookLog;
 use App\Services\WhatsApp\ConversationEngine;
 use App\Services\WhatsApp\WebhookParser;
 use Illuminate\Http\JsonResponse;
@@ -67,14 +68,32 @@ class WhatsAppWebhookController extends Controller
     {
         $parsed = WebhookParser::parse($payload);
 
-        if (! $parsed) return;
+        if (! $parsed) {
+            $this->logWebhook(null, null, 'unparseable', null, 'failed', 'Payload did not match a known shape.');
+            return;
+        }
 
-        if (($parsed['type'] ?? '') === 'status') return;
+        if (($parsed['type'] ?? '') === 'status') {
+            // Delivery-status callback (sent/delivered/read/failed) — not a
+            // conversation event, but worth recording for the Ops "delivery
+            // health" view. No behavior change: still returns immediately.
+            foreach (($parsed['statuses'] ?? []) as $status) {
+                $this->logWebhook(
+                    $status['id'] ?? null,
+                    $status['recipient_id'] ?? null,
+                    'status',
+                    $status['status'] ?? null,
+                    'processed',
+                );
+            }
+            return;
+        }
 
         $messageId = $parsed['message_id'] ?? null;
 
         if ($messageId && ! $this->dedup($messageId)) {
             Log::debug('WhatsApp webhook: duplicate message', ['id' => $messageId]);
+            $this->logWebhook($messageId, $parsed['from'] ?? null, 'message', $parsed['type'] ?? null, 'duplicate');
             return;
         }
 
@@ -91,6 +110,7 @@ class WhatsAppWebhookController extends Controller
             } else {
                 $this->engine->handle($parsed, $conversation);
             }
+            $this->logWebhook($messageId, $from, 'message', $parsed['type'] ?? null, 'processed');
         } catch (\Throwable $e) {
             Log::error('ConversationEngine error', [
                 'wa'    => $from,
@@ -98,6 +118,34 @@ class WhatsAppWebhookController extends Controller
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
+            $this->logWebhook($messageId, $from, 'message', $parsed['type'] ?? null, 'failed', $e->getMessage());
+        }
+    }
+
+    /**
+     * Passive observability only — never throws, never affects delivery.
+     * Backs the admin WhatsApp Ops module's Conversations/Logs tabs.
+     */
+    private function logWebhook(
+        ?string $messageId,
+        ?string $fromNumber,
+        string $kind,
+        ?string $type,
+        string $processingStatus,
+        ?string $error = null,
+    ): void {
+        try {
+            WhatsAppWebhookLog::create([
+                'message_id'        => $messageId,
+                'from_number'       => $fromNumber,
+                'kind'              => $kind,
+                'type'              => $type,
+                'processing_status' => $processingStatus,
+                'error'             => $error,
+                'created_at'        => now(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('WhatsAppWebhookLog: failed to persist', ['error' => $e->getMessage()]);
         }
     }
 

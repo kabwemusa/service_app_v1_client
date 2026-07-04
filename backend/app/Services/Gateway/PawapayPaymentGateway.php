@@ -136,7 +136,7 @@ class PawapayPaymentGateway implements PaymentGateway
         string $providerPhone,
         float  $amount,
         string $bookingId,
-    ): bool {
+    ): ?string {
         $payoutId      = (string) Str::uuid();
         $phone         = $this->normalizePhone($providerPhone);
         $correspondent = $this->resolveCorrespondent($phone);
@@ -176,13 +176,13 @@ class PawapayPaymentGateway implements PaymentGateway
                 'status'   => $response->status(),
                 'body'     => $response->body(),
             ]);
-            return false;
+            return null;
         }
 
         $data = $response->json();
         Log::info('PawaPay: payout accepted', ['payoutId' => $payoutId, 'status' => $data['status'] ?? 'unknown']);
 
-        return ($data['status'] ?? '') === 'ACCEPTED';
+        return ($data['status'] ?? '') === 'ACCEPTED' ? $payoutId : null;
     }
 
     /**

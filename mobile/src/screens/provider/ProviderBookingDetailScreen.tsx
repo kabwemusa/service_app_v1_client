@@ -106,6 +106,27 @@ const STATUS_META: Record<
     fg: palette.danger,
     bg: palette.dangerLight,
   },
+  // Outcome-based pricing — quote-first models
+  SCOPE_PENDING: {
+    label: "Brief received — send your quote",
+    fg: palette.warning,
+    bg: palette.warningLight,
+  },
+  QUOTE_SENT: {
+    label: "Quote sent — awaiting customer",
+    fg: palette.warning,
+    bg: palette.warningLight,
+  },
+  DEPOSIT_HELD: {
+    label: "Deposit held",
+    fg: palette.primary,
+    bg: palette.primaryLight,
+  },
+  PAYMENT_FAILED: {
+    label: "Customer payment failed",
+    fg: palette.danger,
+    bg: palette.dangerLight,
+  },
 };
 
 // Qualitative buyer trust hint (§10.2) — never numeric, "new" styled neutrally (not a warning).
@@ -145,7 +166,8 @@ type StepState = "done" | "current" | "upcoming";
 function stepStates(status: BookingStatus): StepState[] {
   switch (status) {
     case "ACCEPTED":
-    case "FUNDS_HELD": // ESCROW equivalent of ACCEPTED — booking is confirmed/funded
+    case "FUNDS_HELD":   // ESCROW equivalent of ACCEPTED — booking is confirmed/funded
+    case "DEPOSIT_HELD": // QUOTE_DEPOSIT — deposit custodied, job confirmed
       return ["done", "upcoming", "upcoming"];
     case "IN_PROGRESS":
       return ["done", "current", "upcoming"];
@@ -241,9 +263,16 @@ export default function ProviderBookingDetailScreen({
   const [menuOpen, setMenuOpen] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
 
-  // Quote entry
+  // Quote entry — scoped quotes (PROVIDER_SCOPE / QUOTE_DEPOSIT) also carry
+  // an estimated duration + note so the customer sees a complete offer.
   const [showQuote, setShowQuote] = useState(false);
   const [quotePrice, setQuotePrice] = useState("");
+  const [quoteHours, setQuoteHours] = useState("");
+  const [quoteNote, setQuoteNote] = useState("");
+
+  // HOURLY_CAPPED — actual time logged at completion (0.5-hr steps).
+  const [showHours, setShowHours] = useState(false);
+  const [actualHours, setActualHours] = useState("");
 
   // Safety report (§11.3)
   const [showSafety, setShowSafety] = useState(false);
@@ -310,9 +339,33 @@ export default function ProviderBookingDetailScreen({
       showError("Enter a valid amount above ZMW 0.");
       return;
     }
-    await runAction(() => quote(booking!.id, price));
+    const hours = Number(quoteHours);
+    await runAction(() =>
+      quote(booking!.id, price, {
+        ...(Number.isFinite(hours) && hours > 0 ? { duration_mins: Math.round(hours * 60) } : {}),
+        ...(quoteNote.trim() ? { message: quoteNote.trim() } : {}),
+      })
+    );
     setShowQuote(false);
     setQuotePrice("");
+    setQuoteHours("");
+    setQuoteNote("");
+  }
+
+  async function submitActualHours() {
+    const hours = Number(actualHours);
+    if (!Number.isFinite(hours) || hours <= 0 || (hours * 10) % 5 !== 0) {
+      showError("Enter the time in half-hour steps, e.g. 1, 1.5, 2.");
+      return;
+    }
+    const cap = booking?.service.cap_hours;
+    if (cap != null && hours > cap) {
+      showError(`Time can't exceed the booked cap of ${cap} hours.`);
+      return;
+    }
+    await runAction(() => deliver(booking!.id, hours));
+    setShowHours(false);
+    setActualHours("");
   }
 
   async function submitSafety() {
@@ -634,6 +687,22 @@ export default function ProviderBookingDetailScreen({
           </Button>
         )}
 
+        {/* Customer's structured brief (quote-first models) */}
+        {!!booking.scope_brief?.length && (
+          <>
+            <Divider />
+            <Text style={styles.sectionLabel}>Customer's brief</Text>
+            {booking.scope_brief.map((qa, i) => (
+              <View key={i} style={{ marginBottom: 8 }}>
+                <Text style={[styles.notesText, { color: palette.textSecondary, fontSize: 12 }]}>
+                  {qa.question}
+                </Text>
+                <Text style={styles.notesText}>{qa.answer}</Text>
+              </View>
+            ))}
+          </>
+        )}
+
         {/* 5 — Customer notes (only if present) */}
         {!!booking.notes?.trim() && (
           <>
@@ -768,13 +837,20 @@ export default function ProviderBookingDetailScreen({
           )
         }
         onStart={() => runAction(() => start(booking.id))}
-        onComplete={() =>
+        onComplete={() => {
+          // HOURLY_CAPPED: the provider logs the actual time worked (0.5-hr
+          // steps) — the final charge and the customer's refund derive from it.
+          if (booking.service.pricing_model === "HOURLY_CAPPED") {
+            setActualHours("");
+            setShowHours(true);
+            return;
+          }
           confirmAction(
             "Mark as complete",
             "Mark this job complete? The customer is asked to confirm; it auto-confirms after the confirmation window.",
             () => deliver(booking.id)
-          )
-        }
+          );
+        }}
         onMarkPaid={
           canMarkPaid
             ? () =>
@@ -788,13 +864,18 @@ export default function ProviderBookingDetailScreen({
         onAskReview={() => notYetAvailable("Ask for a review")}
       />
 
-      {/* Quote entry */}
+      {/* Quote entry — scoped quote (price + duration + note) for quote-first
+          models; plain alternate price for the rest. */}
       {showQuote && (
         <View style={styles.quoteOverlay}>
           <View style={styles.quoteSheet}>
             <Text style={styles.quoteTitle}>Send a quote</Text>
             <Text style={styles.quoteSub}>
-              Propose your price. The customer pays you directly if they accept.
+              {booking.status === "SCOPE_PENDING"
+                ? "Quote against the customer's brief. They approve before any money is held."
+                : (booking.payment_mode ?? "ESCROW") === "DIRECT"
+                ? "Propose your price. The customer pays you directly if they accept."
+                : "Propose your price. Funds are held in escrow once the customer accepts."}
             </Text>
             <View style={styles.quoteInputRow}>
               <Text style={styles.quoteCurrency}>ZMW</Text>
@@ -808,6 +889,32 @@ export default function ProviderBookingDetailScreen({
                 placeholderTextColor={palette.textDisabled}
               />
             </View>
+            <View style={styles.quoteInputRow}>
+              <Ionicons name="time-outline" size={16} color={palette.textSecondary} />
+              <TextInput
+                style={styles.quoteInput}
+                keyboardType="numeric"
+                value={quoteHours}
+                onChangeText={(t) => setQuoteHours(t.replace(/[^0-9.]/g, ""))}
+                placeholder="Estimated hours (optional)"
+                placeholderTextColor={palette.textDisabled}
+              />
+            </View>
+            <TextInput
+              style={styles.quoteNoteInput}
+              value={quoteNote}
+              onChangeText={setQuoteNote}
+              placeholder="What's included / note to the customer (optional)"
+              placeholderTextColor={palette.textDisabled}
+              multiline
+            />
+            {booking.service.pricing_model === "QUOTE_DEPOSIT" && Number(quotePrice) > 0 && (
+              <Text style={styles.quoteSub}>
+                Deposit ({booking.service.deposit_percent ?? 30}%): ZMW{" "}
+                {((Number(quotePrice) * (booking.service.deposit_percent ?? 30)) / 100).toFixed(0)} now ·
+                balance collected at completion.
+              </Text>
+            )}
             <View style={styles.quoteActions}>
               <Button
                 mode="text"
@@ -823,6 +930,59 @@ export default function ProviderBookingDetailScreen({
                 onPress={submitQuote}
               >
                 Send quote
+              </Button>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* HOURLY_CAPPED — log actual time worked (0.5-hr steps, ≤ cap) */}
+      {showHours && (
+        <View style={styles.quoteOverlay}>
+          <View style={styles.quoteSheet}>
+            <Text style={styles.quoteTitle}>Log actual time</Text>
+            <Text style={styles.quoteSub}>
+              How long did the job take? Half-hour steps, up to the booked cap of{" "}
+              {booking.service.cap_hours ?? "—"} hours. The customer pays only for this
+              time — the unused hold is refunded automatically.
+            </Text>
+            <View style={styles.quoteInputRow}>
+              <Ionicons name="time-outline" size={16} color={palette.textSecondary} />
+              <TextInput
+                style={styles.quoteInput}
+                keyboardType="numeric"
+                autoFocus
+                value={actualHours}
+                onChangeText={(t) => setActualHours(t.replace(/[^0-9.]/g, ""))}
+                placeholder="e.g. 2.5"
+                placeholderTextColor={palette.textDisabled}
+              />
+            </View>
+            {Number(actualHours) > 0 && booking.service.hourly_rate != null && (
+              <Text style={styles.quoteSub}>
+                Charge: ZMW{" "}
+                {(
+                  Math.max(Number(actualHours), booking.service.minimum_hours ?? 0) *
+                  booking.service.hourly_rate
+                ).toFixed(0)}{" "}
+                ({booking.service.minimum_hours ?? 1}-hr minimum applies)
+              </Text>
+            )}
+            <View style={styles.quoteActions}>
+              <Button
+                mode="text"
+                textColor={palette.textSecondary}
+                onPress={() => setShowHours(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                mode="contained"
+                loading={busy}
+                disabled={busy || !(Number(actualHours) > 0)}
+                onPress={submitActualHours}
+              >
+                Log & mark complete
               </Button>
             </View>
           </View>
@@ -1040,6 +1200,40 @@ function ActionBar({
         </View>
       </>
     );
+  } else if (status === "SCOPE_PENDING") {
+    // Quote-first: the customer's brief is in — quoting wins (or loses) the job.
+    content = (
+      <>
+        <Button
+          mode="contained"
+          style={styles.primaryBtn}
+          contentStyle={styles.primaryBtnContent}
+          labelStyle={styles.btnLabel}
+          loading={busy}
+          disabled={busy}
+          onPress={onQuote}
+        >
+          Review brief & send quote
+        </Button>
+        <Button
+          mode="outlined"
+          style={[styles.secondaryBtn, { borderColor: palette.danger }]}
+          contentStyle={styles.primaryBtnContent}
+          textColor={palette.danger}
+          disabled={busy}
+          onPress={onDecline}
+        >
+          Decline
+        </Button>
+      </>
+    );
+  } else if (status === "QUOTE_SENT") {
+    content = (
+      <PassiveNote
+        icon="hourglass-outline"
+        text={`Quote sent · ${buyerName} will approve and pay before anything starts. Nothing is charged until then.`}
+      />
+    );
   } else if (status === "QUOTED") {
     content = (
       <PassiveNote
@@ -1047,7 +1241,7 @@ function ActionBar({
         text={`Quote sent · waiting for ${buyerName} to accept${isDirect ? "" : " and pay"}.`}
       />
     );
-  } else if (status === "ACCEPTED" || status === "FUNDS_HELD") {
+  } else if (status === "ACCEPTED" || status === "FUNDS_HELD" || status === "DEPOSIT_HELD") {
     content = (
       <Button
         mode="contained"
@@ -1518,6 +1712,19 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
     alignItems: "center",
     gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  quoteNoteInput: {
+    ...typography.bodySmall,
+    color: palette.textPrimary,
+    backgroundColor: palette.background,
+    borderRadius: r.sm,
+    borderWidth: 1,
+    borderColor: palette.border,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    minHeight: 60,
+    textAlignVertical: "top",
     marginTop: spacing.xs,
   },
 });

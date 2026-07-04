@@ -56,22 +56,28 @@ type Segment = 'active' | 'past';
 const ACTIVE_STATUSES = new Set<BookingStatus>([
   // DIRECT active
   'REQUESTED', 'QUOTED', 'ACCEPTED',
+  // Quote-first (outcome-based pricing)
+  'SCOPE_PENDING', 'QUOTE_SENT',
   // Shared active
   'IN_PROGRESS', 'DELIVERED',
   // ESCROW active
-  'PENDING_PAYMENT', 'AWAITING_KYC', 'FUNDS_HELD',
+  'PENDING_PAYMENT', 'PAYMENT_FAILED', 'AWAITING_KYC', 'FUNDS_HELD', 'DEPOSIT_HELD',
 ]);
 
 const ACTIVE_SORT_ORDER: Record<BookingStatus, number> = {
   // Highest priority first
   DELIVERED:          0,
+  QUOTE_SENT:         1,   // buyer action needed (approve/decline the scoped quote)
   IN_PROGRESS:        1,
   QUOTED:             2,   // buyer action needed (accept/decline quote)
+  PAYMENT_FAILED:     2,   // buyer action needed (retry payment)
+  SCOPE_PENDING:      3,   // waiting on the provider's quote
   REQUESTED:          3,
   ACCEPTED:           4,
   PENDING_PAYMENT:    5,
   AWAITING_KYC:       5,
   FUNDS_HELD:         5,
+  DEPOSIT_HELD:       5,
   // Past (not shown in active, but needed for type completeness)
   COMPLETED:          9,
   DISBURSED:          9,
@@ -104,8 +110,13 @@ const STATUS_CONFIG: Record<BookingStatus, StatusConfig> = {
   COMPLETED:          { label: 'Completed',           color: palette.textSecondary, bg: '#F3F4F6'             },
   DISPUTED:           { label: 'Disputed',            color: palette.danger,        bg: palette.dangerLight   },
   CANCELLED:          { label: 'Cancelled',           color: palette.textSecondary, bg: '#F3F4F6'             },
+  // Quote-first (outcome-based pricing)
+  SCOPE_PENDING:      { label: 'Awaiting quote',      color: palette.textSecondary, bg: '#F3F4F6'             },
+  QUOTE_SENT:         { label: 'Quote received',      color: palette.warning,       bg: palette.warningLight  },
+  DEPOSIT_HELD:       { label: 'Deposit paid',        color: palette.primary,       bg: palette.primaryLight  },
   // ESCROW
   PENDING_PAYMENT:    { label: 'Payment pending',     color: palette.textSecondary, bg: '#F3F4F6'             },
+  PAYMENT_FAILED:     { label: 'Payment failed',      color: palette.danger,        bg: palette.dangerLight   },
   AWAITING_KYC:       { label: 'Awaiting verification', color: palette.warning,     bg: palette.warningLight  },
   FUNDS_HELD:         { label: 'Upcoming',            color: palette.primary,       bg: palette.primaryLight  },
   DISBURSED:          { label: 'Completed',           color: palette.textSecondary, bg: '#F3F4F6'             },

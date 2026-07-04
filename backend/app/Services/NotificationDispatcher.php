@@ -78,6 +78,12 @@ class NotificationDispatcher
                 ->onQueue('sms');
         }
 
+        // 4b. WhatsApp leg — the platform's primary channel. Verification
+        // decisions and payout releases must reach providers who never open
+        // the app. Session message inside the 24 h window, pre-approved
+        // template outside it. Best-effort: failures never block the rest.
+        $this->sendWhatsAppLeg($notification);
+
         // 5. Observability
         Log::info('NotificationDispatcher: dispatched', [
             'notification_id' => $notification->id,
@@ -91,6 +97,57 @@ class NotificationDispatcher
         ]);
 
         return $notification;
+    }
+
+    /**
+     * Types that also go out on WhatsApp, mapped to their pre-approved
+     * template (used outside the 24 h session window). Inside the window the
+     * plain title+body is sent as a session message.
+     */
+    private const WHATSAPP_TYPES = [
+        'VERIFICATION_UPDATE' => null, // template resolved from outcome below
+        'PAYOUT_RELEASED'     => 'payout_released',
+    ];
+
+    private function sendWhatsAppLeg(Notification $notification): void
+    {
+        if (! array_key_exists($notification->type, self::WHATSAPP_TYPES)) {
+            return;
+        }
+
+        try {
+            $user = \App\Models\User::find($notification->user_id);
+            if (! $user?->phone) {
+                return;
+            }
+
+            $wa    = ltrim($user->phone, '+');
+            $convo = \App\Models\ConversationState::where('whatsapp_id', $wa)->first();
+            $meta  = $notification->meta ?? [];
+
+            [$templateKey, $variables] = match ($notification->type) {
+                'VERIFICATION_UPDATE' => ($meta['outcome'] ?? '') === 'approved'
+                    ? ['verification_approved', ['tier' => (string) ($meta['tier'] ?? 1)]]
+                    : ['verification_update',   ['reason' => $notification->body]],
+                'PAYOUT_RELEASED' => ['payout_released', [
+                    'amount'        => number_format((float) ($meta['amount'] ?? 0), 2),
+                    'service_title' => $meta['service_title'] ?? 'your booking',
+                ]],
+            };
+
+            app(\App\Services\WhatsApp\TemplateManager::class)->sendProactiveOrTemplate(
+                $wa,
+                $templateKey,
+                $variables,
+                "*{$notification->title}*\n{$notification->body}",
+                $convo,
+            );
+        } catch (\Throwable $e) {
+            Log::warning('NotificationDispatcher: WhatsApp leg failed', [
+                'notification_id' => $notification->id,
+                'error'           => $e->getMessage(),
+            ]);
+        }
     }
 
     private function broadcastToChannel(Notification $notification): void

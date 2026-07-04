@@ -1,0 +1,197 @@
+/* Booking sheet — web twin of the mobile BookingSheet. Same sections (When,
+   Start time, Where, Add extras, brief, Total), same flat look, teal, dividers. */
+
+.bk { max-width: 480px; margin: 0 auto; }
+
+/* Summary header: thumb + title + provider·duration */
+.bk-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border-bottom: 1px solid var(--border);
+}
+.bk-thumb {
+  width: 44px; height: 44px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  display: grid; place-items: center;
+  overflow: hidden;
+}
+.bk-header-body { flex: 1; min-width: 0; }
+.bk-header-title {
+  font-size: 16px; font-weight: 700; color: var(--text-primary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.bk-header-meta { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+
+.bk-body { padding: 0 var(--space-md) var(--space-xl); }
+
+.bk-label {
+  font-size: 13px; font-weight: 700; color: var(--text-secondary);
+  margin: var(--space-md) 0 var(--space-xs);
+}
+
+/* Horizontal chip rows (days / hours) */
+.bk-chip-row {
+  display: flex;
+  gap: var(--space-xs);
+  overflow-x: auto;
+  padding-bottom: var(--space-xs);
+  scrollbar-width: thin;
+}
+.bk-day-chip {
+  flex-shrink: 0;
+  width: 54px;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 2px;
+  padding: var(--space-sm) 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--background);
+  cursor: pointer;
+}
+.bk-day-wkd { font-size: 11px; color: var(--text-secondary); }
+.bk-day-num { font-size: 16px; font-weight: 700; color: var(--text-primary); }
+.bk-time-chip {
+  flex-shrink: 0;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--background);
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.bk-chip-sel { background: var(--primary); border-color: var(--primary); }
+.bk-chip-sel .bk-day-wkd, .bk-chip-sel .bk-day-num, .bk-chip-sel { color: #fff; }
+.bk-time-chip.bk-chip-sel { color: #fff; }
+.bk-chip-off {
+  background: var(--skeleton);
+  opacity: .55;
+  cursor: not-allowed;
+  text-decoration: line-through;
+  color: var(--text-disabled);
+}
+.bk-chip-off .bk-day-wkd, .bk-chip-off .bk-day-num { color: var(--text-disabled); }
+
+/* Duration guide */
+.bk-duration { display: flex; align-items: center; gap: 6px; margin-top: var(--space-md); font-size: 13px; color: var(--text-secondary); }
+
+/* Capped-price card */
+.bk-cap {
+  margin-top: var(--space-md);
+  background: var(--primary-light);
+  border-radius: var(--radius-sm);
+  padding: var(--space-md);
+}
+.bk-cap-headline { font-size: 14px; font-weight: 700; color: var(--primary); }
+.bk-cap-note { font-size: 13px; color: var(--text-secondary); line-height: 1.4; margin-top: 4px; }
+
+/* Where */
+.bk-loc {
+  display: flex; align-items: center; gap: var(--space-sm);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-md);
+  min-height: 48px;
+}
+.bk-loc-txt { flex: 1; min-width: 0; font-size: 13px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bk-loc-empty { color: var(--text-secondary); }
+.bk-loc-change { font-size: 13px; font-weight: 700; color: var(--primary); border: none; background: transparent; cursor: pointer; }
+.bk-loc-input {
+  width: 100%;
+  min-height: 48px;
+  margin-top: var(--space-xs);
+  padding: 0 var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--background);
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+/* Add extras */
+.bk-addons {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.bk-addon {
+  display: flex; align-items: center; gap: var(--space-sm);
+  padding: 10px var(--space-md);
+  min-height: 48px;
+  cursor: pointer;
+}
+.bk-addon + .bk-addon { border-top: 1px solid var(--border); }
+.bk-check {
+  width: 20px; height: 20px;
+  flex-shrink: 0;
+  border: 1.5px solid var(--border);
+  border-radius: 6px;
+  display: grid; place-items: center;
+  color: #fff; font-size: 12px; font-weight: 900;
+}
+.bk-check-on { background: var(--primary); border-color: var(--primary); }
+.bk-addon-name { flex: 1; min-width: 0; font-size: 13px; color: var(--text-primary); }
+.bk-addon-price { font-size: 13px; color: var(--text-secondary); }
+
+/* Brief fields */
+.bk-brief { margin-bottom: var(--space-sm); }
+.bk-brief-q { font-size: 13px; color: var(--text-primary); margin-bottom: 4px; }
+.bk-input, .bk-textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--background);
+  color: var(--text-primary);
+  font-size: 15px;
+  padding: 12px var(--space-md);
+}
+.bk-textarea { min-height: 72px; resize: vertical; }
+
+/* Total card */
+.bk-total {
+  margin-top: var(--space-lg);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  display: flex; flex-direction: column; gap: var(--space-sm);
+}
+.bk-fee-row { display: flex; align-items: center; justify-content: space-between; }
+.bk-fee-lbl { font-size: 13px; color: var(--text-secondary); }
+.bk-fee-amt { font-size: 13px; color: var(--text-primary); }
+.bk-fee-divider { height: 1px; background: var(--border); }
+.bk-total-lbl { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+.bk-total-amt { font-size: 16px; font-weight: 800; color: var(--primary); }
+.bk-quote-note { display: flex; gap: 6px; font-size: 13px; color: var(--text-secondary); line-height: 1.45; }
+
+.bk-mode {
+  display: flex; align-items: flex-start; gap: 6px;
+  background: var(--success-light);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm);
+  font-size: 12.5px; color: var(--success); line-height: 1.4;
+}
+
+.bk-cta {
+  width: 100%;
+  min-height: 52px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--primary);
+  color: #fff;
+  font-size: 15px; font-weight: 700;
+  cursor: pointer;
+  transition: opacity .15s;
+}
+.bk-cta:disabled { opacity: .5; cursor: not-allowed; }
+.bk-cta:not(:disabled):hover { opacity: .9; }
+
+/* Success confirmation */
+.bk-done { padding: var(--space-md); }

@@ -10,7 +10,7 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import { useState } from 'react'
-import { ChevronUp, ChevronDown, ChevronsUpDown, ChevronLeft, ChevronRight } from 'lucide-react'
+import { IoChevronUpOutline, IoChevronDownOutline, IoSwapVerticalOutline, IoChevronBackOutline, IoChevronForwardOutline } from 'react-icons/io5'
 import { cn } from '@/lib/utils'
 import { EmptyState } from '@/components/ui/EmptyState'
 
@@ -61,7 +61,7 @@ export function DataTable<T>({
 
   return (
     <div className={cn('flex flex-col gap-3', className)}>
-      <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+      <div className="overflow-x-auto rounded-sm border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800">
         <table className="w-full min-w-full text-sm">
           <thead>
             {table.getHeaderGroups().map((hg) => (
@@ -81,9 +81,9 @@ export function DataTable<T>({
                       <span className="flex items-center gap-1">
                         {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
                         {canSort && (
-                          sorted === 'asc' ? <ChevronUp className="size-3" /> :
-                          sorted === 'desc' ? <ChevronDown className="size-3" /> :
-                          <ChevronsUpDown className="size-3 text-slate-300" />
+                          sorted === 'asc' ? <IoChevronUpOutline className="size-3" /> :
+                          sorted === 'desc' ? <IoChevronDownOutline className="size-3" /> :
+                          <IoSwapVerticalOutline className="size-3 text-slate-300" />
                         )}
                       </span>
                     </th>
@@ -137,20 +137,20 @@ export function DataTable<T>({
                 serverPagination ? onPageChange(page - 1) : table.previousPage()
               }
               disabled={page <= 1}
-              className="rounded-lg border border-slate-200 px-2 py-1 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-700"
+              className="rounded-sm border border-slate-200 px-2 py-1 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-700"
               aria-label="Previous page"
             >
-              <ChevronLeft className="size-3.5" />
+              <IoChevronBackOutline className="size-3.5" />
             </button>
             <button
               onClick={() =>
                 serverPagination ? onPageChange(page + 1) : table.nextPage()
               }
               disabled={page >= lastPage}
-              className="rounded-lg border border-slate-200 px-2 py-1 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-700"
+              className="rounded-sm border border-slate-200 px-2 py-1 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-700"
               aria-label="Next page"
             >
-              <ChevronRight className="size-3.5" />
+              <IoChevronForwardOutline className="size-3.5" />
             </button>
           </div>
         </div>

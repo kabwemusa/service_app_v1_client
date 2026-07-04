@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { AlertTriangle, Ban, PauseCircle, RotateCcw, ArrowUpDown } from 'lucide-react'
+import { IoWarningOutline, IoBanOutline, IoPauseCircleOutline, IoArrowUndoOutline, IoSwapVerticalOutline } from 'react-icons/io5'
 import { cn } from '@/lib/utils'
 import { Can } from '@/lib/rbac/Can'
 import { useAuditedMutation } from '@/lib/audit/audited-mutation'
@@ -81,14 +81,14 @@ export function UserModerationActions({ user, onChanged }: Props) {
         <div className="flex flex-wrap gap-2">
           <Can do="users.moderate">
             <ActionButton
-              icon={AlertTriangle}
+              icon={IoWarningOutline}
               label="Warn"
               tone="amber"
               disabled={!canWarn || warn.isPending}
               onClick={() => warn.trigger({})}
             />
             <ActionButton
-              icon={PauseCircle}
+              icon={IoPauseCircleOutline}
               label="Suspend"
               tone="amber"
               disabled={!canSuspend || suspend.isPending}
@@ -99,7 +99,7 @@ export function UserModerationActions({ user, onChanged }: Props) {
 
           <Can do="ban:users">
             <ActionButton
-              icon={Ban}
+              icon={IoBanOutline}
               label="Ban"
               tone="red"
               disabled={!canBan || ban.isPending}
@@ -109,7 +109,7 @@ export function UserModerationActions({ user, onChanged }: Props) {
 
           <Can do="users.moderate">
             <ActionButton
-              icon={RotateCcw}
+              icon={IoArrowUndoOutline}
               label="Reinstate"
               tone="teal"
               disabled={!canReinstate || reinstate.isPending}
@@ -120,7 +120,7 @@ export function UserModerationActions({ user, onChanged }: Props) {
           {user.is_provider && (
             <Can do="users.adjust_tier">
               <ActionButton
-                icon={ArrowUpDown}
+                icon={IoSwapVerticalOutline}
                 label="Adjust tier"
                 tone="slate"
                 disabled={adjustTier.isPending}
@@ -135,13 +135,13 @@ export function UserModerationActions({ user, onChanged }: Props) {
       {/* Suspend duration sub-form */}
       {showSuspend && (
         <Can do="users.moderate">
-          <div className="flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/50">
+          <div className="flex flex-wrap items-end gap-2 rounded-sm border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/50">
             <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
               Duration
               <select
                 value={duration}
                 onChange={(e) => setDuration(e.target.value === '' ? '' : Number(e.target.value))}
-                className="mt-1 block h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+                className="mt-1 block h-9 rounded-sm border border-slate-200 bg-white px-3 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
               >
                 <option value={7}>7 days</option>
                 <option value={14}>14 days</option>
@@ -155,7 +155,7 @@ export function UserModerationActions({ user, onChanged }: Props) {
                 suspend.trigger({ duration_days: duration === '' ? null : duration })
                 setShowSuspend(false)
               }}
-              className="h-9 rounded-lg bg-amber-600 px-4 text-sm font-medium text-white hover:bg-amber-700"
+              className="h-9 rounded-sm bg-amber-600 px-4 text-sm font-medium text-white hover:bg-amber-700"
             >
               Continue
             </button>
@@ -166,13 +166,13 @@ export function UserModerationActions({ user, onChanged }: Props) {
       {/* Tier adjust sub-form */}
       {showTier && user.is_provider && (
         <Can do="users.adjust_tier">
-          <div className="flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/50">
+          <div className="flex flex-wrap items-end gap-2 rounded-sm border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/50">
             <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
               New tier
               <select
                 value={tierValue}
                 onChange={(e) => setTierValue(Number(e.target.value) as TrustTier)}
-                className="mt-1 block h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+                className="mt-1 block h-9 rounded-sm border border-slate-200 bg-white px-3 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
               >
                 {([0, 1, 2, 3, 4] as const).map((t) => (
                   <option key={t} value={t}>
@@ -188,7 +188,7 @@ export function UserModerationActions({ user, onChanged }: Props) {
                 adjustTier.trigger({ tier: tierValue })
                 setShowTier(false)
               }}
-              className="h-9 rounded-lg bg-slate-700 px-4 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-40 dark:bg-slate-600"
+              className="h-9 rounded-sm bg-slate-700 px-4 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-40 dark:bg-slate-600"
             >
               Continue
             </button>
@@ -229,7 +229,7 @@ function ActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        'inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-sm font-medium transition-colors',
+        'inline-flex h-9 items-center gap-1.5 rounded-sm border px-3 text-sm font-medium transition-colors',
         'disabled:cursor-not-allowed disabled:opacity-40',
         TONES[tone],
       )}

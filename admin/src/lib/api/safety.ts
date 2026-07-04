@@ -210,6 +210,12 @@ export const safetyApi = {
   restrictContact: (kind: SafetyKind, id: string, payload: { reason: string }) =>
     api.post<SafetyDetail>(`/api/admin/safety/${kind}/${id}/restrict-contact`, payload),
 
+  // Suspends the reported user via the Users module (single source of truth
+  // for the mutation) and records the link against this report, so both
+  // modules carry an audit entry for the decision.
+  restrictReportedUser: (kind: SafetyKind, id: string, payload: { reason: string; suspend_duration_days?: number }) =>
+    api.post<SafetyDetail>(`/api/admin/safety/${kind}/${id}/restrict-reported-user`, payload),
+
   escalateAuthority: (kind: SafetyKind, id: string, payload: { reason: string }) =>
     api.post<SafetyDetail>(`/api/admin/safety/${kind}/${id}/escalate-authority`, payload),
 

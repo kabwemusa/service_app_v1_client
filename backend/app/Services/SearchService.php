@@ -526,9 +526,9 @@ class SearchService
 
         // Browse filters — v3.1 §6 Filters sheet
 
-        // max_price: include QUOTE/null services regardless of budget (price unknown)
+        // max_price: include quote-first/null services regardless of budget (price unknown)
         if (isset($params['max_price']) && $params['max_price'] !== null) {
-            $sql       .= ' AND (s.base_price IS NULL OR s.pricing_model = \'QUOTE\' OR s.base_price <= ?)';
+            $sql       .= " AND (s.base_price IS NULL OR s.pricing_model IN ('PROVIDER_SCOPE','QUOTE_DEPOSIT') OR s.base_price <= ?)";
             $bindings[] = (float) $params['max_price'];
         }
 

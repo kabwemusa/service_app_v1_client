@@ -141,7 +141,7 @@ class GeoWideningTest extends TestCase
 
         $service = Service::create([
             'title' => $title, 'category_id' => $this->category->id,
-            'status' => 'ACTIVE', 'base_price' => 150, 'pricing_model' => 'FIXED',
+            'status' => 'ACTIVE', 'base_price' => 150, 'pricing_model' => 'OUTCOME_FIXED',
             'provider_id' => $user->id,
         ]);
 

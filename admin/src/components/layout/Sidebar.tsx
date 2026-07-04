@@ -4,85 +4,88 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
-  LayoutDashboard, UserCheck, Scale, Shield, AlertTriangle,
-  Users, Calendar, Briefcase, Tag, Star,
-  Megaphone, Image as ImageIcon,
-  Percent, Wallet, CreditCard,
-  BarChart3, Settings,
-  ChevronRight, Loader2,
-} from 'lucide-react'
+  IoGridOutline, IoIdCardOutline, IoScaleOutline, IoShieldOutline, IoWarningOutline,
+  IoPeopleOutline, IoCalendarOutline, IoBriefcaseOutline, IoPricetagOutline, IoStarOutline,
+  IoMegaphoneOutline, IoImageOutline as ImageIcon,
+  IoCashOutline, IoCardOutline, IoLogoWhatsapp,
+  IoBarChartOutline, IoSettingsOutline,
+  IoChevronForwardOutline, IoSyncOutline,
+} from 'react-icons/io5'
 import { cn } from '@/lib/utils'
 import { useCan } from '@/lib/rbac/use-can'
 import type { Capability } from '@/lib/api/types'
-import type { LucideIcon } from 'lucide-react'
+import type { IconType } from 'react-icons'
+import { useQueueBadgeStore, type QueueModule } from '@/lib/realtime/queue-badge-store'
 
 // ── Data ─────────────────────────────────────────────────────────────────────
 
 interface NavItem {
   label: string
   href: string
-  icon: LucideIcon
+  icon: IconType
   capability: Capability
+  /** Live queue badge (real-time event count) shown next to this item. */
+  queueModule?: QueueModule
 }
 
 interface NavGroup {
   label: string
-  icon: LucideIcon
+  icon: IconType
   items: NavItem[]
 }
 
 const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Overview',
-    icon: LayoutDashboard,
+    icon: IoGridOutline,
     items: [
-      { label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard, capability: 'read:dashboard' },
+      { label: 'Dashboard', href: '/dashboard', icon: IoGridOutline, capability: 'read:dashboard' },
     ],
   },
   {
     label: 'Trust & Safety',
-    icon: Shield,
+    icon: IoShieldOutline,
     items: [
-      { label: 'Verification',    href: '/verification', icon: UserCheck,    capability: 'read:verification' },
-      { label: 'Disputes',        href: '/disputes',     icon: Scale,        capability: 'read:disputes' },
-      { label: 'Safety',          href: '/safety',       icon: Shield,       capability: 'safety.handle' },
-      { label: 'Fraud & Denylist',href: '/fraud',        icon: AlertTriangle,capability: 'read:fraud' },
+      { label: 'Verification',    href: '/verification', icon: IoIdCardOutline,    capability: 'read:verification', queueModule: 'verification' },
+      { label: 'Disputes',        href: '/disputes',     icon: IoScaleOutline,        capability: 'read:disputes' },
+      { label: 'Safety',          href: '/safety',       icon: IoShieldOutline,       capability: 'safety.handle', queueModule: 'safety' },
+      { label: 'Fraud & Denylist',href: '/fraud',        icon: IoWarningOutline,capability: 'read:fraud' },
     ],
   },
   {
     label: 'Marketplace',
-    icon: Briefcase,
+    icon: IoBriefcaseOutline,
     items: [
-      { label: 'Users',      href: '/users',      icon: Users,    capability: 'read:users' },
-      { label: 'Bookings',   href: '/bookings',   icon: Calendar, capability: 'read:bookings' },
-      { label: 'Services',   href: '/services',   icon: Briefcase,capability: 'read:services' },
-      { label: 'Categories', href: '/categories', icon: Tag,      capability: 'read:categories' },
-      { label: 'Reviews',    href: '/reviews',    icon: Star,     capability: 'read:reviews' },
+      { label: 'Users',      href: '/users',      icon: IoPeopleOutline,    capability: 'read:users' },
+      { label: 'Bookings',   href: '/bookings',   icon: IoCalendarOutline, capability: 'read:bookings' },
+      { label: 'Services',   href: '/services',   icon: IoBriefcaseOutline,capability: 'read:services', queueModule: 'services' },
+      { label: 'Categories', href: '/categories', icon: IoPricetagOutline,      capability: 'read:categories' },
+      { label: 'Reviews',    href: '/reviews',    icon: IoStarOutline,     capability: 'read:reviews', queueModule: 'reviews' },
     ],
   },
   {
     label: 'Growth',
-    icon: Megaphone,
+    icon: IoMegaphoneOutline,
     items: [
-      { label: 'Promotions', href: '/promotions', icon: Megaphone, capability: 'read:promotions' },
+      { label: 'Promotions', href: '/promotions', icon: IoMegaphoneOutline, capability: 'read:promotions' },
       { label: 'Banners',    href: '/banners',    icon: ImageIcon, capability: 'read:banners' },
     ],
   },
   {
     label: 'Finance',
-    icon: Wallet,
+    icon: IoCashOutline,
     items: [
-      { label: 'Commissions',   href: '/commissions',   icon: Percent,   capability: 'read:commissions' },
-      { label: 'Payouts',       href: '/payouts',       icon: Wallet,    capability: 'read:payouts' },
-      { label: 'Subscriptions', href: '/subscriptions', icon: CreditCard,capability: 'read:subscriptions' },
+      { label: 'Finance',       href: '/finance',       icon: IoCashOutline,   capability: 'read:commissions', queueModule: 'finance' },
+      { label: 'Subscriptions', href: '/subscriptions', icon: IoCardOutline,capability: 'read:subscriptions' },
     ],
   },
   {
     label: 'Platform',
-    icon: Settings,
+    icon: IoSettingsOutline,
     items: [
-      { label: 'Insights', href: '/insights', icon: BarChart3, capability: 'read:insights' },
-      { label: 'Settings', href: '/settings', icon: Settings,  capability: 'read:settings' },
+      { label: 'WhatsApp Ops', href: '/whatsapp', icon: IoLogoWhatsapp,   capability: 'platform.ops' },
+      { label: 'Insights',     href: '/insights', icon: IoBarChartOutline, capability: 'read:insights' },
+      { label: 'Settings',     href: '/settings', icon: IoSettingsOutline,  capability: 'read:settings' },
     ],
   },
 ]
@@ -98,6 +101,15 @@ interface NavLinkProps {
 
 function NavLink({ item, active, pending, onNavigate }: NavLinkProps) {
   const canView = useCan(item.capability)
+  const badgeCount = useQueueBadgeStore((s) =>
+    item.queueModule ? s.counts[item.queueModule] : 0,
+  )
+  const clearBadge = useQueueBadgeStore((s) => s.clear)
+
+  useEffect(() => {
+    if (active && item.queueModule) clearBadge(item.queueModule)
+  }, [active, item.queueModule, clearBadge])
+
   if (!canView) return null
 
   return (
@@ -105,7 +117,7 @@ function NavLink({ item, active, pending, onNavigate }: NavLinkProps) {
       href={item.href}
       onClick={() => !active && onNavigate(item.href)}
       className={cn(
-        'group flex cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-sm',
+        'group flex cursor-pointer items-center gap-2.5 rounded-sm px-3 py-2 text-sm',
         'transition-colors duration-150 select-none outline-none',
         'focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-1',
         active
@@ -115,7 +127,7 @@ function NavLink({ item, active, pending, onNavigate }: NavLinkProps) {
       aria-current={active ? 'page' : undefined}
     >
       {pending ? (
-        <Loader2
+        <IoSyncOutline
           className="size-4 shrink-0 animate-spin text-teal-500"
           aria-label="Loading…"
         />
@@ -127,11 +139,18 @@ function NavLink({ item, active, pending, onNavigate }: NavLinkProps) {
               ? 'text-teal-600 dark:text-teal-400'
               : 'text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300',
           )}
-          strokeWidth={1.75}
           aria-hidden="true"
         />
       )}
-      <span className="truncate">{item.label}</span>
+      <span className="flex-1 truncate">{item.label}</span>
+      {badgeCount > 0 && (
+        <span
+          className="ml-auto inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-medium text-white"
+          aria-label={`${badgeCount} new`}
+        >
+          {badgeCount > 99 ? '99+' : badgeCount}
+        </span>
+      )}
     </Link>
   )
 }
@@ -199,7 +218,7 @@ function NavGroupItem({
         onClick={onToggle}
         aria-expanded={isOpen}
         className={cn(
-          'flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2',
+          'flex w-full cursor-pointer items-center gap-2.5 rounded-sm px-3 py-2',
           'text-left transition-colors duration-150 select-none outline-none',
           'focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-1',
           hasActiveChild && !isOpen
@@ -215,13 +234,12 @@ function NavGroupItem({
               ? 'text-teal-500 dark:text-teal-400'
               : 'text-slate-400',
           )}
-          strokeWidth={1.75}
           aria-hidden="true"
         />
         <span className="flex-1 truncate text-[11px] font-semibold uppercase tracking-wider">
           {group.label}
         </span>
-        <ChevronRight
+        <IoChevronForwardOutline
           className={cn(
             'size-3 shrink-0 text-slate-400 transition-transform duration-200 ease-in-out',
             isOpen && 'rotate-90',
@@ -239,7 +257,7 @@ function NavGroupItem({
           height !== 'auto' && 'transition-[height] duration-200 ease-in-out',
         )}
         aria-hidden={!isOpen}
-        inert={!isOpen ? ('' as unknown as boolean) : undefined}
+        inert={!isOpen}
       >
         <div className="mt-0.5 ml-2 space-y-0.5 border-l border-slate-100 pl-2.5 dark:border-slate-800">
           {group.items.map((item) => {

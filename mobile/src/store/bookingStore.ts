@@ -28,21 +28,26 @@ interface BookingState {
   loadMore:       () => Promise<void>;
   createBooking:  (params: CreateBookingParams) => Promise<Booking>;
 
-  // ESCROW action
-  pay:            (id: string) => Promise<Booking>;
+  // ESCROW action — momoNumber optionally targets a different wallet than the account phone
+  pay:            (id: string, momoNumber?: string) => Promise<Booking>;
 
   // DIRECT actions (provider side)
   accept:         (id: string) => Promise<Booking>;
-  quote:          (id: string, quotedAmount: number) => Promise<Booking>;
+  quote:          (id: string, quotedAmount: number, extras?: { duration_mins?: number; inclusions?: string[]; message?: string }) => Promise<Booking>;
   decline:        (id: string) => Promise<Booking>;
 
   // DIRECT actions (buyer side)
   acceptQuote:    (id: string) => Promise<Booking>;
   markPaid:       (id: string) => Promise<Booking>;
 
+  // Outcome-based pricing — scoped-quote approval (escrow holds only after approval)
+  approveQuote:   (id: string, momoNumber?: string) => Promise<Booking>;
+  declineQuote:   (id: string) => Promise<Booking>;
+
   // Shared actions
   start:          (id: string) => Promise<Booking>;
-  deliver:        (id: string) => Promise<Booking>;
+  /** actualHours — HOURLY_CAPPED providers log actual time (0.5-hr steps). */
+  deliver:        (id: string, actualHours?: number) => Promise<Booking>;
   complete:       (id: string) => Promise<Booking>;
   dispute:        (id: string, params: OpenDisputeParams) => Promise<Booking>;
   cancel:         (id: string) => Promise<Booking>;
@@ -134,10 +139,10 @@ export const useBookingStore = create<BookingState>((set, get) => ({
     }
   },
 
-  pay: async (id) => {
+  pay: async (id, momoNumber) => {
     set({ submitting: true, error: null });
     try {
-      const booking = await bookingsApi.pay(id);
+      const booking = await bookingsApi.pay(id, momoNumber);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
       return booking;
     } catch (e) {
@@ -164,10 +169,10 @@ export const useBookingStore = create<BookingState>((set, get) => ({
     }
   },
 
-  quote: async (id, quotedAmount) => {
+  quote: async (id, quotedAmount, extras) => {
     set({ submitting: true, error: null });
     try {
-      const booking = await bookingsApi.quote(id, quotedAmount);
+      const booking = await bookingsApi.quote(id, quotedAmount, extras);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
       return booking;
     } catch (e) {
@@ -224,6 +229,36 @@ export const useBookingStore = create<BookingState>((set, get) => ({
     }
   },
 
+  approveQuote: async (id, momoNumber) => {
+    set({ submitting: true, error: null });
+    try {
+      const booking = await bookingsApi.approveQuote(id, momoNumber);
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
+      return booking;
+    } catch (e) {
+      const err = toApiError(e);
+      set({ error: err });
+      throw err;
+    } finally {
+      set({ submitting: false });
+    }
+  },
+
+  declineQuote: async (id) => {
+    set({ submitting: true, error: null });
+    try {
+      const booking = await bookingsApi.declineQuote(id);
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
+      return booking;
+    } catch (e) {
+      const err = toApiError(e);
+      set({ error: err });
+      throw err;
+    } finally {
+      set({ submitting: false });
+    }
+  },
+
   start: async (id) => {
     set({ submitting: true, error: null });
     try {
@@ -239,10 +274,10 @@ export const useBookingStore = create<BookingState>((set, get) => ({
     }
   },
 
-  deliver: async (id) => {
+  deliver: async (id, actualHours) => {
     set({ submitting: true, error: null });
     try {
-      const booking = await bookingsApi.deliver(id);
+      const booking = await bookingsApi.deliver(id, actualHours);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
       return booking;
     } catch (e) {

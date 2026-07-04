@@ -2,11 +2,17 @@
 
 use App\Http\Controllers\Api\Admin\AdminAuthController;
 use App\Http\Controllers\Api\Admin\AdminAuditLogController;
+use App\Http\Controllers\Api\Admin\AdminBookingController;
+use App\Http\Controllers\Api\Admin\AdminFinanceController;
+use App\Http\Controllers\Api\Admin\AdminFraudController;
+use App\Http\Controllers\Api\Admin\AdminInsightsController;
 use App\Http\Controllers\Api\Admin\AdminReviewController;
 use App\Http\Controllers\Api\Admin\AdminSafetyController;
 use App\Http\Controllers\Api\Admin\AdminServiceController;
+use App\Http\Controllers\Api\Admin\AdminSettingsController;
 use App\Http\Controllers\Api\Admin\AdminUserController;
 use App\Http\Controllers\Api\Admin\AdminVerificationController;
+use App\Http\Controllers\Api\Admin\AdminWhatsAppController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\PawapayCallbackController;
 use App\Http\Controllers\Api\WhatsAppWebhookController;
@@ -15,6 +21,7 @@ use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\DisputeController;
 use App\Http\Controllers\Api\HomeBannerController;
+use App\Http\Controllers\Api\LandingController;
 use App\Http\Controllers\Api\KycController;
 use App\Http\Controllers\Api\LocationController;
 use App\Http\Controllers\Api\SafetyReportController;
@@ -172,9 +179,82 @@ Route::middleware('auth:admin')->prefix('admin')->group(function () {
         Route::post('/safety/{kind}/{id}/claim',             [AdminSafetyController::class, 'claim']);
         Route::post('/safety/{kind}/{id}/note',              [AdminSafetyController::class, 'note']);
         Route::post('/safety/{kind}/{id}/restrict-contact',  [AdminSafetyController::class, 'restrictContact']);
+        Route::post('/safety/{kind}/{id}/restrict-reported-user', [AdminSafetyController::class, 'restrictReportedUser']);
         Route::post('/safety/{kind}/{id}/escalate-authority',[AdminSafetyController::class, 'escalateAuthority']);
         Route::post('/safety/{kind}/{id}/escalate-super-admin', [AdminSafetyController::class, 'escalateSuperAdmin']);
         Route::post('/safety/{kind}/{id}/resolve',           [AdminSafetyController::class, 'resolve']);
+    });
+
+    // ── Finance & Commissions ──────────────────────────────────────────────
+    // Ops/revenue-health view, not a payout tool. Bands + payout retry are
+    // step-up gated (write:commissions / write:payouts).
+    Route::middleware('admin.can:read:commissions')->group(function () {
+        Route::get('/finance/overview',          [AdminFinanceController::class, 'overview']);
+        Route::get('/finance/commissions',       [AdminFinanceController::class, 'commissions']);
+        Route::get('/finance/commission-bands',  [AdminFinanceController::class, 'commissionBands']);
+        Route::get('/finance/escrow',            [AdminFinanceController::class, 'escrow']);
+    });
+    Route::middleware('admin.can:write:commissions')->group(function () {
+        Route::patch('/finance/commission-bands/{category}', [AdminFinanceController::class, 'updateCommissionBand']);
+    });
+    Route::middleware('admin.can:read:payouts')->group(function () {
+        Route::get('/finance/payouts', [AdminFinanceController::class, 'payouts']);
+    });
+    Route::middleware('admin.can:write:payouts')->group(function () {
+        Route::post('/finance/payouts/{bookingId}/retry', [AdminFinanceController::class, 'retryPayout']);
+    });
+
+    // ── Fraud & Denylist ─────────────────────────────────────────────────────
+    Route::middleware('admin.can:read:fraud')->group(function () {
+        Route::get('/fraud/patterns',    [AdminFraudController::class, 'patterns']);
+        Route::get('/fraud/escalations', [AdminFraudController::class, 'escalations']);
+        Route::get('/fraud/denylist',    [AdminFraudController::class, 'denylist']);
+        Route::get('/fraud/denylist/export', [AdminFraudController::class, 'exportDenylist']);
+    });
+    Route::middleware('admin.can:write:fraud')->group(function () {
+        Route::post('/fraud/patterns/claim',           [AdminFraudController::class, 'claimSignal']);
+        Route::post('/fraud/patterns/false-positive',  [AdminFraudController::class, 'markFalsePositive']);
+        Route::post('/fraud/patterns/escalate',        [AdminFraudController::class, 'escalateSignal']);
+    });
+    Route::middleware('admin.can:write:denylist')->group(function () {
+        Route::post('/fraud/denylist',                    [AdminFraudController::class, 'addToDenylist']);
+        Route::post('/fraud/denylist/{denylist}/lift',    [AdminFraudController::class, 'liftFromDenylist']);
+    });
+
+    // ── WhatsApp & Conversation Ops ──────────────────────────────────────────
+    Route::middleware('admin.can:platform.ops')->group(function () {
+        Route::get('/whatsapp/overview',      [AdminWhatsAppController::class, 'overview']);
+        Route::get('/whatsapp/templates',     [AdminWhatsAppController::class, 'templates']);
+        Route::get('/whatsapp/conversations', [AdminWhatsAppController::class, 'conversations']);
+        Route::post('/whatsapp/conversations/{conversationId}/nudge',          [AdminWhatsAppController::class, 'nudge']);
+        Route::post('/whatsapp/conversations/{conversationId}/mark-abandoned', [AdminWhatsAppController::class, 'markAbandoned']);
+        Route::get('/whatsapp/logs', [AdminWhatsAppController::class, 'logs']);
+    });
+
+    // ── Dispatch & Trust Insights ────────────────────────────────────────────
+    Route::middleware('admin.can:read:insights')->group(function () {
+        Route::get('/insights/dispatch', [AdminInsightsController::class, 'dispatch']);
+        Route::get('/insights/trust',    [AdminInsightsController::class, 'trust']);
+        Route::get('/insights/supply',   [AdminInsightsController::class, 'supply']);
+        Route::get('/insights/ranking-categories', [AdminInsightsController::class, 'rankingCategories']);
+        Route::get('/insights/ranking',            [AdminInsightsController::class, 'ranking']);
+    });
+
+    // ── Platform Settings — super_admin only ─────────────────────────────────
+    Route::middleware('admin.can:read:settings')->group(function () {
+        Route::get('/settings/groups/{group}',   [AdminSettingsController::class, 'group']);
+        Route::get('/settings/risk-tiers',       [AdminSettingsController::class, 'riskTiers']);
+        Route::get('/settings/denylist-config',  [AdminSettingsController::class, 'denylistCheckConfig']);
+    });
+    Route::middleware('admin.can:write:settings')->group(function () {
+        Route::patch('/settings/{key}',                  [AdminSettingsController::class, 'update']);
+        Route::patch('/settings/risk-tiers/{riskTier}',   [AdminSettingsController::class, 'updateRiskTier']);
+    });
+
+    // ── Bookings — read-only view of escrow/payment/dispute state ───────────
+    Route::middleware('admin.can:read:bookings')->group(function () {
+        Route::get('/bookings',      [AdminBookingController::class, 'index']);
+        Route::get('/bookings/{booking}', [AdminBookingController::class, 'show']);
     });
 });
 
@@ -193,6 +273,9 @@ Route::get('/home-banners',   [HomeBannerController::class, 'index']);
 // ── Ranking instrumentation events (v3.2 §7 — public, fire-and-forget) ─────
 Route::post('/events/result-clicked',  [\App\Http\Controllers\Api\SearchEventController::class, 'resultClicked']);
 Route::post('/events/booking-started', [\App\Http\Controllers\Api\SearchEventController::class, 'bookingStarted']);
+
+// ── Landing page summary (public marketing aggregates + featured reviews) ──
+Route::get('/landing', [LandingController::class, 'summary']);
 
 // ── Categories (public read) ────────────────────────────────────────────────
 Route::get('/categories', [CategoryController::class, 'index']);
@@ -214,7 +297,10 @@ Route::prefix('location')->group(function () {
 });
 
 // ── Protected routes ────────────────────────────────────────────────────────
-Route::middleware('auth:api')->group(function () {
+// account.active enforces ban/suspend in real time: rejects tokens issued
+// before the account's session_invalidated_at watermark, or issued to an
+// account that is currently BANNED/SUSPENDED — see EnsureAccountActive.
+Route::middleware(['auth:api', 'account.active'])->group(function () {
 
     // ── Bookings (buyer + provider) ────────────────────────────────────────
     Route::get('/bookings',               [BookingController::class, 'index']);
@@ -232,6 +318,11 @@ Route::middleware('auth:api')->group(function () {
     // ESCROW-only transitions
     Route::post('/bookings/{id}/pay',           [BookingController::class, 'pay']);
     Route::post('/bookings/{id}/instant-payout', [BookingController::class, 'instantPayout']);
+
+    // Outcome-based pricing — scoped-quote approval (PROVIDER_SCOPE / QUOTE_DEPOSIT).
+    // Escrow only ever holds AFTER the customer approves the scoped quote.
+    Route::post('/bookings/{id}/approve-quote', [BookingController::class, 'approveQuote']);
+    Route::post('/bookings/{id}/decline-quote', [BookingController::class, 'declineQuote']);
 
     // DIRECT-only transitions
     Route::post('/bookings/{id}/accept',       [BookingController::class, 'accept']);
@@ -311,6 +402,13 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/verification',                  [\App\Http\Controllers\Api\ProviderVerificationController::class, 'show']);
         Route::post('/verification/police-clearance', [\App\Http\Controllers\Api\ProviderVerificationController::class, 'policeClearance']);
         Route::post('/verification/portfolio',        [\App\Http\Controllers\Api\ProviderVerificationController::class, 'portfolio']);
+
+        // Weekly availability + time off — feeds the WhatsApp/PWA date-pickers
+        // and dispatch eligibility (provider_availability table).
+        Route::get('/availability',                  [\App\Http\Controllers\Api\ProviderAvailabilityController::class, 'show']);
+        Route::put('/availability',                  [\App\Http\Controllers\Api\ProviderAvailabilityController::class, 'update']);
+        Route::post('/availability/blocks',          [\App\Http\Controllers\Api\ProviderAvailabilityController::class, 'block']);
+        Route::delete('/availability/blocks/{date}', [\App\Http\Controllers\Api\ProviderAvailabilityController::class, 'unblock']);
 
         Route::get('/profile',         [ProviderProfileController::class, 'show']);
         Route::put('/profile',         [ProviderProfileController::class, 'upsert']);

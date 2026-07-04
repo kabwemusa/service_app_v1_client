@@ -1,64 +1,368 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { catalogApi, type ServiceCard } from '../../api/catalog';
+import { servicesApi, type Service } from '../../api/services';
 import { ScreenHeader } from '../../components/ui/ScreenHeader';
-import { Button, Card, Field, inputStyle } from '../../components/ui/ui';
-import { api } from '../../api/client';
-import { useAuthStore } from '../../store/authStore';
+import { api, storageUrl } from '../../api/client';
+import { useLocationStore } from '../../store/locationStore';
+import { categoryImage, categoryColor } from '../../theme/imagery';
+import {
+  HOUR_OPTIONS, next14Days, isHourPast, isDayAvailable, isHourAvailable, dayChipLabel, pad2,
+} from './bookingFlow';
+import './booking.css';
 
-// Post-sign-in resume target: the booking the guest tapped survived. Name and
-// address are captured LAZILY here (never upfront). Payment/escrow is Phase 4 —
-// stubbed: we capture intent and stop at the funding step.
+// Web twin of the mobile BookingSheet: When (day chips) · Start time (hour chips)
+// · Where · Add extras · brief · live Total. Amounts shown come from the backend
+// service; the buyer-protection line mirrors the app's preview (the booking
+// record the backend returns is the source of truth for the final charge).
+
+const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString();
+
 export function BookingScreen() {
   const { serviceId = '' } = useParams();
-  const user = useAuthStore((s) => s.user);
-  const [s, setS] = useState<ServiceCard | null>(null);
-  const [name, setName] = useState('');
+  const location = useLocationStore((s) => s.location);
+  const resolveDevice = useLocationStore((s) => s.resolveDevice);
+  const hydrate = useLocationStore((s) => s.hydrate);
+
+  const [svc, setSvc] = useState<Service | null>(null);
+  const days = useMemo(() => next14Days(), []);
+  const [selectedDay, setSelectedDay] = useState<Date>(days[0]);
+  const [startHour, setStartHour] = useState(9);
+  const [selectedAddons, setSelectedAddons] = useState<Set<number>>(new Set());
+  const [briefAnswers, setBriefAnswers] = useState<string[]>([]);
+  const [notes, setNotes] = useState('');
   const [address, setAddress] = useState('');
-  const [savedName, setSavedName] = useState(false);
-  const [done, setDone] = useState(false);
+  const [editingLoc, setEditingLoc] = useState(false);
+  const [bookedHours, setBookedHours] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState<'FUNDED' | 'BRIEF_SENT' | 'REQUESTED' | null>(null);
 
-  useEffect(() => { catalogApi.service(serviceId).then(setS).catch(() => {}); }, [serviceId]);
+  useEffect(() => { hydrate(); }, [hydrate]);
+  useEffect(() => { if (location?.label && !address) setAddress(location.label); }, [location, address]);
 
-  const proceed = async () => {
-    // Lazy profile capture — only what the booking needs, only now.
-    if (name) { await api.patch('/me/account', { name }, true).catch(() => {}); setSavedName(true); }
-    setDone(true);
+  useEffect(() => {
+    servicesApi.show(serviceId).then(setSvc).catch(() => {});
+    servicesApi.bookedSlots(serviceId).then(({ slots }) => {
+      const keys = new Set<string>();
+      for (const slot of slots) {
+        const cur = new Date(slot.start); cur.setMinutes(0, 0, 0);
+        const end = new Date(slot.end);
+        while (cur < end) { keys.add(`${cur.toDateString()}-${cur.getHours()}`); cur.setHours(cur.getHours() + 1); }
+      }
+      setBookedHours(keys);
+    }).catch(() => {});
+  }, [serviceId]);
+
+  const avail = svc?.provider?.availability_matrix ?? null;
+  const isDirect = svc?.payment_mode === 'DIRECT';
+  const isQuote = svc?.pricing_model === 'PROVIDER_SCOPE' || svc?.pricing_model === 'QUOTE_DEPOSIT';
+  const isCapped = svc?.pricing_model === 'HOURLY_CAPPED';
+
+  const briefPrompts = useMemo(() => (isQuote ? (svc?.scope_prompts ?? []) : []), [isQuote, svc]);
+  const hasStructuredBrief = briefPrompts.length > 0;
+
+  const hourBooked = (h: number, d: Date) => bookedHours.has(`${d.toDateString()}-${h}`);
+  const hourOk = (h: number, d: Date) => isHourAvailable(h, d, avail) && !isHourPast(h, d) && !hourBooked(h, d);
+  const isDaySelectable = (d: Date) => isDayAvailable(d, avail) && HOUR_OPTIONS.some((h) => hourOk(h, d));
+
+  // Land on the first bookable day + hour once the service (availability) loads.
+  useEffect(() => {
+    if (!svc) return;
+    const firstDay = days.find(isDaySelectable) ?? days[0];
+    setSelectedDay(firstDay);
+    const firstHour = HOUR_OPTIONS.find((h) => hourOk(h, firstDay)) ?? 9;
+    setStartHour(firstHour);
+    setBriefAnswers(briefPrompts.map(() => ''));
+  }, [svc, bookedHours]);
+
+  // Keep the selected hour valid when the day changes.
+  useEffect(() => {
+    if (!hourOk(startHour, selectedDay)) {
+      const h = HOUR_OPTIONS.find((x) => hourOk(x, selectedDay));
+      if (h !== undefined) setStartHour(h);
+    }
+  }, [selectedDay, bookedHours]);
+
+  // ── Totals (display) ──
+  const svcCost = (isCapped ? (svc?.cap_amount ?? svc?.base_price) : svc?.base_price) ?? 0;
+  const addonSum = (svc?.addons ?? []).filter((a) => selectedAddons.has(a.id)).reduce((s, a) => s + a.price, 0);
+  const prot = !isDirect && !isQuote ? Math.min((svcCost + addonSum) * 0.02, 50) : 0;
+  const total = svcCost + addonSum + prot;
+
+  const briefComplete = !isQuote
+    || (hasStructuredBrief
+        ? briefPrompts.every((_, i) => (briefAnswers[i] ?? '').trim().length > 0)
+        : (briefAnswers[0] ?? '').trim().length > 0);
+
+  const durationLabel = svc?.duration_estimate_mins
+    ? (svc.duration_estimate_mins >= 60
+        ? `~${Math.round((svc.duration_estimate_mins / 60) * 10) / 10} hr`
+        : `~${svc.duration_estimate_mins} min`)
+    : null;
+
+  const toggleAddon = (id: number) => setSelectedAddons((prev) => {
+    const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
+  });
+
+  const submit = async () => {
+    if (!svc) return;
+    setBusy(true); setErr(null);
+    try {
+      let loc = location;
+      if (!loc) loc = await resolveDevice();
+      if (!loc) { setErr('We need your location to match a nearby provider. Tap “Use my location”.'); return; }
+
+      const start = new Date(selectedDay); start.setHours(startHour, 0, 0, 0);
+      const scopeBrief = isQuote
+        ? (hasStructuredBrief
+            ? briefPrompts.map((q, i) => ({ question: q, answer: (briefAnswers[i] ?? '').trim() }))
+            : [{ question: 'Describe the job', answer: (briefAnswers[0] ?? '').trim() }])
+        : undefined;
+
+      const booking = await api.post<{ id: string }>('/bookings', {
+        service_id: svc.id,
+        scheduled_start: start.toISOString(),
+        delivery_lat: loc.lat,
+        delivery_lng: loc.lng,
+        delivery_location_label: address || loc.label,
+        delivery_location_region: loc.region,
+        delivery_location_source: loc.source,
+        ...(selectedAddons.size ? { addon_ids: Array.from(selectedAddons) } : {}),
+        ...(isQuote && notes.trim() ? { notes: notes.trim() } : {}),
+        ...(scopeBrief ? { scope_brief: scopeBrief } : {}),
+      }, true);
+
+      if (isQuote) { setDone('BRIEF_SENT'); }
+      else if (isDirect) { setDone('REQUESTED'); }
+      else { await api.post(`/bookings/${booking.id}/pay`, {}, true).catch(() => {}); setDone('FUNDED'); }
+    } catch (e) {
+      setErr((e as { message?: string })?.message ?? 'Could not create the booking.');
+    } finally {
+      setBusy(false);
+    }
   };
 
+  const ctaLabel = isQuote ? 'Send brief · get quote'
+    : isDirect ? 'Request booking'
+    : isCapped ? `Confirm · hold K${total.toFixed(0)}`
+    : `Confirm booking · K${total.toFixed(0)}`;
+
+  if (!svc) return <><ScreenHeader title="Book" /><div className="bk" style={{ padding: 'var(--space-md)' }}><div className="skeleton" style={{ height: 260 }} /></div></>;
+
+  const accent = categoryColor(svc.category?.id ?? 0);
+  const thumb = svc.photos?.[0]?.path ? storageUrl(svc.photos[0].path) : categoryImage(svc.category?.name, svc.category?.id ?? 0, 200);
+
+  if (done) {
+    return (
+      <div className="bk">
+        <ScreenHeader title="Booking" />
+        <div className="bk-done">
+          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: 'var(--space-lg)' }}>
+            <p className="t-h3" style={{ marginBottom: 8 }}>
+              {done === 'BRIEF_SENT' ? 'Brief sent 📋' : done === 'REQUESTED' ? 'Request sent 📨' : 'Almost there 📲'}
+            </p>
+            <p className="t-small t-muted">
+              {done === 'BRIEF_SENT'
+                ? "The provider is reviewing your brief. We'll notify you when their quote is in — you approve it before any money moves."
+                : done === 'REQUESTED'
+                ? "The provider will confirm your request shortly. You'll pay them directly after the job — both of you mark it complete."
+                : 'Check your phone and approve the Mobile Money prompt to hold the funds in escrow. Track it under My Bookings.'}
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div>
-      <ScreenHeader title="Confirm booking" />
-      <div style={{ padding: 'var(--space-md)', display: 'flex', flexDirection: 'column', gap: 'var(--space-md)' }}>
-        {s && (
-          <Card>
-            <p className="t-label">{s.title}</p>
-            {s.category && <p className="t-small t-muted">{s.category.name}</p>}
-            {(s.min_price ?? s.base_price) != null && <p className="t-price" style={{ marginTop: 6 }}>K{s.min_price ?? s.base_price}</p>}
-          </Card>
+    <div className="bk">
+      <ScreenHeader title="Book" />
+
+      {/* Summary header */}
+      <div className="bk-header">
+        <img className="bk-thumb" src={thumb} alt="" style={{ background: `color-mix(in srgb, ${accent} 15%, transparent)` }} />
+        <div className="bk-header-body">
+          <div className="bk-header-title">{svc.title}</div>
+          <div className="bk-header-meta">
+            {[svc.provider?.display_name, durationLabel].filter(Boolean).join('  ·  ') || 'Choose a time & place'}
+          </div>
+        </div>
+      </div>
+
+      <div className="bk-body">
+        {/* When */}
+        <p className="bk-label">When</p>
+        <div className="bk-chip-row" role="radiogroup" aria-label="Choose a day">
+          {days.map((day, i) => {
+            const active = sameDay(day, selectedDay);
+            const ok = isDaySelectable(day);
+            const lbl = dayChipLabel(day);
+            return (
+              <button
+                key={i}
+                className={`bk-day-chip ${active ? 'bk-chip-sel' : ''} ${!ok ? 'bk-chip-off' : ''}`}
+                onClick={() => ok && setSelectedDay(day)}
+                disabled={!ok}
+                aria-pressed={active}
+              >
+                <span className="bk-day-wkd">{lbl.top}</span>
+                <span className="bk-day-num">{lbl.bottom}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Start time */}
+        <p className="bk-label">Start time</p>
+        <div className="bk-chip-row" role="radiogroup" aria-label="Choose a start time">
+          {HOUR_OPTIONS.map((h) => {
+            const active = h === startHour;
+            const ok = hourOk(h, selectedDay);
+            return (
+              <button
+                key={h}
+                className={`bk-time-chip ${active ? 'bk-chip-sel' : ''} ${!ok ? 'bk-chip-off' : ''}`}
+                onClick={() => ok && setStartHour(h)}
+                disabled={!ok}
+                aria-pressed={active}
+              >
+                {pad2(h)}:00
+              </button>
+            );
+          })}
+        </div>
+
+        {durationLabel && !isCapped && (
+          <div className="bk-duration"><span aria-hidden>⏱</span> Estimated duration: {durationLabel} — set by the provider as a guide.</div>
         )}
 
-        {done ? (
-          <Card>
-            <p className="t-h3" style={{ marginBottom: 8 }}>You're all set 🎉</p>
-            <p className="t-small t-muted">
-              Your details are saved{savedName ? '' : ''}. Payment is the next step — escrow funding
-              arrives in the next release.
-            </p>
-          </Card>
-        ) : (
+        {isCapped && (
+          <div className="bk-cap">
+            <div className="bk-cap-headline">
+              K{(svc.hourly_rate ?? 0).toFixed(0)}/hr · {svc.minimum_hours ?? 1}-hr minimum · max K{svcCost.toFixed(0)}
+            </div>
+            <div className="bk-cap-note">
+              We hold K{svcCost.toFixed(0)} (the maximum). You'll only be charged for the actual time worked — any unused amount is refunded automatically.
+            </div>
+          </div>
+        )}
+
+        {/* Where */}
+        <p className="bk-label">Where</p>
+        <div className="bk-loc">
+          <span aria-hidden>📍</span>
+          <span className={`bk-loc-txt ${!location?.label && !address ? 'bk-loc-empty' : ''}`}>
+            {address || location?.label || 'Add a delivery location'}
+          </span>
+          <button className="bk-loc-change" onClick={() => { resolveDevice(); setEditingLoc(true); }}>
+            {location?.label || address ? 'Change' : 'Add'}
+          </button>
+        </div>
+        {(editingLoc || (!location?.label && !address)) && (
+          <input
+            className="bk-loc-input"
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+            placeholder="Area / landmark"
+            aria-label="Delivery address"
+          />
+        )}
+
+        {/* Add extras */}
+        {(svc.addons?.length ?? 0) > 0 && (
           <>
-            {!user?.email && (
-              <Field label="Your name" hint="So the provider knows who to expect.">
-                <input value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} placeholder="e.g. Chanda Mwale" />
-              </Field>
-            )}
-            <Field label="Where is the service?" hint="Saved to your address book for next time.">
-              <input value={address} onChange={(e) => setAddress(e.target.value)} style={inputStyle} placeholder="Area / landmark" />
-            </Field>
-            <Button onClick={proceed}>Continue</Button>
+            <p className="bk-label">Add extras</p>
+            <div className="bk-addons">
+              {svc.addons.map((a) => {
+                const on = selectedAddons.has(a.id);
+                return (
+                  <div key={a.id} className="bk-addon" onClick={() => toggleAddon(a.id)} role="checkbox" aria-checked={on}>
+                    <span className={`bk-check ${on ? 'bk-check-on' : ''}`}>{on ? '✓' : ''}</span>
+                    <span className="bk-addon-name">{a.name}</span>
+                    <span className="bk-addon-price">+ K{a.price.toFixed(0)}</span>
+                  </div>
+                );
+              })}
+            </div>
           </>
         )}
+
+        {/* Structured brief (quote-first) */}
+        {isQuote && (
+          <>
+            <p className="bk-label">Tell the provider about the job</p>
+            {(hasStructuredBrief ? briefPrompts : ['Describe the job']).map((q, i) => (
+              <div key={i} className="bk-brief">
+                <div className="bk-brief-q">{q}</div>
+                <input
+                  className="bk-input"
+                  value={briefAnswers[i] ?? ''}
+                  onChange={(e) => setBriefAnswers((prev) => { const n = [...prev]; n[i] = e.target.value; return n; })}
+                  placeholder="Your answer…"
+                />
+              </div>
+            ))}
+            <p className="bk-label">Anything else? (optional)</p>
+            <textarea className="bk-textarea" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Extra details for the provider…" />
+          </>
+        )}
+
+        {/* Total */}
+        <div className="bk-total">
+          {isQuote ? (
+            <div className="bk-quote-note">
+              <span aria-hidden>💬</span>
+              <span>
+                {svc.pricing_model === 'QUOTE_DEPOSIT'
+                  ? `${svc.provider?.display_name ?? 'The provider'} will send a full quote after reviewing your brief.${svc.deposit_percent != null ? ` A ${svc.deposit_percent}% deposit confirms the booking — the balance is collected on completion.` : ''} Nothing is charged until you approve the quote.`
+                  : `${svc.provider?.display_name ?? 'The provider'} will review your brief and send a quote with the price, duration and what's included. Nothing is charged until you approve it.`}
+              </span>
+            </div>
+          ) : (
+            <>
+              <div className="bk-fee-row">
+                <span className="bk-fee-lbl">{isCapped ? 'Held (maximum)' : 'Service'}</span>
+                <span className="bk-fee-amt">K{svcCost.toFixed(0)}</span>
+              </div>
+              {(svc.addons ?? []).filter((a) => selectedAddons.has(a.id)).map((a) => (
+                <div key={a.id} className="bk-fee-row">
+                  <span className="bk-fee-lbl">{a.name}</span>
+                  <span className="bk-fee-amt">K{a.price.toFixed(0)}</span>
+                </div>
+              ))}
+              {!isDirect && (
+                <div className="bk-fee-row">
+                  <span className="bk-fee-lbl">Buyer protection (2%)</span>
+                  <span className="bk-fee-amt">K{prot.toFixed(0)}</span>
+                </div>
+              )}
+              <div className="bk-fee-divider" />
+              <div className="bk-fee-row">
+                <span className="bk-total-lbl">{isDirect ? 'Agreed price' : 'Total'}</span>
+                <span className="bk-total-amt">K{total.toFixed(0)}</span>
+              </div>
+            </>
+          )}
+
+          <div className="bk-mode">
+            <span aria-hidden>{isDirect ? '💵' : '🔒'}</span>
+            <span>
+              {isDirect
+                ? `You'll pay ${svc.provider?.display_name ?? 'the provider'} directly after the job · they'll confirm your request.`
+                : isCapped
+                ? 'The maximum is held in escrow — you pay only for actual time, the rest is refunded when you confirm completion.'
+                : isQuote
+                ? 'Escrow protection applies once you approve the quote — funds are released only when you confirm the job is complete.'
+                : 'Held securely in escrow — released to the provider only when you confirm the job is complete.'}
+            </span>
+          </div>
+
+          {err && <div className="bk-mode" style={{ background: 'var(--warning-light)', color: 'var(--text-primary)' }}>{err}</div>}
+
+          <button className="bk-cta" onClick={submit} disabled={busy || !briefComplete}>
+            {busy ? 'Working…' : ctaLabel}
+          </button>
+        </div>
       </div>
     </div>
   );

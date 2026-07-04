@@ -6,6 +6,7 @@ export type AdminRole =
   | 'moderator'
   | 'support'
   | 'analyst'
+  | 'ops'
 
 // ─── Capability strings ──────────────────────────────────────────────────────
 // Every gate in the UI is checked against a capability, never against a role string.
@@ -54,6 +55,7 @@ export type Capability =
   | 'manage:admins'
   | 'read:audit'
   | 'write:platform_params'
+  | 'platform.ops'
 
 // ─── Admin JWT payload (decoded client-side; signature verified by Laravel) ──
 export interface AdminTokenPayload {

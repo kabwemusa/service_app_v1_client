@@ -4,9 +4,9 @@ import { useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Eye, EyeOff, Lock, ShieldCheck, ExternalLink, Star,
-  Calendar, Briefcase, MessageSquare, Flag, UserPlus, Banknote,
-} from 'lucide-react'
+  IoEyeOutline, IoEyeOffOutline, IoLockClosedOutline, IoShieldCheckmarkOutline, IoOpenOutline, IoStarOutline,
+  IoCalendarOutline, IoBriefcaseOutline, IoChatbubbleOutline, IoFlagOutline, IoPersonAddOutline, IoCashOutline,
+} from 'react-icons/io5'
 import { Avatar } from '@/components/ui/Avatar'
 import { StatusPill } from '@/components/ui/StatusPill'
 import { AuditTrail } from '@/components/ui/AuditTrail'
@@ -74,7 +74,7 @@ export function UserDetail({ userId, onChanged }: Props) {
 
       {/* ── Read-only state banner ── */}
       {readOnly && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm dark:border-red-900/50 dark:bg-red-950/20">
+        <div className="rounded-sm border border-red-200 bg-red-50 p-3 text-sm dark:border-red-900/50 dark:bg-red-950/20">
           <p className="font-medium text-red-700 dark:text-red-400">
             Account {STATUS_LABEL[user.account_status].toLowerCase()}
             {user.suspended_until && (
@@ -93,12 +93,12 @@ export function UserDetail({ userId, onChanged }: Props) {
       )}
 
       {/* ── Contact / PII (masked + gated reveal) ── */}
-      <Section title="Contact & identity" icon={Lock}>
+      <Section title="Contact & identity" icon={IoLockClosedOutline}>
         <PiiBlock user={user} />
       </Section>
 
       {/* ── Trust signals ── */}
-      <Section title="Trust signals" icon={ShieldCheck}>
+      <Section title="Trust signals" icon={IoShieldCheckmarkOutline}>
         <div className="grid grid-cols-2 gap-3">
           <Signal label="Rating (§7.1)" value={user.signals.rating !== null ? `★ ${user.signals.rating.toFixed(2)} (${user.signals.reviews_count})` : 'No reviews'} />
           {user.is_provider && (
@@ -111,7 +111,7 @@ export function UserDetail({ userId, onChanged }: Props) {
 
         {/* Internal-only composite scores — visible to read:fraud holders, never exposed outside admin */}
         {user.internal && (
-          <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-800/50">
+          <div className="mt-3 rounded-sm border border-dashed border-slate-300 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-800/50">
             <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
               Internal · admin-only
             </p>
@@ -124,23 +124,23 @@ export function UserDetail({ userId, onChanged }: Props) {
       </Section>
 
       {/* ── Activity ── */}
-      <Section title="Activity" icon={Calendar}>
+      <Section title="Activity" icon={IoCalendarOutline}>
         <div className="grid grid-cols-3 gap-2">
-          <StatTile icon={Calendar} label="Bookings" value={user.activity.bookings_count} href={`/bookings?user=${user.id}`} />
+          <StatTile icon={IoCalendarOutline} label="Bookings" value={user.activity.bookings_count} href={`/bookings?user=${user.id}`} />
           {user.is_provider && (
-            <StatTile icon={Briefcase} label="Services" value={user.activity.services_count} href={`/services?provider=${user.id}`} />
+            <StatTile icon={IoBriefcaseOutline} label="Services" value={user.activity.services_count} href={`/services?provider=${user.id}`} />
           )}
-          <StatTile icon={Star} label="Reviews recv." value={user.activity.reviews_received} href={`/reviews?user=${user.id}`} />
-          <StatTile icon={MessageSquare} label="Reviews given" value={user.activity.reviews_given} />
-          <StatTile icon={Flag} label="Reports against" value={user.activity.reports_against} href={`/safety?user=${user.id}`} warn={user.activity.reports_against > 0} />
-          <StatTile icon={Flag} label="Reports filed" value={user.activity.reports_filed} />
-          <StatTile icon={UserPlus} label="Referrals" value={user.activity.referrals_count} />
+          <StatTile icon={IoStarOutline} label="Reviews recv." value={user.activity.reviews_received} href={`/reviews?user=${user.id}`} />
+          <StatTile icon={IoChatbubbleOutline} label="Reviews given" value={user.activity.reviews_given} />
+          <StatTile icon={IoFlagOutline} label="Reports against" value={user.activity.reports_against} href={`/safety?user=${user.id}`} warn={user.activity.reports_against > 0} />
+          <StatTile icon={IoFlagOutline} label="Reports filed" value={user.activity.reports_filed} />
+          <StatTile icon={IoPersonAddOutline} label="Referrals" value={user.activity.referrals_count} />
         </div>
 
         {user.activity.recent_bookings.length > 0 && (
           <div className="mt-3">
             <p className="mb-1.5 text-xs font-medium text-slate-500 dark:text-slate-400">Recent bookings</p>
-            <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-700 dark:border-slate-700">
+            <div className="divide-y divide-slate-100 rounded-sm border border-slate-200 bg-white dark:divide-slate-700 dark:border-slate-700 dark:bg-slate-800">
               {user.activity.recent_bookings.map((b) => (
                 <div key={b.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
                   <div className="min-w-0">
@@ -161,7 +161,7 @@ export function UserDetail({ userId, onChanged }: Props) {
       </Section>
 
       {/* ── DIRECT-mode advisory finance (no money moves) ── */}
-      <Section title="Finance · advisory (DIRECT)" icon={Banknote}>
+      <Section title="Finance · advisory (DIRECT)" icon={IoCashOutline}>
         <div className="grid grid-cols-2 gap-3">
           <Signal label="GMV (provider)" value={fmtZMW(user.finance.gmv)} />
           <Signal label="Commission due (uncollected)" value={fmtZMW(user.finance.commission_due_uncollected)} />
@@ -172,7 +172,7 @@ export function UserDetail({ userId, onChanged }: Props) {
       </Section>
 
       {/* ── Moderation ── */}
-      <Section title="Moderation" icon={ShieldCheck}>
+      <Section title="Moderation" icon={IoShieldCheckmarkOutline}>
         <UserModerationActions user={user} onChanged={invalidate} />
         <Can do="write:denylist">
           <div className="mt-3">
@@ -182,7 +182,7 @@ export function UserDetail({ userId, onChanged }: Props) {
       </Section>
 
       {/* ── Audit trail (scoped to this user) ── */}
-      <Section title="Audit trail" icon={ExternalLink}>
+      <Section title="Audit trail" icon={IoOpenOutline}>
         <AuditTrail targetType="user" targetId={user.id} />
       </Section>
     </div>
@@ -226,7 +226,7 @@ function PiiBlock({ user }: { user: UserDetailType }) {
             onClick={() => setRevealed(null)}
             className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
           >
-            <EyeOff className="size-3.5" /> Hide details
+            <IoEyeOffOutline className="size-3.5" /> Hide details
           </button>
         ) : (
           <button
@@ -235,7 +235,7 @@ function PiiBlock({ user }: { user: UserDetailType }) {
             disabled={loading}
             className="inline-flex items-center gap-1.5 text-xs font-medium text-teal-600 hover:text-teal-700 disabled:opacity-50 dark:text-teal-400"
           >
-            <Eye className="size-3.5" /> {loading ? 'Revealing…' : 'Reveal full details (logged)'}
+            <IoEyeOutline className="size-3.5" /> {loading ? 'Revealing…' : 'Reveal full details (logged)'}
           </button>
         )}
       </Can>
@@ -280,7 +280,7 @@ function Section({ title, icon: Icon, children }: { title: string; icon: React.C
 
 function Signal({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
   return (
-    <div className="rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700">
+    <div className="rounded-sm border border-slate-200 px-3 py-2 dark:border-slate-700">
       <p className="text-[11px] text-slate-400">{label}</p>
       <p className={cn('text-sm font-medium', warn ? 'text-amber-600 dark:text-amber-400' : 'text-slate-800 dark:text-slate-200')}>
         {value}
@@ -292,14 +292,14 @@ function Signal({ label, value, warn }: { label: string; value: string; warn?: b
 function StatTile({ icon: Icon, label, value, href, warn }: { icon: React.ComponentType<{ className?: string }>; label: string; value: number; href?: string; warn?: boolean }) {
   const inner = (
     <div className={cn(
-      'flex flex-col gap-0.5 rounded-lg border px-3 py-2 transition-colors',
+      'flex flex-col gap-0.5 rounded-sm border px-3 py-2 transition-colors',
       warn ? 'border-amber-200 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-900/10' : 'border-slate-200 dark:border-slate-700',
       href && 'hover:bg-slate-50 dark:hover:bg-slate-700/40',
     )}>
       <span className="flex items-center gap-1 text-[11px] text-slate-400">
         <Icon className="size-3" />
         {label}
-        {href && <ExternalLink className="ml-auto size-2.5" />}
+        {href && <IoOpenOutline className="ml-auto size-2.5" />}
       </span>
       <span className={cn('text-base font-semibold', warn ? 'text-amber-700 dark:text-amber-400' : 'text-slate-800 dark:text-slate-200')}>
         {value}
@@ -320,7 +320,7 @@ function DetailSkeleton() {
         </div>
       </div>
       {Array.from({ length: 4 }).map((_, i) => (
-        <div key={i} className="h-20 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800" />
+        <div key={i} className="h-20 animate-pulse rounded-sm bg-slate-100 dark:bg-slate-800" />
       ))}
     </div>
   )

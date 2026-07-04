@@ -1,5 +1,5 @@
 import type { Metadata } from 'next'
-import { Image as ImageIcon } from 'lucide-react'
+import { IoImageOutline as ImageIcon } from 'react-icons/io5'
 import { EmptyState } from '@/components/ui/EmptyState'
 
 export const metadata: Metadata = { title: 'Banners' }

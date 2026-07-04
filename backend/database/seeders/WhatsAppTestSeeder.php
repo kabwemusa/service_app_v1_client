@@ -47,32 +47,32 @@ class WhatsAppTestSeeder extends Seeder
 
         $svcGraphic = Service::updateOrCreate(
             ['title' => 'Graphic Design', 'category_id' => $catRemote->id],
-            ['status' => 'ACTIVE', 'base_price' => 100, 'pricing_model' => 'FIXED', 'description' => 'Logo, banner, and social media design.', 'provider_id' => $providerA->id],
+            ['status' => 'ACTIVE', 'base_price' => 100, 'pricing_model' => 'OUTCOME_FIXED', 'description' => 'Logo, banner, and social media design.', 'provider_id' => $providerA->id],
         );
 
         $svcWeb = Service::updateOrCreate(
             ['title' => 'Website Development', 'category_id' => $catRemote->id],
-            ['status' => 'ACTIVE', 'base_price' => 500, 'pricing_model' => 'FIXED', 'description' => 'Responsive website build.', 'provider_id' => $providerA->id],
+            ['status' => 'ACTIVE', 'base_price' => 500, 'pricing_model' => 'OUTCOME_FIXED', 'description' => 'Responsive website build.', 'provider_id' => $providerA->id],
         );
 
         $svcHaircut = Service::updateOrCreate(
             ['title' => 'Haircut & Styling', 'category_id' => $catPublic->id],
-            ['status' => 'ACTIVE', 'base_price' => 50, 'pricing_model' => 'FIXED', 'description' => 'Professional haircut at a salon or studio.', 'provider_id' => $providerA->id],
+            ['status' => 'ACTIVE', 'base_price' => 50, 'pricing_model' => 'OUTCOME_FIXED', 'description' => 'Professional haircut at a salon or studio.', 'provider_id' => $providerA->id],
         );
 
         $svcMakeup = Service::updateOrCreate(
             ['title' => 'Makeup Artist', 'category_id' => $catPublic->id],
-            ['status' => 'ACTIVE', 'base_price' => 200, 'pricing_model' => 'FIXED', 'description' => 'Professional makeup for events.', 'provider_id' => $providerA->id],
+            ['status' => 'ACTIVE', 'base_price' => 200, 'pricing_model' => 'OUTCOME_FIXED', 'description' => 'Professional makeup for events.', 'provider_id' => $providerA->id],
         );
 
         $svcPlumbing = Service::updateOrCreate(
             ['title' => 'Plumbing', 'category_id' => $catInHome->id],
-            ['status' => 'ACTIVE', 'base_price' => 150, 'pricing_model' => 'HOURLY', 'description' => 'Pipe repair, tap fixing, drain clearing.', 'provider_id' => $providerA->id],
+            ['status' => 'ACTIVE', 'base_price' => 150, 'pricing_model' => 'HOURLY_CAPPED', 'hourly_rate' => 150, 'minimum_hours' => 1, 'cap_hours' => 4, 'cap_amount' => 600, 'description' => 'Pipe repair, tap fixing, drain clearing.', 'provider_id' => $providerA->id],
         );
 
         $svcCleaning = Service::updateOrCreate(
             ['title' => 'Home Cleaning', 'category_id' => $catInHome->id],
-            ['status' => 'ACTIVE', 'base_price' => 80, 'pricing_model' => 'FIXED', 'description' => 'Thorough home cleaning service.', 'provider_id' => $providerA->id],
+            ['status' => 'ACTIVE', 'base_price' => 80, 'pricing_model' => 'OUTCOME_FIXED', 'description' => 'Thorough home cleaning service.', 'provider_id' => $providerA->id],
         );
 
         // ── Verifications + trust signals + availability + service offerings ──
@@ -124,6 +124,11 @@ class WhatsAppTestSeeder extends Seeder
                 'account_state'  => 'ACTIVE',
                 'password_hash'  => Hash::make('Testing01!'),
                 'phone_verified_at' => now(),
+                'email_verified_at' => now(),
+                // Without this, AuthService::login() treats the account as
+                // unverified and tries to resend an email OTP — which fails
+                // locally unless a mail catcher (Mailhog/Mailpit) is running.
+                'is_verified'    => true,
             ],
         );
     }
@@ -139,6 +144,10 @@ class WhatsAppTestSeeder extends Seeder
                 'account_state'  => 'ACTIVE',
                 'password_hash'  => Hash::make('Testing01!'),
                 'phone_verified_at' => now(),
+                'email_verified_at' => now(),
+                // Same as above — real mobile-app signups set this via phone
+                // OTP; seeded test accounts need it set explicitly.
+                'is_verified'    => true,
             ],
         );
 

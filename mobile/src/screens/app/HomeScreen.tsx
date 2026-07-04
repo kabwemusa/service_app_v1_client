@@ -73,6 +73,15 @@ function toBookableService(r: SearchResult): Service {
     description: r.description,
     pricing_model: r.pricing_model,
     base_price: r.base_price,
+    // Search results don't carry the per-model pricing details; the booking
+    // sheet fetches the full service before charging anything.
+    hourly_rate: null,
+    minimum_hours: null,
+    cap_hours: null,
+    cap_amount: null,
+    deposit_percent: null,
+    scope_prompts: [],
+    needs_pricing_review: false,
     payment_mode: r.payment_mode,
     duration_estimate_mins: null,
     status: "ACTIVE",
@@ -172,14 +181,8 @@ export default function HomeScreen({ navigation }: any) {
 
   const handleBookPress = useCallback(
     async (result: SearchResult) => {
-      if (result.pricing_model === "QUOTE") {
-        showSnackbar({
-          message:
-            "Quote requests coming soon — the provider will send you a custom price.",
-          variant: "info",
-        });
-        return;
-      }
+      // Quote-first models go through the same sheet — it collects the brief
+      // instead of taking payment, so no special-casing needed here.
       try {
         const full = await servicesApi.show(result.id);
         setBookingService(full);
@@ -187,7 +190,7 @@ export default function HomeScreen({ navigation }: any) {
         setBookingService(toBookableService(result));
       }
     },
-    [showSnackbar]
+    []
   );
 
   const handleBooked = useCallback(

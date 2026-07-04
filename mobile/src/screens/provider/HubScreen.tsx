@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useFocusEffect } from "@react-navigation/native";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   AccessibilityInfo,
@@ -9,27 +10,30 @@ import {
   useColorScheme,
   View,
 } from "react-native";
-import { ProgressBar, Text, TouchableRipple } from "react-native-paper";
+import {
+  ActivityIndicator,
+  ProgressBar,
+  Text,
+  TouchableRipple,
+} from "react-native-paper";
 import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
-import {
-  EARNED_BADGE_META,
-  VettingBadge,
-} from "../../components/discovery/VettingBadge";
+import { VettingBadge } from "../../components/discovery/VettingBadge";
 import { Card, Divider } from "../../components/ui/Card";
 import { NotificationBell } from "../../components/ui/NotificationBell";
 import { ScreenHeader } from "../../components/ui/ScreenHeader";
 import { CardSkeleton } from "../../components/ui/SkeletonBlock";
 import { useSnackbar } from "../../providers/SnackbarProvider";
+import { useBookingStore } from "../../store/bookingStore";
 import { useProfileStore } from "../../store/profileStore";
 import { palette, radius as r, spacing, typography } from "../../theme";
+import type { IncomingRequestEntry } from "../../api/bookings";
 
 type IconName = React.ComponentProps<typeof Ionicons>["name"];
-type TabKey = "overview" | "manage";
 
-// ── Theme (dark/light, AA) ──────────────────────────────────────────────────
+// ── Theme (dark/light, AA) — mirrors the rest of the provider surface ─────────
 type ThemeC = {
   bg: string;
   surface: string;
@@ -55,7 +59,13 @@ const LIGHT: ThemeC = {
   t3: palette.textDisabled,
 };
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// The brand hue lives in the token — never an inline hex. NOTE: the task copy
+// named "teal #0E7A5F", but this app's brand token (palette.primary) is the
+// maroon #7B1A3A used on every other screen; we honour the token so the hub
+// stays visually consistent with Requests / Services / Earnings / Profile.
+const BRAND = palette.primary;
+
+// ── Helpers ───────────────────────────────────────────────────────────────
 function initials(name?: string | null): string {
   if (!name) return "?";
   return name
@@ -67,24 +77,25 @@ function initials(name?: string | null): string {
     .toUpperCase();
 }
 
-function payoutCountdown(eligibleAt: string | null): string {
-  if (!eligibleAt) return "Pending completion";
-  const diff = new Date(eligibleAt).getTime() - Date.now();
-  if (diff <= 0) return "Ready now";
-  const h = Math.floor(diff / 3_600_000);
-  const d = Math.floor(h / 24);
-  if (d > 0) return `In ${d}d ${h % 24}h`;
-  const m = Math.floor((diff % 3_600_000) / 60_000);
-  return h > 0 ? `In ${h}h ${m}m` : `In ${m}m`;
+function firstName(name?: string | null): string {
+  if (!name) return "there";
+  return name.trim().split(/\s+/)[0];
+}
+
+/** Rounded ZMW — the hub never shows fractional kwacha. */
+function zmw(v: number | null | undefined): string {
+  return `ZMW ${Math.round(v ?? 0)}`;
 }
 
 function pad(n: number) {
   return String(n).padStart(2, "0");
 }
-function formatJobTime(iso: string): string {
-  const d = new Date(iso),
-    now = new Date(),
-    tom = new Date(now.getTime() + 86_400_000);
+
+function formatJobTime(iso: string | null): string {
+  if (!iso) return "Time to be set";
+  const d = new Date(iso);
+  const now = new Date();
+  const tom = new Date(now.getTime() + 86_400_000);
   const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   const same = (a: Date, b: Date) =>
     a.getDate() === b.getDate() &&
@@ -94,24 +105,32 @@ function formatJobTime(iso: string): string {
   if (same(d, tom)) return `Tomorrow · ${time}`;
   const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const MONS = [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
   ];
   return `${DAYS[d.getDay()]} ${d.getDate()} ${MONS[d.getMonth()]} · ${time}`;
 }
 
-function fmtRate(v: number | null | undefined): string {
-  return v != null ? `${(v * 100).toFixed(0)}%` : "–";
+function isToday(iso: string | null): boolean {
+  if (!iso) return false;
+  const d = new Date(iso);
+  const now = new Date();
+  return (
+    d.getDate() === now.getDate() &&
+    d.getMonth() === now.getMonth() &&
+    d.getFullYear() === now.getFullYear()
+  );
+}
+
+/** Reply window: a new offer must be answered within 30 min of arriving. */
+const REPLY_WINDOW_MS = 30 * 60_000;
+function offerCountdown(createdAt: string | null, nowMs: number): string {
+  if (!createdAt) return "";
+  const left = new Date(createdAt).getTime() + REPLY_WINDOW_MS - nowMs;
+  if (left <= 0) return "Reply now";
+  const m = Math.floor(left / 60_000);
+  const s = Math.floor((left % 60_000) / 1000);
+  return `${m}:${pad(s)} to reply`;
 }
 
 function useReducedMotion(): boolean {
@@ -133,29 +152,26 @@ function useReducedMotion(): boolean {
   return reduced;
 }
 
-// ── Small primitives ────────────────────────────────────────────────────────
-// Progress meter that respects prefers-reduced-motion (static fill when reduced).
+// ── Small primitives ─────────────────────────────────────────────────────
 function Meter({
   progress,
   color,
-  c,
+  track,
   reduced,
 }: {
   progress: number;
   color: string;
-  c: ThemeC;
+  track: string;
   reduced: boolean;
 }) {
+  const clamped = Math.min(Math.max(progress, 0), 1);
   if (reduced) {
     return (
-      <View style={[styles.meterTrack, { backgroundColor: c.border }]}>
+      <View style={[styles.meterTrack, { backgroundColor: track }]}>
         <View
           style={[
             styles.meterFill,
-            {
-              backgroundColor: color,
-              width: `${Math.round(Math.min(Math.max(progress, 0), 1) * 100)}%`,
-            },
+            { backgroundColor: color, width: `${Math.round(clamped * 100)}%` },
           ]}
         />
       </View>
@@ -163,9 +179,9 @@ function Meter({
   }
   return (
     <ProgressBar
-      progress={progress}
+      progress={clamped}
       color={color}
-      style={[styles.meterTrack, { backgroundColor: c.border }]}
+      style={[styles.meterTrack, { backgroundColor: track }]}
     />
   );
 }
@@ -213,7 +229,7 @@ function ProviderAvatar({
         style={{
           fontFamily: "DMSans_600SemiBold",
           fontSize: size * 0.36,
-          color: palette.primary,
+          color: BRAND,
         }}
       >
         {initials(name)}
@@ -222,129 +238,92 @@ function ProviderAvatar({
   );
 }
 
-function TabBar({
-  c,
-  active,
-  onChange,
-}: {
-  c: ThemeC;
-  active: TabKey;
-  onChange: (k: TabKey) => void;
-}) {
-  const tabs: { key: TabKey; label: string }[] = [
-    { key: "overview", label: "Overview" },
-    { key: "manage", label: "Manage" },
-  ];
-  return (
-    <View
-      style={[styles.tabBar, { borderBottomColor: c.border }]}
-      accessibilityRole="tablist"
-    >
-      {tabs.map((t) => {
-        const on = t.key === active;
-        return (
-          <TouchableRipple
-            key={t.key}
-            onPress={() => onChange(t.key)}
-            borderless
-            accessibilityRole="tab"
-            accessibilityState={{ selected: on }}
-            accessibilityLabel={t.label}
-            style={styles.tabTap}
-          >
-            <View
-              style={[styles.tab, on && { borderBottomColor: palette.primary }]}
-            >
-              <Text
-                style={[
-                  styles.tabText,
-                  { color: on ? palette.primary : c.t2 },
-                  on && styles.tabTextActive,
-                ]}
-              >
-                {t.label}
-              </Text>
-            </View>
-          </TouchableRipple>
-        );
-      })}
-    </View>
-  );
-}
-
-function StatTile({
-  icon,
-  value,
-  label,
-  c,
-}: {
-  icon: IconName;
-  value: string;
+// ── Setup milestones (SET_UP state) ────────────────────────────────────────
+// These mirror the resumable onboarding spine (ProviderSetupTimelineScreen) and
+// route into the SAME existing step screens — nothing new is built here.
+type MilestoneKey = "account" | "profile" | "service" | "identity" | "payment";
+interface SetupStep {
+  key: MilestoneKey;
   label: string;
-  c: ThemeC;
-}) {
-  return (
-    <View style={styles.statTile} accessibilityLabel={`${label}: ${value}`}>
-      <Ionicons name={icon} size={18} color={palette.primary} />
-      <Text style={[styles.statValue, { color: c.t1 }]}>{value}</Text>
-      <Text style={[styles.statLabel, { color: c.t2 }]}>{label}</Text>
-    </View>
-  );
+  sub: string;
+  route?: string;
+  stepNo?: number;
 }
+const SETUP_STEPS: SetupStep[] = [
+  { key: "account", label: "Account", sub: "Phone number verified" },
+  {
+    key: "profile",
+    label: "Profile",
+    sub: "Name, photo, area & languages",
+    route: "ProviderProfileEdit",
+    stepNo: 2,
+  },
+  {
+    key: "service",
+    label: "Service",
+    sub: "Category, price & availability",
+    route: "CreateService",
+    stepNo: 3,
+  },
+  {
+    key: "identity",
+    label: "Verify identity",
+    sub: "NRC + selfie · Tier 1",
+    route: "Kyc",
+    stepNo: 4,
+  },
+  {
+    key: "payment",
+    label: "Payment details",
+    sub: "Mobile-money payout number",
+    route: "ProviderSetup",
+    stepNo: 5,
+  },
+];
 
-function ManageLink({
-  icon,
-  label,
-  onPress,
-  c,
-}: {
-  icon: IconName;
-  label: string;
-  onPress: () => void;
-  c: ThemeC;
-}) {
-  return (
-    <TouchableRipple
-      onPress={onPress}
-      borderless
-      accessibilityRole="button"
-      accessibilityLabel={label}
-    >
-      <View style={styles.manageRow}>
-        <View
-          style={[styles.iconChip, { backgroundColor: palette.primaryLight }]}
-        >
-          <Ionicons name={icon} size={18} color={palette.primary} />
-        </View>
-        <Text style={[styles.manageLabel, { color: c.t1 }]}>{label}</Text>
-        <Ionicons name="chevron-forward" size={16} color={c.t3} />
-      </View>
-    </TouchableRipple>
-  );
-}
-
-// ── Screen ──────────────────────────────────────────────────────────────────
+// ── Screen ─────────────────────────────────────────────────────────────────
 export default function HubScreen({ navigation }: any) {
   const {
     dashboard,
+    profile,
     loading,
     error,
     fetchDashboard,
+    fetchProfile,
     clearError,
     toggleAcceptingBookings,
   } = useProfileStore();
-  const { showError, showSnackbar } = useSnackbar();
+  const {
+    incomingRequests,
+    incomingLoading,
+    fetchIncomingRequests,
+    accept,
+    decline,
+  } = useBookingStore();
+  const { showError } = useSnackbar();
   const insets = useSafeAreaInsets();
   const scheme = useColorScheme();
   const c = scheme === "dark" ? DARK : LIGHT;
   const reduced = useReducedMotion();
 
-  const [tab, setTab] = useState<TabKey>("overview");
   const [toggling, setToggling] = useState(false);
+  const [offerActing, setOfferActing] = useState<null | "accept" | "decline">(
+    null
+  );
+  const [nowMs, setNowMs] = useState(Date.now());
 
-  useEffect(() => {
-    fetchDashboard();
-  }, []);
+  // Refresh on every focus. NOTE: the app has no realtime socket yet (WebSocket
+  // is deferred — see ALIGNMENT_REPORT.md), so the pending-offer + job feed is
+  // refreshed on focus rather than pushed. Wire this to the booking socket once
+  // it lands. (Flagged in the handoff notes.)
+  useFocusEffect(
+    useCallback(() => {
+      fetchDashboard();
+      fetchProfile();
+      fetchIncomingRequests();
+    }, [])
+  );
+
   useEffect(() => {
     if (error) {
       showError(error.message);
@@ -352,21 +331,13 @@ export default function HubScreen({ navigation }: any) {
     }
   }, [error]);
 
-  // Resumable onboarding: while the provider isn't listed yet, the setup
-  // timeline is their home. Send them there once per Hub mount (re-tapping the
-  // Hub tab resets this stack, so a still-incomplete provider lands on the
-  // timeline again on app reopen). Listed providers are never redirected.
-  const redirectedRef = useRef(false);
+  // Tick the offer countdown once a second while an offer is on screen.
+  const hasOffer = (incomingRequests?.new?.length ?? 0) > 0;
   useEffect(() => {
-    if (
-      !redirectedRef.current &&
-      dashboard?.listing &&
-      !dashboard.listing.listed
-    ) {
-      redirectedRef.current = true;
-      navigation.replace("SetupTimeline");
-    }
-  }, [dashboard]);
+    if (!hasOffer) return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [hasOffer]);
 
   const handleAvailToggle = useCallback(
     async (val: boolean) => {
@@ -380,240 +351,86 @@ export default function HubScreen({ navigation }: any) {
     [toggleAcceptingBookings]
   );
 
-  const soon = (what: string) => () =>
-    showSnackbar({
-      message: `${what} is coming soon — we'll let you know when it launches.`,
-    });
+  const handleOffer = useCallback(
+    async (kind: "accept" | "decline", bookingId: string) => {
+      setOfferActing(kind);
+      try {
+        if (kind === "accept") await accept(bookingId);
+        else await decline(bookingId);
+        // Refresh the feed so the answered offer drops out and, on accept, the
+        // job appears under Today's jobs.
+        await Promise.all([fetchIncomingRequests(), fetchDashboard()]);
+      } catch (e: any) {
+        showError(e?.message ?? "Could not send your reply. Try again.");
+      } finally {
+        setOfferActing(null);
+      }
+    },
+    [accept, decline]
+  );
 
+  // ── Loading (first paint, nothing cached) ─────────────────────────────────
   if (loading && !dashboard) {
     return (
       <SafeAreaView
         style={[styles.safe, { backgroundColor: c.bg }]}
         edges={["top", "left", "right"]}
       >
+        <ScreenHeader title="Hub" right={<NotificationBell color={c.t1} />} />
         <View style={{ padding: spacing.lg, gap: spacing.md }}>
-          {[1, 2, 3].map((k) => (
-            <CardSkeleton key={k} style={{ height: 90, borderRadius: r.sm }} />
-          ))}
+          <CardSkeleton style={{ height: 96, borderRadius: r.sm }} />
+          <CardSkeleton style={{ height: 132, borderRadius: r.sm }} />
+          <CardSkeleton style={{ height: 96, borderRadius: r.sm }} />
         </View>
       </SafeAreaView>
     );
   }
-  if (!dashboard)
+
+  // ── Error with nothing cached — inline retry ──────────────────────────────
+  if (!dashboard) {
     return (
       <SafeAreaView
-        style={[styles.safe, { backgroundColor: palette.surface }]}
-      />
-    );
-
-  const {
-    tier,
-    next_tier,
-    profile_completeness,
-    checklist,
-    listing,
-    earned_badges = [],
-    earnings,
-    next_payout,
-    instant_payout,
-    to_collect,
-    accepting_bookings = true,
-    profile_photo_url = null,
-    display_name = null,
-    today,
-    stats,
-    subscription,
-    referral_code = null,
-  } = dashboard;
-
-  const isDirect = dashboard.payment_mode === "DIRECT";
-  const isNewProvider = (stats?.jobs_done ?? 0) === 0;
-  const newReqs = today?.new_requests ?? 0;
-  const tierColor =
-    [
-      palette.textDisabled,
-      palette.warning,
-      palette.primary,
-      palette.success,
-      palette.warning,
-    ][tier.value] ?? palette.primary;
-  const feePct = ((instant_payout?.fee_rate ?? 0.01) * 100).toFixed(0);
-  const currentPlan = subscription?.plan ?? "FREE";
-
-  // ── Pinned earnings glance ─────────────────────────────────────────────────
-  const renderEarnings = () => {
-    if (isNewProvider) {
-      return (
-        <View>
-          <Text style={[styles.glanceLabel, { color: c.t2 }]}>Earnings</Text>
-          <Text style={[styles.glanceLead, { color: c.t1 }]}>
-            Ready for your first booking
+        style={[styles.safe, { backgroundColor: c.bg }]}
+        edges={["top", "left", "right"]}
+      >
+        <ScreenHeader title="Hub" right={<NotificationBell color={c.t1} />} />
+        <View style={styles.center}>
+          <Ionicons name="cloud-offline-outline" size={40} color={c.t3} />
+          <Text style={[styles.emptyTitle, { color: c.t1 }]}>
+            Couldn't load your hub
           </Text>
-          <Text style={[styles.glanceBody, { color: c.t2 }]}>
-            Finish your profile and list a service — what you earn will show
-            here once you take on work.
+          <Text style={[styles.emptyBody, { color: c.t2 }]}>
+            Check your connection and try again.
           </Text>
-          {checklist.next && (
-            <TouchableRipple
-              onPress={() =>
-                navigation.navigate(nextActionDest(checklist.next!.key))
-              }
-              borderless
-              accessibilityRole="button"
-              accessibilityLabel={`Next: ${checklist.next.label}`}
-              style={styles.nextChip}
-            >
-              <View style={styles.nextChipInner}>
-                <Ionicons
-                  name="arrow-forward-circle-outline"
-                  size={16}
-                  color={palette.primary}
-                />
-                <Text style={styles.nextChipText} numberOfLines={1}>
-                  Next: {checklist.next.label} · +{checklist.next.points} pts
-                </Text>
-              </View>
-            </TouchableRipple>
-          )}
-        </View>
-      );
-    }
-
-    if (isDirect) {
-      return (
-        <View>
-          <View style={styles.rowBetween}>
-            <Text style={[styles.glanceLabel, { color: c.t2 }]}>
-              Earned this week
-            </Text>
-            {earnings.trend && earnings.trend !== "flat" && (
-              <Ionicons
-                name={
-                  earnings.trend === "up"
-                    ? "trending-up-outline"
-                    : "trending-down-outline"
-                }
-                size={18}
-                color={
-                  earnings.trend === "up" ? palette.success : palette.danger
-                }
-                accessibilityLabel={
-                  earnings.trend === "up"
-                    ? "Up from last week"
-                    : "Down from last week"
-                }
-              />
-            )}
-          </View>
-          <Text style={[styles.glanceAmount, { color: c.t1 }]}>
-            ZMW {earnings.this_week_zmw.toFixed(0)}
-          </Text>
-          {/* {to_collect && to_collect.count > 0 ? (
-            <TouchableRipple
-              onPress={() => navigation.navigate("Earnings")}
-              borderless
-              accessibilityRole="button"
-              accessibilityLabel={`ZMW ${to_collect.amount_zmw.toFixed(
-                0
-              )} to collect from ${to_collect.count} completed jobs`}
-              style={styles.collectRow}
-            >
-              <View style={styles.collectInner}>
-                <Ionicons
-                  name="cash-outline"
-                  size={16}
-                  color={palette.success}
-                />
-                <Text style={[styles.collectText, { color: c.t1 }]}>
-                  ZMW {to_collect.amount_zmw.toFixed(0)} to collect
-                  <Text style={{ color: c.t2 }}>{`  ·  ${to_collect.count} ${
-                    to_collect.count === 1 ? "job" : "jobs"
-                  }`}</Text>
-                </Text>
-                <Ionicons name="chevron-forward" size={15} color={c.t3} />
-              </View>
-            </TouchableRipple>
-          ) : (
-            <Text style={[styles.glanceBody, { color: c.t3 }]}>
-              You're all caught up — nothing to collect.
-            </Text>
-          )} */}
-        </View>
-      );
-    }
-
-    // ESCROW — payout mechanics return (driven off payment_mode).
-    return (
-      <View>
-        <Text style={[styles.glanceLabel, { color: c.t2 }]}>This week</Text>
-        <Text style={[styles.glanceAmount, { color: c.t1 }]}>
-          ZMW {earnings.this_week_zmw.toFixed(0)}
-        </Text>
-        <View style={[styles.rowBetween, { marginTop: spacing.xs }]}>
-          <View>
-            <Text style={[styles.glanceLabel, { color: c.t2 }]}>
-              Next payout
-            </Text>
-            {next_payout ? (
-              <>
-                <Text style={[styles.payoutAmount, { color: c.t1 }]}>
-                  ZMW {next_payout.amount_zmw.toFixed(0)}
-                </Text>
-                <Text style={[styles.glanceBody, { color: c.t3 }]}>
-                  {payoutCountdown(next_payout.eligible_at)}
-                </Text>
-              </>
-            ) : (
-              <Text style={[styles.glanceBody, { color: c.t3 }]}>
-                No pending payouts
-              </Text>
-            )}
-          </View>
-          <View style={[styles.holdBadge, { borderColor: c.border }]}>
-            <Ionicons name="time-outline" size={12} color={c.t3} />
-            <Text style={[styles.holdText, { color: c.t3 }]}>
-              {tier.payout_hold_hours}h hold
-            </Text>
-          </View>
-        </View>
-        {instant_payout?.eligible && (
           <TouchableRipple
-            onPress={soon("Instant payout")}
+            onPress={fetchDashboard}
             borderless
-            style={styles.instantBtn}
             accessibilityRole="button"
-            accessibilityLabel={`Instant payout — ${feePct}% fee`}
+            accessibilityLabel="Retry"
+            style={styles.retryBtn}
           >
-            <View style={styles.instantInner}>
-              <Ionicons name="flash" size={16} color={palette.warning} />
-              <Text style={styles.instantText}>
-                Instant payout · {feePct}% fee
-              </Text>
+            <View style={styles.retryInner}>
+              <Ionicons name="refresh" size={16} color="#fff" />
+              <Text style={styles.retryText}>Retry</Text>
             </View>
           </TouchableRipple>
-        )}
-      </View>
+        </View>
+      </SafeAreaView>
     );
-  };
+  }
 
-  const nextActionDest = (key: string): string =>
-    ({
-      profile_photo: "ProviderProfileEdit",
-      bio: "ProviderProfileEdit",
-      portfolio_image: "ProviderProfileEdit",
-      three_services: "Services",
-      weekly_availability: "ProviderSetup",
-      kyc_tier_2: "Kyc",
-      tier_3: "Kyc",
-      first_booking: "Requests",
-      first_review: "Requests",
-    }[key] ?? "ProviderProfileEdit");
+  // ── State selection — the backend is the single source ────────────────────
+  // There is no literal `status` enum on the payload; `listing.listed` is the
+  // backend's truth for "visible in search = live". listed → LIVE, otherwise
+  // SET_UP. (If an older payload omits `listing` entirely the provider is past
+  // the gate, so default to LIVE.)
+  const isLive = dashboard.listing ? dashboard.listing.listed : true;
 
   const cardStyle = {
     backgroundColor: c.surface,
     borderColor: c.border,
     marginHorizontal: spacing.lg,
-    marginBottom: spacing.sm,
+    marginBottom: spacing.md,
   };
   const dividerColor = { backgroundColor: c.border };
 
@@ -630,766 +447,834 @@ export default function HubScreen({ navigation }: any) {
           { paddingBottom: insets.bottom + 100 },
         ]}
       >
-        {/* ══ PINNED GLANCE — single card ══ */}
-        <Card padding={0} style={cardStyle}>
-          {/* Header */}
-          <View style={styles.sectionPad}>
-            <View style={styles.header}>
-              <ProviderAvatar
-                uri={profile_photo_url}
-                name={display_name}
-                size={48}
-              />
-              <View style={styles.headerMeta}>
-                <Text
-                  style={[styles.headerName, { color: c.t1 }]}
-                  numberOfLines={1}
-                >
-                  {display_name ?? "Provider"}
-                </Text>
-                <VettingBadge trustTier={tier.value} size="sm" />
-              </View>
-              <View style={styles.availRow}>
-                <Text
-                  style={[
-                    styles.availLabel,
-                    { color: accepting_bookings ? palette.success : c.t3 },
-                  ]}
-                >
-                  {accepting_bookings ? "Available" : "Away"}
-                </Text>
-                <Switch
-                  value={accepting_bookings}
-                  onValueChange={handleAvailToggle}
-                  disabled={toggling}
-                  trackColor={{ false: c.border, true: palette.successLight }}
-                  thumbColor={accepting_bookings ? palette.success : c.t3}
-                  accessibilityRole="switch"
-                  accessibilityLabel="Availability — Away stops new booking requests"
-                  accessibilityState={{
-                    checked: accepting_bookings,
-                    disabled: toggling,
-                  }}
-                />
-              </View>
-            </View>
-          </View>
-
-          <Divider inset={0} style={dividerColor} />
-
-          {/* Earnings */}
-          <View style={styles.sectionPad}>{renderEarnings()}</View>
-
-          <Divider inset={0} style={dividerColor} />
-
-          {/* New-requests alert — full-width touchable */}
-          <TouchableRipple
-            onPress={() => navigation.navigate("Requests")}
-            borderless
-            accessibilityRole="button"
-            accessibilityLabel={
-              newReqs > 0
-                ? `${newReqs} new requests — reply within 30 minutes`
-                : "No new requests"
-            }
-            style={[
-              styles.sectionPad,
-              newReqs > 0 && { backgroundColor: palette.warningLight },
-            ]}
-          >
-            <View style={styles.reqInner}>
-              <View
-                style={[
-                  styles.iconChip,
-                  {
-                    backgroundColor: newReqs > 0 ? "#fff" : c.border,
-                  },
-                ]}
-              >
-                <Ionicons
-                  name="mail-outline"
-                  size={18}
-                  color={newReqs > 0 ? palette.warning : c.t3}
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.reqTitle, { color: c.t1 }]}>
-                  {newReqs > 0
-                    ? `${newReqs} new ${newReqs === 1 ? "request" : "requests"}`
-                    : "No new requests"}
-                </Text>
-                {newReqs > 0 && (
-                  <Text style={[styles.reqHint, { color: palette.warning }]}>
-                    Reply within 30 min
-                  </Text>
-                )}
-              </View>
-              <Ionicons name="chevron-forward" size={16} color={c.t3} />
-            </View>
-          </TouchableRipple>
-        </Card>
-
-        {/* ══ TABS ══ */}
-        <TabBar c={c} active={tab} onChange={setTab} />
-
-        {/* ══ TAB CONTENT — single card per tab ══ */}
-        {tab === "overview" ? (
-          <Card padding={0} style={{ ...cardStyle, marginTop: spacing.md }}>
-            {/* Listing status (conditional first section) */}
-            {listing && !listing.listed && (
-              <>
-                <View style={styles.sectionPad}>
-                  <Text style={[styles.sectionLabel, { color: c.t2 }]}>
-                    Get listed in search
-                  </Text>
-                  <Text
-                    style={[
-                      styles.glanceBody,
-                      { color: c.t2, marginBottom: spacing.xs },
-                    ]}
-                  >
-                    Finish these in order — once all three are done, customers
-                    can find you.
-                  </Text>
-                  {listing.steps.map((step, i) => {
-                    const dest: Record<string, string> = {
-                      verify_identity: "Kyc",
-                      profile_strength: "ProviderProfileEdit",
-                      active_service: "Services",
-                    };
-                    const isNext =
-                      !step.done &&
-                      listing.steps.slice(0, i).every((s) => s.done);
-                    return (
-                      <TouchableRipple
-                        key={step.key}
-                        onPress={() =>
-                          navigation.navigate(
-                            dest[step.key] ?? "ProviderProfileEdit"
-                          )
-                        }
-                        disabled={step.done}
-                        borderless
-                        accessibilityRole="button"
-                        accessibilityLabel={`Step ${i + 1}: ${step.label}${
-                          step.done ? " — done" : ""
-                        }`}
-                      >
-                        <View style={styles.listingRow}>
-                          <View
-                            style={[
-                              styles.stepDot,
-                              {
-                                backgroundColor: step.done
-                                  ? palette.successLight
-                                  : isNext
-                                  ? palette.primaryLight
-                                  : c.border,
-                              },
-                            ]}
-                          >
-                            {step.done ? (
-                              <Ionicons
-                                name="checkmark"
-                                size={14}
-                                color={palette.success}
-                              />
-                            ) : (
-                              <Text
-                                style={[
-                                  styles.stepNum,
-                                  { color: isNext ? palette.primary : c.t3 },
-                                ]}
-                              >
-                                {i + 1}
-                              </Text>
-                            )}
-                          </View>
-                          <Text
-                            style={[
-                              styles.listingLabel,
-                              { color: step.done ? c.t3 : c.t1 },
-                              step.done && {
-                                textDecorationLine: "line-through",
-                              },
-                            ]}
-                          >
-                            {step.label}
-                          </Text>
-                          {!step.done && (
-                            <Ionicons
-                              name="chevron-forward"
-                              size={16}
-                              color={c.t3}
-                            />
-                          )}
-                        </View>
-                      </TouchableRipple>
-                    );
-                  })}
-                </View>
-                <Divider inset={0} style={dividerColor} />
-              </>
-            )}
-            {listing?.listed && (
-              <>
-                <View style={styles.sectionPad}>
-                  <View style={styles.liveRow}>
-                    <Ionicons
-                      name="radio-outline"
-                      size={16}
-                      color={palette.success}
-                    />
-                    <Text style={[styles.liveText, { color: palette.success }]}>
-                      You're live — customers can find you in search
-                    </Text>
-                  </View>
-                </View>
-                <Divider inset={0} style={dividerColor} />
-              </>
-            )}
-
-            {/* Next job */}
-            <View style={styles.sectionPad}>
-              <Text style={[styles.sectionLabel, { color: c.t2 }]}>
-                Next job
-              </Text>
-              {today?.next_job ? (
-                <View style={styles.iconLineRow}>
-                  <View
-                    style={[
-                      styles.iconChip,
-                      { backgroundColor: palette.primaryLight },
-                    ]}
-                  >
-                    <Ionicons
-                      name="calendar-outline"
-                      size={18}
-                      color={palette.primary}
-                    />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text
-                      style={[styles.jobTitle, { color: c.t1 }]}
-                      numberOfLines={1}
-                    >
-                      {today.next_job.service_title}
-                    </Text>
-                    <Text
-                      style={[styles.jobHint, { color: c.t2 }]}
-                      numberOfLines={1}
-                    >
-                      {formatJobTime(today.next_job.scheduled_at)}
-                      {today.next_job.location_label
-                        ? ` · ${today.next_job.location_label}`
-                        : ""}
-                    </Text>
-                  </View>
-                </View>
-              ) : (
-                <Text style={[styles.glanceBody, { color: c.t3 }]}>
-                  No upcoming jobs scheduled.
-                </Text>
-              )}
-            </View>
-
-            <Divider inset={0} style={dividerColor} />
-
-            {/* Performance */}
-            <View style={styles.sectionPad}>
-              <Text style={[styles.sectionLabel, { color: c.t2 }]}>
-                Performance
-              </Text>
-              <View style={styles.statsRow}>
-                <StatTile
-                  icon="star"
-                  value={stats?.rating != null ? stats.rating.toFixed(1) : "–"}
-                  label="Rating"
-                  c={c}
-                />
-                <View
-                  style={[styles.statDivider, { backgroundColor: c.border }]}
-                />
-                <StatTile
-                  icon="flash-outline"
-                  value={
-                    stats?.response_time_p50_mins != null
-                      ? `${stats.response_time_p50_mins}m`
-                      : "–"
-                  }
-                  label="Response"
-                  c={c}
-                />
-                <View
-                  style={[styles.statDivider, { backgroundColor: c.border }]}
-                />
-                <StatTile
-                  icon="repeat-outline"
-                  value={fmtRate(stats?.repeat_client_rate)}
-                  label="Repeat"
-                  c={c}
-                />
-                <View
-                  style={[styles.statDivider, { backgroundColor: c.border }]}
-                />
-                <StatTile
-                  icon="checkmark-circle-outline"
-                  value={String(stats?.jobs_done ?? 0)}
-                  label="Jobs"
-                  c={c}
-                />
-              </View>
-              {earned_badges.length > 0 && (
-                <View style={styles.badgeRow}>
-                  {earned_badges.map((key) => {
-                    const meta = EARNED_BADGE_META[key];
-                    if (!meta) return null;
-                    return (
-                      <View
-                        key={key}
-                        style={[styles.badgeChip, { borderColor: meta.color }]}
-                      >
-                        <Ionicons
-                          name={meta.icon as any}
-                          size={12}
-                          color={meta.color}
-                        />
-                        <Text style={[styles.badgeText, { color: meta.color }]}>
-                          {meta.label}
-                        </Text>
-                      </View>
-                    );
-                  })}
-                </View>
-              )}
-            </View>
-
-            <Divider inset={0} style={dividerColor} />
-
-            {/* Profile strength — full-width touchable */}
-            <TouchableRipple
-              onPress={() =>
-                navigation.navigate(nextActionDest(checklist.next?.key ?? ""))
-              }
-              borderless
-              accessibilityRole="button"
-              accessibilityLabel={`Profile strength ${profile_completeness} out of 100 — tap to improve`}
-              style={styles.sectionPad}
-            >
-              <View>
-                <View style={styles.rowBetween}>
-                  <Text style={[styles.sectionLabel, { color: c.t2 }]}>
-                    Profile strength
-                  </Text>
-                  <Text style={styles.strengthScore}>
-                    {profile_completeness} / 100
-                  </Text>
-                </View>
-                <Meter
-                  progress={profile_completeness / 100}
-                  color={palette.primary}
-                  c={c}
-                  reduced={reduced}
-                />
-                {checklist.next ? (
-                  <View style={styles.nextChipInner}>
-                    <Ionicons
-                      name="arrow-forward-circle-outline"
-                      size={16}
-                      color={palette.primary}
-                    />
-                    <Text style={styles.nextChipText} numberOfLines={2}>
-                      Next:{" "}
-                      <Text style={styles.nextBold}>
-                        {checklist.next.label}
-                      </Text>{" "}
-                      · +{checklist.next.points} pts
-                    </Text>
-                  </View>
-                ) : (
-                  <Text
-                    style={[
-                      styles.glanceBody,
-                      { color: palette.success, marginTop: spacing.xs },
-                    ]}
-                  >
-                    Profile complete — well done!
-                  </Text>
-                )}
-              </View>
-            </TouchableRipple>
-
-            <Divider inset={0} style={dividerColor} />
-
-            {/* Tier progress */}
-            <View style={styles.sectionPad}>
-              {next_tier ? (
-                <View>
-                  <Text style={[styles.sectionLabel, { color: c.t2 }]}>
-                    Unlock {next_tier.label}
-                  </Text>
-                  <View style={styles.reqList}>
-                    {next_tier.requirements.map((req, i) => (
-                      <View key={i} style={styles.reqRow}>
-                        <View
-                          style={[
-                            styles.reqDot,
-                            { backgroundColor: palette.primary },
-                          ]}
-                        />
-                        <Text style={[styles.reqText, { color: c.t2 }]}>
-                          {req}
-                        </Text>
-                      </View>
-                    ))}
-                  </View>
-                  <Meter
-                    progress={next_tier.progress ?? 0}
-                    color={tierColor}
-                    c={c}
-                    reduced={reduced}
-                  />
-                  {(next_tier.unlocks?.length ?? 0) > 0 && (
-                    <Text
-                      style={[
-                        styles.glanceBody,
-                        { color: c.t2, marginTop: spacing.xs },
-                      ]}
-                    >
-                      Unlocks:{" "}
-                      <Text
-                        style={{
-                          color: c.t1,
-                          fontFamily: "DMSans_500Medium",
-                        }}
-                      >
-                        {next_tier.unlocks!.join(" · ")}
-                      </Text>
-                    </Text>
-                  )}
-                  {next_tier.value <= 3 && (
-                    <TouchableRipple
-                      onPress={() => navigation.navigate("Kyc")}
-                      borderless
-                      accessibilityRole="button"
-                      accessibilityLabel={`Continue verification for ${next_tier.label}`}
-                      style={styles.inlineAction}
-                    >
-                      <View style={styles.inlineActionInner}>
-                        <Text style={styles.inlineActionText}>
-                          Continue verification
-                        </Text>
-                        <Ionicons
-                          name="arrow-forward"
-                          size={14}
-                          color={palette.primary}
-                        />
-                      </View>
-                    </TouchableRipple>
-                  )}
-                </View>
-              ) : (
-                <View>
-                  <Text style={[styles.sectionLabel, { color: c.t2 }]}>
-                    Top tier achieved
-                  </Text>
-                  <Text style={[styles.glanceBody, { color: c.t2 }]}>
-                    You're a Professional provider — Sebenza's highest trust
-                    tier. Keep your record clean to stay there.
-                  </Text>
-                </View>
-              )}
-            </View>
-
-            <Divider inset={0} style={dividerColor} />
-
-            {/* Referral — full-width touchable */}
-            <TouchableRipple
-              onPress={soon("Referrals")}
-              borderless
-              accessibilityRole="button"
-              accessibilityLabel="Refer and earn ZMW 20 per provider"
-              style={styles.sectionPad}
-            >
-              <View style={styles.iconLineRow}>
-                <View
-                  style={[
-                    styles.iconChip,
-                    { backgroundColor: palette.successLight },
-                  ]}
-                >
-                  <Ionicons
-                    name="gift-outline"
-                    size={18}
-                    color={palette.success}
-                  />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.jobTitle, { color: c.t1 }]}>
-                    Refer & earn
-                  </Text>
-                  <Text style={[styles.jobHint, { color: c.t2 }]}>
-                    ZMW 20 per provider you refer
-                    {referral_code ? ` · code ${referral_code}` : ""}
-                  </Text>
-                </View>
-                <Ionicons name="chevron-forward" size={16} color={c.t3} />
-              </View>
-            </TouchableRipple>
-
-            {/* Grow — ESCROW only */}
-            {!isDirect && (currentPlan !== "ELITE" || tier.value >= 3) && (
-              <>
-                <Divider inset={0} style={dividerColor} />
-                <View
-                  style={[styles.sectionPad, { paddingBottom: spacing.xs }]}
-                >
-                  <Text style={[styles.sectionLabel, { color: c.t2 }]}>
-                    Grow
-                  </Text>
-                </View>
-                {currentPlan !== "ELITE" && (
-                  <TouchableRipple
-                    onPress={soon("Subscription plans")}
-                    borderless
-                    accessibilityRole="button"
-                    accessibilityLabel={`Upgrade to ${
-                      currentPlan === "FREE" ? "Pro" : "Elite"
-                    }`}
-                    style={styles.touchRow}
-                  >
-                    <View style={styles.iconLineRow}>
-                      <View
-                        style={[
-                          styles.iconChip,
-                          { backgroundColor: palette.primaryLight },
-                        ]}
-                      >
-                        <Ionicons
-                          name="trending-up-outline"
-                          size={18}
-                          color={palette.primary}
-                        />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.jobTitle, { color: c.t1 }]}>
-                          Upgrade to{" "}
-                          {currentPlan === "FREE"
-                            ? "Pro · ZMW 149/mo"
-                            : "Elite · ZMW 449/mo"}
-                        </Text>
-                        <Text style={[styles.jobHint, { color: c.t2 }]}>
-                          Keep {currentPlan === "FREE" ? "2%" : "4%"} more on
-                          every job
-                        </Text>
-                      </View>
-                      <Ionicons name="chevron-forward" size={16} color={c.t3} />
-                    </View>
-                  </TouchableRipple>
-                )}
-                {tier.value >= 3 && (
-                  <TouchableRipple
-                    onPress={soon("Promoted slots")}
-                    borderless
-                    accessibilityRole="button"
-                    accessibilityLabel="Promote your listing"
-                    style={styles.touchRow}
-                  >
-                    <View style={styles.iconLineRow}>
-                      <View
-                        style={[
-                          styles.iconChip,
-                          { backgroundColor: palette.warningLight },
-                        ]}
-                      >
-                        <Ionicons
-                          name="megaphone-outline"
-                          size={18}
-                          color={palette.warning}
-                        />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.jobTitle, { color: c.t1 }]}>
-                          Promote your listing
-                        </Text>
-                        <Text style={[styles.jobHint, { color: c.t2 }]}>
-                          Appear at the top of search in your category
-                        </Text>
-                      </View>
-                      <Ionicons name="chevron-forward" size={16} color={c.t3} />
-                    </View>
-                  </TouchableRipple>
-                )}
-              </>
-            )}
-          </Card>
+        {isLive ? (
+          <LiveHub
+            dashboard={dashboard}
+            incomingRequests={incomingRequests}
+            incomingLoading={incomingLoading}
+            c={c}
+            cardStyle={cardStyle}
+            dividerColor={dividerColor}
+            toggling={toggling}
+            onToggle={handleAvailToggle}
+            offerActing={offerActing}
+            onOffer={handleOffer}
+            nowMs={nowMs}
+            navigation={navigation}
+          />
         ) : (
-          /* ── MANAGE — single card, dividers between rows ── */
-          <Card padding={0} style={{ ...cardStyle, marginTop: spacing.md }}>
-            <ManageLink
-              icon="person-circle-outline"
-              label="Profile & highlights"
-              onPress={() => navigation.navigate("ProviderProfileEdit")}
-              c={c}
-            />
-            <Divider inset={0} style={dividerColor} />
-            <ManageLink
-              icon="construct-outline"
-              label="Services"
-              onPress={() => navigation.navigate("Services")}
-              c={c}
-            />
-            <Divider inset={0} style={dividerColor} />
-            <ManageLink
-              icon="calendar-outline"
-              label="Availability"
-              onPress={() => navigation.navigate("ProviderSetup")}
-              c={c}
-            />
-            <Divider inset={0} style={dividerColor} />
-            <ManageLink
-              icon="cash-outline"
-              label="Earnings & history"
-              onPress={() => navigation.navigate("Earnings")}
-              c={c}
-            />
-          </Card>
+          <SetupHub
+            dashboard={dashboard}
+            profile={profile}
+            c={c}
+            cardStyle={cardStyle}
+            dividerColor={dividerColor}
+            reduced={reduced}
+            navigation={navigation}
+          />
         )}
       </ScrollView>
     </SafeAreaView>
   );
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// NEW PROVIDER — SET_UP
+// ════════════════════════════════════════════════════════════════════════════
+function SetupHub({
+  dashboard,
+  profile,
+  c,
+  cardStyle,
+  dividerColor,
+  reduced,
+  navigation,
+}: any) {
+  const stepDone = (k: string): boolean =>
+    dashboard.listing?.steps.find((s: any) => s.key === k)?.done ?? false;
+
+  const done: Record<MilestoneKey, boolean> = {
+    account: true, // authenticated providers have a verified phone by definition
+    profile: stepDone("profile_strength"),
+    service: stepDone("active_service"),
+    identity: stepDone("verify_identity") || (profile?.trust_tier ?? 0) >= 1,
+    payment: !!profile?.momo_number && !!profile?.momo_provider,
+  };
+
+  const total = SETUP_STEPS.length;
+  const doneCount = SETUP_STEPS.filter((s) => done[s.key]).length;
+  const remaining = total - doneCount;
+  const firstIncomplete = SETUP_STEPS.find((s) => !done[s.key])?.key;
+  // UI-derived estimate only — there is no per-step minutes field on the
+  // backend. ~2 min per remaining step. (Flagged in the handoff notes.)
+  const mins = remaining * 2;
+
+  const go = (s: SetupStep) => {
+    if (!s.route) return;
+    navigation.navigate(s.route, { onboardingStep: s.stepNo });
+  };
+
+  return (
+    <>
+      {/* Header */}
+      <View style={styles.setupHeader}>
+        <ProviderAvatar
+          uri={dashboard.profile_photo_url}
+          name={dashboard.display_name}
+          size={48}
+        />
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={[styles.hiName, { color: c.t1 }]} numberOfLines={1}>
+            Welcome, {firstName(dashboard.display_name)}
+          </Text>
+          <Text style={[styles.hiSub, { color: c.t2 }]}>
+            Let's get you earning
+          </Text>
+        </View>
+      </View>
+
+      {/* Progress hero */}
+      <Card style={{ ...cardStyle, backgroundColor: BRAND, borderColor: BRAND }}>
+        <Text style={styles.heroKicker}>You're almost ready</Text>
+        <Text style={styles.heroLead}>
+          You're {doneCount} of {total} steps in
+        </Text>
+        <View style={styles.heroMeter}>
+          <Meter
+            progress={doneCount / total}
+            color="#fff"
+            track="rgba(255,255,255,0.28)"
+            reduced={reduced}
+          />
+        </View>
+        <Text style={styles.heroFoot}>
+          {remaining === 0
+            ? "All steps done — you're going live"
+            : `${remaining} step${remaining === 1 ? "" : "s"} left · about ${mins} minute${mins === 1 ? "" : "s"}`}
+        </Text>
+      </Card>
+
+      {/* Checklist */}
+      <Card padding={0} style={cardStyle}>
+        <View style={styles.sectionPad}>
+          <Text style={[styles.sectionLabel, { color: c.t2 }]}>
+            Your setup checklist
+          </Text>
+        </View>
+        <Divider inset={0} style={dividerColor} />
+        {SETUP_STEPS.map((s, i) => {
+          const isDone = done[s.key];
+          const isCurrent = !isDone && s.key === firstIncomplete;
+          const last = i === SETUP_STEPS.length - 1;
+          return (
+            <React.Fragment key={s.key}>
+              <View style={styles.checkRow}>
+                {/* node */}
+                <View
+                  style={[
+                    styles.checkDot,
+                    {
+                      backgroundColor: isDone
+                        ? palette.successLight
+                        : isCurrent
+                        ? palette.primaryLight
+                        : c.border,
+                    },
+                  ]}
+                >
+                  {isDone ? (
+                    <Ionicons
+                      name="checkmark"
+                      size={15}
+                      color={palette.success}
+                    />
+                  ) : (
+                    <Text
+                      style={[
+                        styles.checkNum,
+                        { color: isCurrent ? BRAND : c.t3 },
+                      ]}
+                    >
+                      {i + 1}
+                    </Text>
+                  )}
+                </View>
+                {/* label + sub */}
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text
+                    style={[
+                      styles.checkLabel,
+                      { color: isDone ? c.t2 : c.t1 },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {s.label}
+                  </Text>
+                  <Text
+                    style={[styles.checkSub, { color: c.t3 }]}
+                    numberOfLines={1}
+                  >
+                    {s.sub}
+                  </Text>
+                </View>
+                {/* trailing */}
+                {isDone ? (
+                  <Text style={[styles.doneTag, { color: palette.success }]}>
+                    Done
+                  </Text>
+                ) : isCurrent ? (
+                  <TouchableRipple
+                    onPress={() => go(s)}
+                    borderless
+                    accessibilityRole="button"
+                    accessibilityLabel={`${s.label} — do now`}
+                    style={styles.doNowBtn}
+                  >
+                    <Text style={styles.doNowText}>Do now</Text>
+                  </TouchableRipple>
+                ) : null}
+              </View>
+              {!last && <Divider inset={0} style={dividerColor} />}
+            </React.Fragment>
+          );
+        })}
+      </Card>
+
+      {/* Locked preview — no fake numbers */}
+      <View style={[styles.previewCard, { borderColor: c.border }]}>
+        <View style={styles.previewHead}>
+          <Ionicons name="lock-closed-outline" size={15} color={c.t3} />
+          <Text style={[styles.previewTitle, { color: c.t2 }]}>
+            Your hub, once you're live
+          </Text>
+        </View>
+        {[
+          { icon: "cash-outline" as IconName, label: "Earnings & payouts" },
+          { icon: "flash-outline" as IconName, label: "Live job offers" },
+          { icon: "calendar-outline" as IconName, label: "Today's schedule" },
+        ].map((row) => (
+          <View key={row.label} style={styles.previewRow}>
+            <View style={[styles.previewChip, { backgroundColor: c.border }]}>
+              <Ionicons name={row.icon} size={16} color={c.t3} />
+            </View>
+            <Text style={[styles.previewLabel, { color: c.t3 }]}>
+              {row.label}
+            </Text>
+          </View>
+        ))}
+        <Text style={[styles.previewFoot, { color: c.t3 }]}>
+          These appear here the moment your setup is complete.
+        </Text>
+      </View>
+    </>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// RETURNING PROVIDER — LIVE
+// ════════════════════════════════════════════════════════════════════════════
+function LiveHub({
+  dashboard,
+  incomingRequests,
+  incomingLoading,
+  c,
+  cardStyle,
+  dividerColor,
+  toggling,
+  onToggle,
+  offerActing,
+  onOffer,
+  nowMs,
+  navigation,
+}: any) {
+  const {
+    tier,
+    earnings,
+    next_payout,
+    to_collect,
+    stats,
+    accepting_bookings = true,
+    profile_photo_url = null,
+    display_name = null,
+    payment_mode,
+  } = dashboard;
+
+  const isDirect = payment_mode === "DIRECT";
+  const offer: IncomingRequestEntry | undefined = incomingRequests?.new?.[0];
+  const todaysJobs: IncomingRequestEntry[] = (incomingRequests?.scheduled ?? [])
+    .filter((j: IncomingRequestEntry) => isToday(j.scheduled_start))
+    .slice(0, 4);
+
+  const pendingPayout = isDirect
+    ? to_collect?.amount_zmw ?? 0
+    : next_payout?.amount_zmw ?? 0;
+
+  return (
+    <>
+      {/* ── Header ── */}
+      <View style={styles.liveHeader}>
+        <ProviderAvatar uri={profile_photo_url} name={display_name} size={48} />
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={[styles.hiName, { color: c.t1 }]} numberOfLines={1}>
+            Hi, {firstName(display_name)}
+          </Text>
+          <View style={styles.headerTierRow}>
+            <VettingBadge trustTier={tier.value} size="sm" />
+            <Text style={[styles.headerTierText, { color: c.t2 }]}>
+              Tier {tier.value} · {tier.label}
+            </Text>
+          </View>
+        </View>
+        <View style={styles.availRow}>
+          <Text
+            style={[
+              styles.availLabel,
+              { color: accepting_bookings ? palette.success : c.t3 },
+            ]}
+          >
+            {accepting_bookings ? "Online" : "Offline"}
+          </Text>
+          <Switch
+            value={accepting_bookings}
+            onValueChange={onToggle}
+            disabled={toggling}
+            trackColor={{ false: c.border, true: palette.successLight }}
+            thumbColor={accepting_bookings ? palette.success : c.t3}
+            accessibilityRole="switch"
+            accessibilityLabel="Availability — Offline stops new booking requests"
+            accessibilityState={{
+              checked: accepting_bookings,
+              disabled: toggling,
+            }}
+          />
+        </View>
+      </View>
+
+      {/* ── Earnings snapshot ── */}
+      <Card style={{ ...cardStyle, backgroundColor: BRAND, borderColor: BRAND }}>
+        <Text style={styles.snapKicker}>This week</Text>
+        <Text style={styles.snapAmount}>{zmw(earnings.this_week_zmw)}</Text>
+        <View style={styles.snapGrid}>
+          <SnapStat
+            value={String(stats?.jobs_done ?? 0)}
+            label="Jobs done"
+          />
+          <View style={styles.snapSep} />
+          <SnapStat
+            value={zmw(pendingPayout)}
+            label={isDirect ? "To collect" : "Pending payout"}
+          />
+          <View style={styles.snapSep} />
+          <SnapStat
+            value={stats?.rating != null ? stats.rating.toFixed(1) : "–"}
+            label="Rating"
+          />
+        </View>
+      </Card>
+
+      {/* ── Live job offer (only if pending) ── */}
+      {offer && (
+        <Card
+          style={{ ...cardStyle, borderColor: BRAND, borderWidth: 1.5 }}
+          padding={0}
+        >
+          <View style={styles.offerHead}>
+            <View style={styles.offerBadge}>
+              <Ionicons name="flash" size={13} color={BRAND} />
+              <Text style={styles.offerBadgeText}>New job offer</Text>
+            </View>
+            <Text style={[styles.offerTimer, { color: palette.warning }]}>
+              {offerCountdown(offer.created_at, nowMs)}
+            </Text>
+          </View>
+          <View style={styles.offerBody}>
+            <Text style={[styles.offerTitle, { color: c.t1 }]} numberOfLines={1}>
+              {offer.service_title ?? "Service request"}
+            </Text>
+            <View style={styles.offerMetaRow}>
+              <OfferMeta
+                icon="time-outline"
+                text={formatJobTime(offer.scheduled_start)}
+                c={c}
+              />
+              {offer.distance_km != null && (
+                <OfferMeta
+                  icon="location-outline"
+                  text={`${offer.distance_km.toFixed(1)} km`}
+                  c={c}
+                />
+              )}
+            </View>
+            <Text style={[styles.offerPay, { color: c.t1 }]}>
+              {zmw(offer.net_zmw)}{" "}
+              <Text style={[styles.offerPaySub, { color: c.t2 }]}>net pay</Text>
+            </Text>
+          </View>
+          <Divider inset={0} style={dividerColor} />
+          <View style={styles.offerActions}>
+            <TouchableRipple
+              onPress={() => onOffer("decline", offer.booking_id)}
+              disabled={!!offerActing}
+              borderless
+              accessibilityRole="button"
+              accessibilityLabel="Decline this job offer"
+              style={[styles.offerBtn, styles.offerDecline, { borderColor: c.border }]}
+            >
+              {offerActing === "decline" ? (
+                <ActivityIndicator size={16} color={c.t2} />
+              ) : (
+                <Text style={[styles.offerDeclineText, { color: c.t2 }]}>
+                  Decline
+                </Text>
+              )}
+            </TouchableRipple>
+            <TouchableRipple
+              onPress={() => onOffer("accept", offer.booking_id)}
+              disabled={!!offerActing}
+              borderless
+              accessibilityRole="button"
+              accessibilityLabel="Accept this job offer"
+              style={[styles.offerBtn, styles.offerAccept]}
+            >
+              {offerActing === "accept" ? (
+                <ActivityIndicator size={16} color="#fff" />
+              ) : (
+                <Text style={styles.offerAcceptText}>Accept</Text>
+              )}
+            </TouchableRipple>
+          </View>
+        </Card>
+      )}
+
+      {/* ── Today's jobs ── */}
+      <Card padding={0} style={cardStyle}>
+        <View style={[styles.sectionPad, styles.rowBetween]}>
+          <Text style={[styles.sectionLabel, { color: c.t2, marginBottom: 0 }]}>
+            Today's jobs
+          </Text>
+          <TouchableRipple
+            onPress={() => navigation.navigate("Requests")}
+            borderless
+            accessibilityRole="button"
+            accessibilityLabel="See all jobs"
+          >
+            <Text style={styles.seeAll}>See all</Text>
+          </TouchableRipple>
+        </View>
+        <Divider inset={0} style={dividerColor} />
+        {incomingLoading && todaysJobs.length === 0 ? (
+          <View style={styles.sectionPad}>
+            <CardSkeleton style={{ height: 44, borderRadius: r.sm }} />
+          </View>
+        ) : todaysJobs.length === 0 ? (
+          <View style={styles.jobsEmpty}>
+            <Ionicons name="calendar-clear-outline" size={26} color={c.t3} />
+            <Text style={[styles.emptyBody, { color: c.t2 }]}>
+              No jobs scheduled for today.
+            </Text>
+          </View>
+        ) : (
+          todaysJobs.map((j, i) => (
+            <React.Fragment key={j.booking_id}>
+              <TouchableRipple
+                onPress={() => navigation.navigate("Requests")}
+                borderless
+                accessibilityRole="button"
+                accessibilityLabel={`${j.service_title ?? "Job"} for ${j.buyer_label}`}
+              >
+                <View style={styles.jobRow}>
+                  <View
+                    style={[
+                      styles.iconChip,
+                      { backgroundColor: palette.primaryLight },
+                    ]}
+                  >
+                    <Ionicons name="briefcase-outline" size={17} color={BRAND} />
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text
+                      style={[styles.jobTitle, { color: c.t1 }]}
+                      numberOfLines={1}
+                    >
+                      {j.service_title ?? "Service"}
+                    </Text>
+                    <Text
+                      style={[styles.jobHint, { color: c.t2 }]}
+                      numberOfLines={1}
+                    >
+                      {j.buyer_label}
+                      {` · ${formatJobTime(j.scheduled_start)}`}
+                      {j.delivery_label ? ` · ${j.delivery_label}` : ""}
+                    </Text>
+                  </View>
+                  <StatusPill status={j.status} c={c} />
+                </View>
+              </TouchableRipple>
+              {i < todaysJobs.length - 1 && (
+                <Divider inset={0} style={dividerColor} />
+              )}
+            </React.Fragment>
+          ))
+        )}
+      </Card>
+
+      {/* ── Quick actions ── */}
+      <View style={styles.quickGrid}>
+        <QuickAction
+          icon="construct-outline"
+          label="My services"
+          onPress={() => navigation.navigate("Services")}
+          c={c}
+        />
+        <QuickAction
+          icon="calendar-outline"
+          label="Availability"
+          onPress={() => navigation.navigate("Availability")}
+          c={c}
+        />
+        <QuickAction
+          icon="cash-outline"
+          label="Earnings"
+          onPress={() => navigation.navigate("Earnings")}
+          c={c}
+        />
+        <QuickAction
+          icon="person-outline"
+          label="Profile"
+          onPress={() => navigation.navigate("Profile")}
+          c={c}
+        />
+      </View>
+    </>
+  );
+}
+
+// ── LIVE sub-components ─────────────────────────────────────────────────────
+function SnapStat({ value, label }: { value: string; label: string }) {
+  return (
+    <View style={styles.snapStat}>
+      <Text style={styles.snapValue} numberOfLines={1}>
+        {value}
+      </Text>
+      <Text style={styles.snapLabel} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+function OfferMeta({
+  icon,
+  text,
+  c,
+}: {
+  icon: IconName;
+  text: string;
+  c: ThemeC;
+}) {
+  return (
+    <View style={styles.offerMeta}>
+      <Ionicons name={icon} size={13} color={c.t2} />
+      <Text style={[styles.offerMetaText, { color: c.t2 }]}>{text}</Text>
+    </View>
+  );
+}
+
+function StatusPill({ status, c }: { status: string; c: ThemeC }) {
+  const map: Record<string, { label: string; color: string; bg: string }> = {
+    IN_PROGRESS: { label: "In progress", color: BRAND, bg: palette.primaryLight },
+    ACCEPTED: { label: "Confirmed", color: palette.success, bg: palette.successLight },
+    FUNDS_HELD: { label: "Paid", color: palette.success, bg: palette.successLight },
+    DEPOSIT_HELD: { label: "Deposit held", color: palette.success, bg: palette.successLight },
+    QUOTE_SENT: { label: "Quoted", color: palette.warning, bg: palette.warningLight },
+    QUOTED: { label: "Quoted", color: palette.warning, bg: palette.warningLight },
+  };
+  const s = map[status] ?? {
+    label: "Scheduled",
+    color: c.t2,
+    bg: c.border,
+  };
+  return (
+    <View style={[styles.pill, { backgroundColor: s.bg }]}>
+      <Text style={[styles.pillText, { color: s.color }]}>{s.label}</Text>
+    </View>
+  );
+}
+
+function QuickAction({
+  icon,
+  label,
+  onPress,
+  c,
+}: {
+  icon: IconName;
+  label: string;
+  onPress: () => void;
+  c: ThemeC;
+}) {
+  return (
+    <TouchableRipple
+      onPress={onPress}
+      borderless
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      style={[
+        styles.quickCard,
+        { backgroundColor: c.surface, borderColor: c.border },
+      ]}
+    >
+      <View style={styles.quickInner}>
+        <View style={[styles.iconChip, { backgroundColor: palette.primaryLight }]}>
+          <Ionicons name={icon} size={18} color={BRAND} />
+        </View>
+        <Text style={[styles.quickLabel, { color: c.t1 }]} numberOfLines={1}>
+          {label}
+        </Text>
+      </View>
+    </TouchableRipple>
+  );
+}
+
+// ── Styles ──────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: palette.surface },
-  scroll: { paddingTop: spacing.sm },
+  safe: { flex: 1 },
+  scroll: { paddingTop: spacing.md },
+  center: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: spacing.xl,
+    gap: spacing.sm,
+  },
 
   sectionPad: { padding: spacing.md },
-  touchRow: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
-  header: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  headerMeta: { flex: 1, gap: 4, minWidth: 0 },
-  headerName: {
-    fontFamily: "DMSans_500Medium",
-    fontSize: 17,
-    lineHeight: 22,
-  },
-  availRow: { alignItems: "center", gap: 2 },
-  availLabel: { fontFamily: "DMSans_500Medium", fontSize: 12 },
-
   rowBetween: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
+  sectionLabel: { ...typography.label, fontSize: 13, marginBottom: spacing.xs },
 
-  glanceLabel: {
-    ...typography.label,
-    fontSize: 13,
-    fontFamily: "DMSans_400Regular",
-  },
-  glanceLead: { ...typography.heading3, fontSize: 18, marginTop: 2 },
-  glanceBody: {
-    ...typography.bodySmall,
-    fontSize: 13,
-    lineHeight: 19,
-    marginTop: 4,
-  },
-  glanceAmount: {
-    ...typography.heading1,
-    fontSize: 30,
-    lineHeight: 38,
-    marginTop: 2,
-  },
-
-  collectRow: { borderRadius: r.sm, marginTop: spacing.sm },
-  collectInner: {
+  // Headers (both states)
+  setupHeader: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
-    minHeight: 44,
+    paddingHorizontal: spacing.lg,
+    marginBottom: spacing.md,
   },
-  collectText: {
-    ...typography.body,
-    fontSize: 15,
-    flex: 1,
-    fontFamily: "DMSans_500Medium",
-  },
-
-  payoutAmount: { ...typography.heading3, marginTop: 2 },
-  holdBadge: {
+  liveHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
-    borderWidth: 1,
-    borderRadius: r.sm,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 4,
-  },
-  holdText: { ...typography.bodySmall, fontSize: 11 },
-  instantBtn: {
-    marginTop: spacing.sm,
-    borderRadius: r.sm,
-    backgroundColor: palette.warningLight,
-  },
-  instantInner: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
     gap: spacing.sm,
-    minHeight: 44,
+    paddingHorizontal: spacing.lg,
+    marginBottom: spacing.md,
   },
-  instantText: { ...typography.label, color: palette.warning, fontSize: 13 },
-
-  nextChip: {
-    borderRadius: r.sm,
-    marginTop: spacing.sm,
-    backgroundColor: palette.primaryLight,
-  },
-  nextChipInner: {
+  hiName: { fontFamily: "DMSans_600SemiBold", fontSize: 18, lineHeight: 24 },
+  hiSub: { ...typography.bodySmall, fontSize: 13, marginTop: 1 },
+  headerTierRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.xs,
-    padding: spacing.sm,
-    marginTop: spacing.xs,
+    marginTop: 3,
   },
-  nextChipText: {
-    ...typography.bodySmall,
-    flex: 1,
-    color: palette.primary,
-    fontSize: 13,
-  },
-  nextBold: { fontFamily: "DMSans_500Medium" },
+  headerTierText: { ...typography.bodySmall, fontSize: 12 },
+  availRow: { alignItems: "center", gap: 2 },
+  availLabel: { fontFamily: "DMSans_500Medium", fontSize: 12 },
 
-  reqInner: {
+  // Progress hero (SET_UP)
+  heroKicker: {
+    fontFamily: "DMSans_500Medium",
+    fontSize: 13,
+    color: "rgba(255,255,255,0.85)",
+  },
+  heroLead: {
+    fontFamily: "DMSans_700Bold",
+    fontSize: 22,
+    lineHeight: 28,
+    color: "#fff",
+    marginTop: 2,
+  },
+  heroMeter: { marginTop: spacing.sm, marginBottom: spacing.xs },
+  heroFoot: {
+    fontFamily: "DMSans_400Regular",
+    fontSize: 13,
+    color: "rgba(255,255,255,0.9)",
+  },
+
+  // Checklist (SET_UP)
+  checkRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
-    minHeight: 56,
+    paddingHorizontal: spacing.md,
+    minHeight: 60,
   },
-  reqTitle: { fontFamily: "DMSans_500Medium", fontSize: 15 },
-  reqHint: { ...typography.bodySmall, fontSize: 12, marginTop: 1 },
-
-  // Tabs
-  tabBar: {
-    flexDirection: "row",
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    marginTop: spacing.md,
-    paddingHorizontal: spacing.lg,
-  },
-  tabTap: { flex: 1, borderRadius: r.sm },
-  tab: {
-    minHeight: 44,
+  checkDot: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    borderBottomWidth: 2,
-    borderBottomColor: "transparent",
   },
-  tabText: { ...typography.body, fontSize: 15 },
-  tabTextActive: { fontFamily: "DMSans_500Medium" },
+  checkNum: { fontFamily: "DMSans_600SemiBold", fontSize: 13 },
+  checkLabel: { fontFamily: "DMSans_500Medium", fontSize: 15 },
+  checkSub: { ...typography.bodySmall, fontSize: 12, marginTop: 1 },
+  doneTag: { fontFamily: "DMSans_500Medium", fontSize: 12 },
+  doNowBtn: {
+    borderRadius: r.sm,
+    backgroundColor: palette.primary,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    minHeight: 40,
+    justifyContent: "center",
+  },
+  doNowText: { fontFamily: "DMSans_600SemiBold", fontSize: 13, color: "#fff" },
 
-  // Sections
-  sectionLabel: { ...typography.label, fontSize: 13, marginBottom: spacing.xs },
+  // Locked preview (SET_UP)
+  previewCard: {
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderRadius: r.sm,
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+  previewHead: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  previewTitle: { fontFamily: "DMSans_600SemiBold", fontSize: 14 },
+  previewRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  previewChip: {
+    width: 32,
+    height: 32,
+    borderRadius: r.sm,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  previewLabel: { ...typography.body, fontSize: 14 },
+  previewFoot: {
+    ...typography.bodySmall,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 2,
+  },
 
+  // Earnings snapshot (LIVE)
+  snapKicker: {
+    fontFamily: "DMSans_500Medium",
+    fontSize: 13,
+    color: "rgba(255,255,255,0.85)",
+  },
+  snapAmount: {
+    fontFamily: "DMSans_800ExtraBold",
+    fontSize: 30,
+    lineHeight: 38,
+    color: "#fff",
+    marginTop: 2,
+  },
+  snapGrid: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: spacing.md,
+  },
+  snapStat: { flex: 1, alignItems: "center", gap: 2 },
+  snapValue: {
+    fontFamily: "DMSans_600SemiBold",
+    fontSize: 16,
+    color: "#fff",
+  },
+  snapLabel: {
+    fontFamily: "DMSans_400Regular",
+    fontSize: 11,
+    color: "rgba(255,255,255,0.85)",
+  },
+  snapSep: { width: StyleSheet.hairlineWidth, height: 34, backgroundColor: "rgba(255,255,255,0.28)" },
+
+  // Live offer (LIVE)
+  offerHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.md,
+  },
+  offerBadge: { flexDirection: "row", alignItems: "center", gap: 4 },
+  offerBadgeText: {
+    fontFamily: "DMSans_600SemiBold",
+    fontSize: 12,
+    color: palette.primary,
+  },
+  offerTimer: { fontFamily: "DMSans_600SemiBold", fontSize: 12 },
+  offerBody: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, gap: 4 },
+  offerTitle: { fontFamily: "DMSans_600SemiBold", fontSize: 16 },
+  offerMetaRow: { flexDirection: "row", gap: spacing.md, marginTop: 2 },
+  offerMeta: { flexDirection: "row", alignItems: "center", gap: 4 },
+  offerMetaText: { ...typography.bodySmall, fontSize: 12 },
+  offerPay: { fontFamily: "DMSans_700Bold", fontSize: 18, marginTop: 2 },
+  offerPaySub: { fontFamily: "DMSans_400Regular", fontSize: 12 },
+  offerActions: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    padding: spacing.md,
+  },
+  offerBtn: {
+    flex: 1,
+    borderRadius: r.sm,
+    minHeight: 46,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  offerDecline: { borderWidth: 1 },
+  offerDeclineText: { fontFamily: "DMSans_500Medium", fontSize: 15 },
+  offerAccept: { backgroundColor: palette.primary },
+  offerAcceptText: { fontFamily: "DMSans_600SemiBold", fontSize: 15, color: "#fff" },
+
+  // Today's jobs (LIVE)
+  seeAll: { fontFamily: "DMSans_500Medium", fontSize: 13, color: palette.primary },
+  jobRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    minHeight: 60,
+  },
+  jobTitle: { fontFamily: "DMSans_500Medium", fontSize: 15, lineHeight: 20 },
+  jobHint: { ...typography.bodySmall, fontSize: 12, marginTop: 1 },
+  jobsEmpty: {
+    alignItems: "center",
+    gap: spacing.xs,
+    paddingVertical: spacing.xl,
+    paddingHorizontal: spacing.md,
+  },
+  pill: {
+    borderRadius: r.full,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+  },
+  pillText: { fontFamily: "DMSans_500Medium", fontSize: 11 },
+
+  // Quick actions (LIVE)
+  quickGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+  },
+  quickCard: {
+    width: "48%",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: r.sm,
+  },
+  quickInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    padding: spacing.md,
+    minHeight: 56,
+  },
+  quickLabel: { fontFamily: "DMSans_500Medium", fontSize: 14, flex: 1 },
+
+  // Shared
   iconChip: {
     width: 40,
     height: 40,
@@ -1397,110 +1282,26 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  iconLineRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    minHeight: 44,
-  },
-  jobTitle: {
-    fontFamily: "DMSans_500Medium",
-    fontSize: 15,
-    lineHeight: 20,
-  },
-  jobHint: { ...typography.bodySmall, fontSize: 12, marginTop: 1 },
-
-  meterTrack: {
-    height: 6,
-    borderRadius: 3,
-    marginVertical: spacing.xs,
-    overflow: "hidden",
-  },
-  meterFill: { height: 6, borderRadius: 3 },
-
-  // Listing steps
-  listingRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    minHeight: 44,
-  },
-  stepDot: {
-    width: 28,
-    height: 28,
-    borderRadius: r.sm,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  stepNum: { fontFamily: "DMSans_600SemiBold", fontSize: 13 },
-  listingLabel: { ...typography.body, flex: 1, fontSize: 14 },
-  liveRow: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
-  liveText: { fontFamily: "DMSans_500Medium", fontSize: 13 },
-
-  // Stats
-  statsRow: { flexDirection: "row", alignItems: "center" },
-  statTile: {
-    flex: 1,
-    alignItems: "center",
-    gap: 2,
-    paddingVertical: spacing.xs,
-  },
-  statValue: {
-    fontFamily: "DMSans_600SemiBold",
-    fontSize: 16,
-    lineHeight: 22,
-  },
-  statLabel: { ...typography.bodySmall, fontSize: 11 },
-  statDivider: { width: StyleSheet.hairlineWidth, height: 36 },
-
-  badgeRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.sm,
-    marginTop: spacing.sm,
-  },
-  badgeChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    borderWidth: 1,
-    borderRadius: r.sm,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 4,
-  },
-  badgeText: { fontFamily: "DMSans_500Medium", fontSize: 11 },
-
-  // Profile strength
-  strengthScore: {
-    fontFamily: "DMSans_600SemiBold",
-    fontSize: 17,
-    color: palette.primary,
-  },
-
-  // Tier
-  reqList: { gap: spacing.xs, marginVertical: spacing.xs },
-  reqRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
-  reqDot: { width: 6, height: 6, borderRadius: 3, marginTop: 7 },
-  reqText: { ...typography.bodySmall, flex: 1, lineHeight: 18 },
-  inlineAction: { marginTop: spacing.xs },
-  inlineActionInner: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    minHeight: 44,
-  },
-  inlineActionText: {
-    ...typography.label,
-    color: palette.primary,
+  meterTrack: { height: 8, borderRadius: r.full, overflow: "hidden" },
+  meterFill: { height: 8, borderRadius: r.full },
+  emptyTitle: { fontFamily: "DMSans_600SemiBold", fontSize: 16 },
+  emptyBody: {
+    ...typography.bodySmall,
     fontSize: 13,
+    textAlign: "center",
+    lineHeight: 19,
   },
-
-  manageRow: {
+  retryBtn: {
+    marginTop: spacing.sm,
+    borderRadius: r.sm,
+    backgroundColor: palette.primary,
+  },
+  retryInner: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.md,
-    minHeight: 56,
-    paddingHorizontal: spacing.md,
+    gap: spacing.xs,
+    paddingHorizontal: spacing.lg,
+    minHeight: 44,
   },
-  manageLabel: { ...typography.body, flex: 1, fontSize: 16 },
+  retryText: { fontFamily: "DMSans_600SemiBold", fontSize: 14, color: "#fff" },
 });

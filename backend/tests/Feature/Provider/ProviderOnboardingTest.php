@@ -85,7 +85,7 @@ class ProviderOnboardingTest extends TestCase
         $this->postJson('/api/provider/onboarding/offer', ['category_id' => $this->remote->id], $this->asProvider($token))->assertOk();
         $this->submitIdentity($token);
         $this->postJson('/api/provider/onboarding/service', [
-            'title' => 'Logo Design', 'price' => 150, 'pricing_model' => 'FIXED',
+            'title' => 'Logo Design', 'price' => 150, 'pricing_model' => 'OUTCOME_FIXED',
         ], $this->asProvider($token))->assertCreated();
 
         // KYC bridge wrote the verifications the gate reads → eligible → LIVE.
@@ -104,7 +104,7 @@ class ProviderOnboardingTest extends TestCase
         $this->postJson('/api/provider/onboarding/offer', ['category_id' => $this->inHome->id], $this->asProvider($token))->assertOk();
         $this->submitIdentity($token);
         $this->postJson('/api/provider/onboarding/service', [
-            'title' => 'Plumbing', 'price' => 200, 'pricing_model' => 'HOURLY',
+            'title' => 'Plumbing', 'price' => 200, 'pricing_model' => 'HOURLY_CAPPED',
         ], $this->asProvider($token))->assertCreated();
 
         $res = $this->postJson('/api/provider/onboarding/go-live', [], $this->asProvider($token))->assertOk();

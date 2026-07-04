@@ -320,17 +320,17 @@ class DispatchEngineTest extends TestCase
         // Services as catalog templates (owned by providerA)
         $this->svcRemote = Service::create([
             'title' => 'Web Dev', 'category_id' => $this->catRemote->id,
-            'status' => 'ACTIVE', 'base_price' => 500, 'pricing_model' => 'FIXED',
+            'status' => 'ACTIVE', 'base_price' => 500, 'pricing_model' => 'OUTCOME_FIXED',
             'provider_id' => $this->providerA->id,
         ]);
         $this->svcPublic = Service::create([
             'title' => 'Haircut', 'category_id' => $this->catPublic->id,
-            'status' => 'ACTIVE', 'base_price' => 50, 'pricing_model' => 'FIXED',
+            'status' => 'ACTIVE', 'base_price' => 50, 'pricing_model' => 'OUTCOME_FIXED',
             'provider_id' => $this->providerA->id,
         ]);
         $this->svcInHome = Service::create([
             'title' => 'Plumbing', 'category_id' => $this->catInHome->id,
-            'status' => 'ACTIVE', 'base_price' => 150, 'pricing_model' => 'HOURLY',
+            'status' => 'ACTIVE', 'base_price' => 150, 'pricing_model' => 'HOURLY_CAPPED', 'hourly_rate' => 150, 'minimum_hours' => 1, 'cap_hours' => 4, 'cap_amount' => 600,
             'provider_id' => $this->providerA->id,
         ]);
 

@@ -1,11 +1,11 @@
 'use client'
 
 import { useMemo, useState, useEffect, useCallback } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import {
-  Shield, AlertOctagon, AlertTriangle, Flag, Siren, Clock, RefreshCw,
-} from 'lucide-react'
+  IoShieldOutline, IoAlertCircleOutline, IoWarningOutline, IoFlagOutline, IoAlarmOutline, IoTimeOutline, IoRefreshOutline,
+} from 'react-icons/io5'
 import { DataTable } from '@/components/ui/DataTable'
 import { FilterBar } from '@/components/ui/FilterBar'
 import { DetailPanel } from '@/components/ui/DetailPanel'
@@ -25,6 +25,8 @@ import {
   type BookingRef,
 } from '@/lib/api/safety'
 import { SafetyDetail } from '@/components/safety/SafetyDetail'
+import { useAdminChannel } from '@/lib/realtime/useAdminChannel'
+import { useQueueBadgeStore } from '@/lib/realtime/queue-badge-store'
 
 const SEVERITY_OPTIONS = (['EMERGENCY', 'HIGH', 'STANDARD'] as Severity[]).map((v) => ({
   value: v,
@@ -77,13 +79,28 @@ export function SafetyManager() {
   }, [])
 
   const params = { page, severity, status, type }
+  const queryClient = useQueryClient()
+  const bumpBadge = useQueueBadgeStore((s) => s.increment)
 
-  // Emergencies need freshness — poll every 30s and surface the last-updated time.
+  // Realtime-driven now (safety.report_filed / emergency.triggered) — the
+  // refetchInterval below is a reconciliation-only fallback in case a WS
+  // event is missed, not the primary freshness mechanism.
   const { data, isLoading, isFetching, refetch, dataUpdatedAt } = useQuery({
     queryKey: ['safety-queue', params],
     queryFn: () => safetyApi.queue(params),
-    refetchInterval: 30_000,
+    refetchInterval: 5 * 60_000,
     refetchOnWindowFocus: true,
+  })
+
+  useAdminChannel('safety', {
+    'safety.report_filed': () => {
+      queryClient.invalidateQueries({ queryKey: ['safety-queue'] })
+      bumpBadge('safety')
+    },
+    'emergency.triggered': () => {
+      queryClient.invalidateQueries({ queryKey: ['safety-queue'] })
+      bumpBadge('safety')
+    },
   })
 
   function resetPageThen<T>(setter: (v: T) => void) {
@@ -151,7 +168,7 @@ export function SafetyManager() {
           <button
             type="button"
             onClick={() => select({ kind: 'report', id: row.original.id })}
-            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
+            className="rounded-sm border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
             aria-label={`Open ${row.original.category_label} report`}
           >
             Open
@@ -170,7 +187,7 @@ export function SafetyManager() {
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="flex items-center gap-2 text-lg font-medium text-slate-900 dark:text-slate-100">
-            <Shield className="size-5 text-teal-600" />
+            <IoShieldOutline className="size-5 text-teal-600" />
             Safety
           </h1>
           <p className="text-sm text-slate-500 dark:text-slate-400">
@@ -187,10 +204,10 @@ export function SafetyManager() {
           <button
             type="button"
             onClick={() => refetch()}
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
+            className="inline-flex h-8 items-center gap-1.5 rounded-sm border border-slate-200 px-2.5 font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
             aria-label="Refresh queue"
           >
-            <RefreshCw className={cn('size-3.5', isFetching && 'animate-spin')} />
+            <IoRefreshOutline className={cn('size-3.5', isFetching && 'animate-spin')} />
             Refresh
           </button>
         </div>
@@ -200,7 +217,7 @@ export function SafetyManager() {
       {showEmergencies && (
         <section aria-label="Active emergencies" className="space-y-2">
           <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-red-600 dark:text-red-400">
-            <Siren className="size-4" aria-hidden="true" />
+            <IoAlarmOutline className="size-4" aria-hidden="true" />
             {emergencies.length} active emergency{emergencies.length === 1 ? '' : ' events'} — respond now
           </h2>
           <div className="space-y-2">
@@ -269,10 +286,10 @@ export function SafetyManager() {
 
 // ── Cells ───────────────────────────────────────────────────────────────────────
 
-const SEVERITY_META: Record<Severity, { icon: typeof Flag; cls: string; label: string }> = {
-  EMERGENCY: { icon: AlertOctagon, cls: 'text-red-600 dark:text-red-400', label: SEVERITY_LABEL.EMERGENCY },
-  HIGH: { icon: AlertTriangle, cls: 'text-amber-600 dark:text-amber-400', label: SEVERITY_LABEL.HIGH },
-  STANDARD: { icon: Flag, cls: 'text-slate-500 dark:text-slate-400', label: SEVERITY_LABEL.STANDARD },
+const SEVERITY_META: Record<Severity, { icon: typeof IoFlagOutline; cls: string; label: string }> = {
+  EMERGENCY: { icon: IoAlertCircleOutline, cls: 'text-red-600 dark:text-red-400', label: SEVERITY_LABEL.EMERGENCY },
+  HIGH: { icon: IoWarningOutline, cls: 'text-amber-600 dark:text-amber-400', label: SEVERITY_LABEL.HIGH },
+  STANDARD: { icon: IoFlagOutline, cls: 'text-slate-500 dark:text-slate-400', label: SEVERITY_LABEL.STANDARD },
 }
 
 // Severity is conveyed by TEXT + ICON, never colour alone (a11y).
@@ -310,11 +327,11 @@ function BookingCell({ booking }: { booking: BookingRef | null }) {
 
 function EmergencyCard({ event, onOpen }: { event: EmergencyRow; onOpen: () => void }) {
   return (
-    <div className="rounded-lg border border-red-300 bg-red-50 p-3 dark:border-red-800/70 dark:bg-red-950/30">
+    <div className="rounded-sm border border-red-300 bg-red-50 p-3 dark:border-red-800/70 dark:bg-red-950/30">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
-            <AlertOctagon className="size-4 shrink-0 text-red-600 dark:text-red-400" aria-hidden="true" />
+            <IoAlertCircleOutline className="size-4 shrink-0 text-red-600 dark:text-red-400" aria-hidden="true" />
             <span className="text-sm font-semibold text-red-700 dark:text-red-300">
               Emergency · {STATUS_LABEL[event.status]}
             </span>
@@ -338,7 +355,7 @@ function EmergencyCard({ event, onOpen }: { event: EmergencyRow; onOpen: () => v
         <button
           type="button"
           onClick={onOpen}
-          className="shrink-0 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-700 focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1"
+          className="shrink-0 rounded-sm bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-700 focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1"
         >
           Respond
         </button>
@@ -375,7 +392,7 @@ function SlaTimer({ dueAt }: { dueAt: string | null }) {
       aria-label={overdue ? `Outreach SLA overdue by ${clock}` : `Outreach SLA due in ${clock}`}
       title={`Outreach due ${fmtDatetime(dueAt)}`}
     >
-      <Clock className="size-3" aria-hidden="true" />
+      <IoTimeOutline className="size-3" aria-hidden="true" />
       {overdue ? `SLA overdue ${clock}` : `SLA ${clock}`}
     </span>
   )

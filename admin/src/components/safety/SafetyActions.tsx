@@ -3,8 +3,8 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import {
-  UserCheck, Ban, Gavel, ArrowUpCircle, CheckCircle2, StickyNote, ExternalLink,
-} from 'lucide-react'
+  IoCheckmarkCircleOutline, IoBanOutline, IoHammerOutline, IoArrowUpCircleOutline, IoClipboardOutline, IoOpenOutline,
+} from 'react-icons/io5'
 import { cn } from '@/lib/utils'
 import { toast } from '@/lib/store/toast-store'
 import { useAuditedMutation } from '@/lib/audit/audited-mutation'
@@ -23,8 +23,9 @@ interface Props {
 // Every protective/escalation action runs through useAuditedMutation →
 // ConfirmWithReason (reason mandatory) → the API writes the state change + audit
 // entry in one transaction. Notes are append-only and not a state change, so they
-// post directly. Suspending/restricting the reported USER is a Users module action
-// (deep-linked) — this module only restricts contact and records decisions.
+// post directly. Suspending the reported USER calls straight into the Users
+// module action (no duplicated logic) and is recorded in both modules; the
+// Users module link is kept for finer-grained options (ban, tier, denylist).
 export function SafetyActions({ detail, onChanged }: Props) {
   const { kind, id } = detail
   const isReport = kind === 'report'
@@ -47,6 +48,16 @@ export function SafetyActions({ detail, onChanged }: Props) {
     capability: 'safety.handle',
     audit: ctx('Restrict contact', 'Block further contact between the reporter and the reported party while this is investigated.'),
     mutationFn: (p) => safetyApi.restrictContact(kind, id, { reason: p.reason }),
+    onSuccess: onChanged,
+  })
+
+  // Calls straight into the Users module (single source of truth for the
+  // mutation) — this only records the link, so both modules carry an audit
+  // entry for the decision.
+  const restrictReportedUser = useAuditedMutation<Record<string, never>, SafetyDetail>({
+    capability: 'safety.handle',
+    audit: ctx('Suspend reported user', 'Suspend the reported account as a result of this report. This calls the Users module action and is recorded in both places.'),
+    mutationFn: (p) => safetyApi.restrictReportedUser(kind, id, { reason: p.reason }),
     onSuccess: onChanged,
   })
 
@@ -81,7 +92,7 @@ export function SafetyActions({ detail, onChanged }: Props) {
       {/* Triage + escalation */}
       <div className="flex flex-wrap gap-2">
         <ActionButton
-          icon={UserCheck}
+          icon={IoCheckmarkCircleOutline}
           label={claimed ? `Claimed · ${detail.assigned?.admin_name ?? 'assigned'}` : 'Claim & investigate'}
           tone="teal"
           disabled={claim.isPending}
@@ -90,7 +101,7 @@ export function SafetyActions({ detail, onChanged }: Props) {
 
         {isReport && (
           <ActionButton
-            icon={Ban}
+            icon={IoBanOutline}
             label={detail.contact_restricted ? 'Contact restricted' : 'Restrict contact'}
             tone="amber"
             disabled={detail.contact_restricted || restrictContact.isPending}
@@ -100,7 +111,7 @@ export function SafetyActions({ detail, onChanged }: Props) {
 
         {isReport && (
           <ActionButton
-            icon={Gavel}
+            icon={IoHammerOutline}
             label={detail.authority_escalated_at ? 'Authority escalation recorded' : 'Flag for authority'}
             tone="red"
             disabled={!!detail.authority_escalated_at || escalateAuthority.isPending}
@@ -110,7 +121,7 @@ export function SafetyActions({ detail, onChanged }: Props) {
 
         {isReport && (
           <ActionButton
-            icon={ArrowUpCircle}
+            icon={IoArrowUpCircleOutline}
             label={detail.super_admin_escalated ? 'Escalated' : 'Escalate to super admin'}
             tone="slate"
             disabled={detail.super_admin_escalated || escalateSuperAdmin.isPending}
@@ -119,7 +130,7 @@ export function SafetyActions({ detail, onChanged }: Props) {
         )}
 
         <ActionButton
-          icon={CheckCircle2}
+          icon={IoCheckmarkCircleOutline}
           label="Resolve"
           tone="teal"
           disabled={resolve.isPending}
@@ -128,31 +139,40 @@ export function SafetyActions({ detail, onChanged }: Props) {
         />
       </div>
 
-      {/* Protective: suspend/restrict the reported USER lives in Users (deep-link) */}
-      {detail.reported && (
-        <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-3 text-xs dark:border-slate-600 dark:bg-slate-800/50">
+      {/* Protective: suspend the reported USER via the Users module action */}
+      {isReport && detail.reported && (
+        <div className="rounded-sm border border-dashed border-slate-300 bg-slate-50 p-3 text-xs dark:border-slate-600 dark:bg-slate-800/50">
           <p className="text-slate-500 dark:text-slate-400">
-            To suspend, restrict or ban the reported account, use the Users module — that action is
-            audited there and applies platform-wide.
+            Suspending the reported account applies platform-wide and is audited in both this report
+            and the Users module.
           </p>
-          <Link
-            href={`/users?user=${detail.reported.user_id}`}
-            className="mt-1 inline-flex items-center gap-1 font-medium text-teal-600 hover:underline dark:text-teal-400"
-          >
-            Take protective action on the reported user <ExternalLink className="size-3" />
-          </Link>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <ActionButton
+              icon={IoBanOutline}
+              label={detail.account_restricted ? 'Reported user suspended' : 'Suspend reported user'}
+              tone="red"
+              disabled={detail.account_restricted || restrictReportedUser.isPending}
+              onClick={() => restrictReportedUser.trigger({})}
+            />
+            <Link
+              href={`/users?user=${detail.reported.user_id}`}
+              className="inline-flex items-center gap-1 font-medium text-teal-600 hover:underline dark:text-teal-400"
+            >
+              Open in Users for more options (ban, tier, denylist) <IoOpenOutline className="size-3" />
+            </Link>
+          </div>
         </div>
       )}
 
       {/* Resolve sub-form */}
       {showResolve && (
-        <div className="flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/50">
+        <div className="flex flex-wrap items-end gap-2 rounded-sm border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/50">
           <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
             Outcome
             <select
               value={outcome}
               onChange={(e) => setOutcome(e.target.value as ResolveOutcome)}
-              className="mt-1 block h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+              className="mt-1 block h-9 rounded-sm border border-slate-200 bg-white px-3 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
             >
               {(Object.keys(OUTCOME_LABEL) as ResolveOutcome[]).map((o) => (
                 <option key={o} value={o}>{OUTCOME_LABEL[o]}</option>
@@ -162,7 +182,7 @@ export function SafetyActions({ detail, onChanged }: Props) {
           <button
             type="button"
             onClick={() => { resolve.trigger({ outcome }); setShowResolve(false) }}
-            className="h-9 rounded-lg bg-teal-600 px-4 text-sm font-medium text-white hover:bg-teal-700"
+            className="h-9 rounded-sm bg-teal-600 px-4 text-sm font-medium text-white hover:bg-teal-700"
           >
             Continue
           </button>
@@ -198,9 +218,9 @@ function NoteForm({ kind, id, onAdded }: { kind: SafetyDetail['kind']; id: strin
   }
 
   return (
-    <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+    <div className="rounded-sm border border-slate-200 p-3 dark:border-slate-700">
       <label htmlFor="safety-note" className="flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-400">
-        <StickyNote className="size-3.5" /> Internal case note
+        <IoClipboardOutline className="size-3.5" /> Internal case note
       </label>
       <textarea
         id="safety-note"
@@ -208,7 +228,7 @@ function NoteForm({ kind, id, onAdded }: { kind: SafetyDetail['kind']; id: strin
         value={body}
         onChange={(e) => setBody(e.target.value)}
         placeholder="Internal only — recorded in the case history (min 10 characters)"
-        className="mt-1.5 w-full resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:placeholder:text-slate-500"
+        className="mt-1.5 w-full resize-none rounded-sm border border-slate-200 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:placeholder:text-slate-500"
       />
       <div className="mt-1.5 flex items-center justify-between">
         <span className="text-[11px] text-slate-400">{body.trim().length}/10 minimum</span>
@@ -217,7 +237,7 @@ function NoteForm({ kind, id, onAdded }: { kind: SafetyDetail['kind']; id: strin
           onClick={submit}
           disabled={!canSubmit}
           className={cn(
-            'h-8 rounded-lg px-3 text-xs font-medium transition-colors',
+            'h-8 rounded-sm px-3 text-xs font-medium transition-colors',
             canSubmit ? 'bg-slate-700 text-white hover:bg-slate-800 dark:bg-slate-600' : 'cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-slate-700',
           )}
         >
@@ -257,7 +277,7 @@ function ActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        'inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-sm font-medium transition-colors',
+        'inline-flex h-9 items-center gap-1.5 rounded-sm border px-3 text-sm font-medium transition-colors',
         'disabled:cursor-not-allowed disabled:opacity-50',
         TONES[tone],
       )}

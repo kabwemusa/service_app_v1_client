@@ -3,7 +3,7 @@
 import { useMemo, useState, useEffect, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { Users, AlertTriangle, Star } from 'lucide-react'
+import { IoPeopleOutline, IoWarningOutline, IoStarOutline } from 'react-icons/io5'
 import { DataTable } from '@/components/ui/DataTable'
 import { FilterBar } from '@/components/ui/FilterBar'
 import { DetailPanel } from '@/components/ui/DetailPanel'
@@ -101,7 +101,7 @@ export function UsersManager() {
                       className="inline-flex items-center gap-0.5 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-px text-[11px] font-medium text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400"
                       title="Open reports or fraud signals"
                     >
-                      <AlertTriangle className="size-2.5" aria-hidden="true" />
+                      <IoWarningOutline className="size-2.5" aria-hidden="true" />
                       Flagged
                     </span>
                   )}
@@ -157,7 +157,7 @@ export function UsersManager() {
           <button
             type="button"
             onClick={() => select(row.original.id)}
-            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
+            className="rounded-sm border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
             aria-label={`View ${row.original.display_name}`}
           >
             View
@@ -179,7 +179,7 @@ export function UsersManager() {
     <div className="space-y-4">
       <div>
         <h1 className="flex items-center gap-2 text-lg font-medium text-slate-900 dark:text-slate-100">
-          <Users className="size-5 text-teal-600" />
+          <IoPeopleOutline className="size-5 text-teal-600" />
           Users
         </h1>
         <p className="text-sm text-slate-500 dark:text-slate-400">
@@ -251,7 +251,7 @@ function SignalCell({ user }: { user: UserRow }) {
   if (user.rating !== null) {
     return (
       <span className="inline-flex items-center gap-1 whitespace-nowrap text-slate-600 dark:text-slate-400">
-        <Star className="size-3.5 fill-amber-400 text-amber-400" aria-hidden="true" />
+        <IoStarOutline className="size-3.5 fill-amber-400 text-amber-400" aria-hidden="true" />
         {user.rating.toFixed(2)}
         <span className="text-xs text-slate-400">({user.reviews_count})</span>
       </span>

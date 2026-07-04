@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { ShieldAlert } from 'lucide-react'
+import { IoShieldHalfOutline } from 'react-icons/io5'
 import { cn } from '@/lib/utils'
 import { useAuditedMutation } from '@/lib/audit/audited-mutation'
 import {
@@ -61,9 +61,9 @@ export function DenylistForm({ user, onChanged }: Props) {
   }
 
   return (
-    <div className="space-y-3 rounded-lg border border-red-200 bg-red-50/40 p-3 dark:border-red-900/50 dark:bg-red-950/20">
+    <div className="space-y-3 rounded-sm border border-red-200 bg-red-50/40 p-3 dark:border-red-900/50 dark:bg-red-950/20">
       <div className="flex items-center gap-2 text-sm font-medium text-red-700 dark:text-red-400">
-        <ShieldAlert className="size-4" />
+        <IoShieldHalfOutline className="size-4" />
         Add to hashed denylist
       </div>
       <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -91,7 +91,7 @@ export function DenylistForm({ user, onChanged }: Props) {
         <select
           value={category}
           onChange={(e) => setCategory(e.target.value as DenylistCategory)}
-          className="mt-1 block h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+          className="mt-1 block h-9 w-full rounded-sm border border-slate-200 bg-white px-3 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
         >
           {(Object.keys(DENYLIST_CATEGORY_LABEL) as DenylistCategory[]).map((c) => (
             <option key={c} value={c}>
@@ -106,7 +106,7 @@ export function DenylistForm({ user, onChanged }: Props) {
         disabled={selected.length === 0 || add.isPending}
         onClick={() => add.trigger({ identifiers: selected, category })}
         className={cn(
-          'h-9 rounded-lg px-4 text-sm font-medium transition-colors',
+          'h-9 rounded-sm px-4 text-sm font-medium transition-colors',
           selected.length > 0 && !add.isPending
             ? 'bg-red-600 text-white hover:bg-red-700'
             : 'cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-slate-700',

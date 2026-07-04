@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -40,6 +40,13 @@ const LANGUAGE_CODES = Object.keys(LANGUAGE_LABELS) as LanguageCode[];
 
 const EMPTY_HIGHLIGHTS: Highlights = { pinned_service_ids: [], featured_photo_keys: [], featured_badges: [] };
 
+// A public provider profile needs a real name + a bio that says what they do.
+// The bio only earns profile-strength points at ≥ 80 chars (backend §9.1), so we
+// guide the provider to that length rather than let them save an empty shell.
+const BIO_MIN = 80;
+
+type FieldErrors = { displayName?: string; bio?: string; year?: string };
+
 function emptyToUndefined(value: string): string | undefined {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
@@ -66,6 +73,11 @@ export default function ProviderProfileEditScreen({ navigation, route }: any) {
   const [uploadingCover, setUploadingCover]   = useState(false);
   const [uploadingPhoto, setUploadingPhoto]   = useState(false);
   const [deletingPath, setDeletingPath]       = useState<string | null>(null);
+  const [errors, setErrors]                   = useState<FieldErrors>({});
+
+  const scrollRef = useRef<ScrollView>(null);
+  const clearErr = (field: keyof FieldErrors) =>
+    setErrors((prev) => (prev[field] ? { ...prev, [field]: undefined } : prev));
 
   useEffect(() => {
     fetchProfile();
@@ -237,17 +249,45 @@ export default function ProviderProfileEditScreen({ navigation, route }: any) {
     });
   };
 
-  // ── Save ──────────────────────────────────────────────────────────────────
-  const handleSave = async () => {
-    const currentYear = new Date().getFullYear();
-    let yearNum: number | undefined;
+  // ── Validation ─────────────────────────────────────────────────────────────
+  const currentYear = new Date().getFullYear();
+  // Block only on what's genuinely MISSING (empty required fields / bad year).
+  // A short-but-present bio is guided softly below, never trapping an existing
+  // provider who is just tweaking a highlight.
+  const validate = (): FieldErrors => {
+    const e: FieldErrors = {};
+    if (!displayName.trim()) {
+      e.displayName = 'Add the name customers will see on your profile.';
+    }
+    if (!bio.trim()) {
+      e.bio = 'Write a short bio so customers know what you do.';
+    }
     if (yearStarted.trim()) {
-      yearNum = parseInt(yearStarted, 10);
-      if (Number.isNaN(yearNum) || yearNum < 1980 || yearNum > currentYear) {
-        showError(`Enter a year between 1980 and ${currentYear}.`);
-        return;
+      const y = parseInt(yearStarted, 10);
+      if (Number.isNaN(y) || y < 1980 || y > currentYear) {
+        e.year = `Enter a year between 1980 and ${currentYear}.`;
       }
     }
+    return e;
+  };
+
+  // Non-blocking nudge: bio present but under the strength threshold.
+  const bioTrimmed = bio.trim().length;
+  const bioWeak = bioTrimmed > 0 && bioTrimmed < BIO_MIN;
+
+  // ── Save ──────────────────────────────────────────────────────────────────
+  const handleSave = async () => {
+    const e = validate();
+    if (Object.keys(e).length > 0) {
+      // Guide the provider straight to what's missing rather than a vague toast.
+      setErrors(e);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      showError('Please complete the highlighted fields to save your profile.');
+      return;
+    }
+    setErrors({});
+    const yearNum = yearStarted.trim() ? parseInt(yearStarted, 10) : undefined;
 
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSaving(true);
@@ -270,6 +310,7 @@ export default function ProviderProfileEditScreen({ navigation, route }: any) {
     <SafeAreaView style={styles.safe}>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <ScrollView
+          ref={scrollRef}
           contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 40 }]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
@@ -284,6 +325,9 @@ export default function ProviderProfileEditScreen({ navigation, route }: any) {
 
           {/* Public profile */}
           <Text style={styles.sectionLabel}>Public Profile</Text>
+          <Text style={styles.sectionHelp}>
+            Your photo, name and bio are the first things customers see. Fields marked * are required.
+          </Text>
           <View style={styles.card}>
             {/* Profile photo */}
             <View style={styles.avatarRow}>
@@ -319,43 +363,59 @@ export default function ProviderProfileEditScreen({ navigation, route }: any) {
               </View>
             </View>
 
-            <TextInput
-              mode="outlined"
-              label="Display name"
-              placeholder="What customers see (can differ from your legal name)"
-              value={displayName}
-              onChangeText={setDisplayName}
-              style={styles.input}
-              outlineStyle={styles.inputOutline}
-              left={<TextInput.Icon icon="account-outline" />}
-            />
             <View>
               <TextInput
                 mode="outlined"
-                label="Bio"
+                label="Display name *"
+                placeholder="What customers see (can differ from your legal name)"
+                value={displayName}
+                onChangeText={(text) => { setDisplayName(text); clearErr('displayName'); }}
+                error={!!errors.displayName}
+                style={styles.input}
+                outlineStyle={styles.inputOutline}
+                left={<TextInput.Icon icon="account-outline" />}
+              />
+              {errors.displayName && <Text style={styles.fieldError}>{errors.displayName}</Text>}
+            </View>
+            <View>
+              <TextInput
+                mode="outlined"
+                label="Bio *"
                 placeholder="Tell customers what you do and why they should book you..."
                 value={bio}
-                onChangeText={(text) => setBio(text.slice(0, 500))}
+                onChangeText={(text) => { setBio(text.slice(0, 500)); clearErr('bio'); }}
                 multiline
                 numberOfLines={4}
-                error={!!bioErr}
+                error={!!(errors.bio || bioErr)}
                 style={[styles.input, styles.bioInput]}
                 outlineStyle={styles.inputOutline}
               />
-              <Text style={styles.charCount}>{bio.length}/500</Text>
-              {bioErr && <Text style={styles.fieldError}>{bioErr}</Text>}
+              <Text style={styles.charCount}>
+                {bioTrimmed < BIO_MIN ? `${bioTrimmed}/${BIO_MIN} for a strong bio` : `${bio.length}/500`}
+              </Text>
+              {(errors.bio || bioErr) ? (
+                <Text style={styles.fieldError}>{errors.bio ?? bioErr}</Text>
+              ) : bioWeak ? (
+                <Text style={styles.fieldHint}>
+                  {BIO_MIN - bioTrimmed} more character{BIO_MIN - bioTrimmed === 1 ? '' : 's'} makes your profile stronger in search.
+                </Text>
+              ) : null}
             </View>
-            <TextInput
-              mode="outlined"
-              label="Year you started"
-              placeholder="e.g. 2019"
-              value={yearStarted}
-              onChangeText={(text) => setYearStarted(text.replace(/[^0-9]/g, '').slice(0, 4))}
-              keyboardType="number-pad"
-              style={styles.input}
-              outlineStyle={styles.inputOutline}
-              left={<TextInput.Icon icon="calendar-outline" />}
-            />
+            <View>
+              <TextInput
+                mode="outlined"
+                label="Year you started"
+                placeholder="e.g. 2019"
+                value={yearStarted}
+                onChangeText={(text) => { setYearStarted(text.replace(/[^0-9]/g, '').slice(0, 4)); clearErr('year'); }}
+                keyboardType="number-pad"
+                error={!!errors.year}
+                style={styles.input}
+                outlineStyle={styles.inputOutline}
+                left={<TextInput.Icon icon="calendar-outline" />}
+              />
+              {errors.year && <Text style={styles.fieldError}>{errors.year}</Text>}
+            </View>
           </View>
 
           {/* Languages */}
@@ -412,7 +472,7 @@ export default function ProviderProfileEditScreen({ navigation, route }: any) {
             <View style={{ flex: 1 }}>
               <Text style={styles.cardTitle}>Coming soon</Text>
               <Text style={styles.cardBody}>
-                Adding certifications that trigger verification (v3 §4.5) is on its way. We’ll notify you when it’s ready.
+                Adding certifications that trigger verification is on its way. We’ll notify you when it’s ready.
               </Text>
             </View>
           </View>
@@ -552,6 +612,7 @@ const styles = StyleSheet.create({
   subtitle:  { ...typography.bodySmall, color: palette.textSecondary, marginTop: 2 },
 
   sectionLabel: { ...typography.label, color: palette.textSecondary, marginBottom: spacing.sm, marginTop: spacing.xs },
+  sectionHelp: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12, lineHeight: 17, marginTop: -spacing.xs, marginBottom: spacing.sm },
   sectionRowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: spacing.xs },
   sectionHint: { ...typography.bodySmall, color: palette.textDisabled, fontSize: 12 },
 
@@ -592,6 +653,7 @@ const styles = StyleSheet.create({
   bioInput: { minHeight: 100 },
   charCount: { ...typography.bodySmall, color: palette.textDisabled, fontSize: 11, textAlign: 'right', marginTop: 2 },
   fieldError: { ...typography.bodySmall, color: palette.danger, fontSize: 12, marginTop: 2 },
+  fieldHint:  { ...typography.bodySmall, color: palette.warning, fontSize: 12, marginTop: 2 },
 
   // Pick chips (languages, pinned services)
   chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },

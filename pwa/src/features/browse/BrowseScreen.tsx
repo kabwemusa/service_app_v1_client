@@ -1,33 +1,59 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { catalogApi, type Category, type ServiceCard } from '../../api/catalog';
-import { Card } from '../../components/ui/ui';
+import { catalogApi, type Category } from '../../api/catalog';
+import { searchApi, type SearchResult } from '../../api/search';
+import { useLocationStore } from '../../store/locationStore';
+import { useAuthStore } from '../../store/authStore';
+import { usePendingAction } from '../../store/pendingActionStore';
+import { ServiceCard } from '../../components/discovery/ServiceCard';
 import { useTheme } from '../../theme/useTheme';
 
-// Zero-wall browse: no account needed to browse, search, or open detail.
+// Zero-wall browse: no account needed. Discovery goes through the SAME ranked
+// /search engine the app uses — the PWA renders the backend's order verbatim and
+// never sorts, scores, or geocodes itself.
 export function BrowseScreen() {
   const { t } = useTranslation();
   const { theme, toggle } = useTheme();
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const user = useAuthStore((s) => s.user);
+  const requireAuth = usePendingAction((s) => s.requireAuth);
+  const location = useLocationStore((s) => s.location);
+  const resolveDevice = useLocationStore((s) => s.resolveDevice);
+  const hydrate = useLocationStore((s) => s.hydrate);
+  const fetchPrimary = useLocationStore((s) => s.fetchPrimary);
+
   const [cats, setCats] = useState<Category[]>([]);
-  const [services, setServices] = useState<ServiceCard[]>([]);
-  const [active, setActive] = useState<number | null>(null);
-  const [q, setQ] = useState('');
+  const [results, setResults] = useState<SearchResult[]>([]);
+  const [fallback, setFallback] = useState(false);
+  const [active, setActive] = useState<number | null>(() => {
+    const id = Number(params.get('category_id'));
+    return Number.isFinite(id) && id > 0 ? id : null;
+  });
+  const [q, setQ] = useState(params.get('q') ?? '');
   const [loading, setLoading] = useState(true);
-  const area = localStorage.getItem('area_label');
 
   useEffect(() => { catalogApi.categories().then(setCats).catch(() => {}); }, []);
+  useEffect(() => { hydrate(); fetchPrimary(); }, [hydrate, fetchPrimary]);
 
   useEffect(() => {
     setLoading(true);
     const id = setTimeout(() => {
-      catalogApi.services({ category_id: active ?? undefined, q: q || undefined })
-        .then((r) => setServices(r.data))
-        .catch(() => setServices([]))
+      // Pass the resolved delivery location so the backend geo-ranks; it widens
+      // by region tier server-side — we never compute distance or a radius here.
+      searchApi.search({
+        query: q || undefined,
+        category_id: active ?? undefined,
+        ...(location ? { lat: location.lat, lng: location.lng } : {}),
+        ...(location?.region ? { region: location.region } : {}),
+      })
+        .then((r) => { setResults(r.data); setFallback(r.fallback); })
+        .catch(() => { setResults([]); setFallback(false); })
         .finally(() => setLoading(false));
     }, q ? 300 : 0); // debounce search
     return () => clearTimeout(id);
-  }, [active, q]);
+  }, [active, q, location]);
 
   return (
     <div style={{ paddingBottom: 'var(--space-xl)' }}>
@@ -39,16 +65,11 @@ export function BrowseScreen() {
           </button>
         </div>
         <button
-          onClick={() => {
-            navigator.geolocation?.getCurrentPosition(() => {
-              localStorage.setItem('area_label', 'Lusaka');
-              location.reload();
-            });
-          }}
+          onClick={() => { resolveDevice(); }}
           className="t-small t-muted"
           style={{ border: 'none', background: 'transparent', padding: 0, marginTop: 4 }}
         >
-          📍 {area ? t('browse.near', { area }) : t('browse.setLocation')}
+          📍 {location?.label ? t('browse.near', { area: location.label }) : t('browse.setLocation')}
         </button>
       </header>
 
@@ -70,12 +91,27 @@ export function BrowseScreen() {
         {cats.map((c) => <Chip key={c.id} label={c.name} active={active === c.id} onClick={() => setActive(c.id)} />)}
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-sm)', padding: '0 var(--space-md)' }}>
+      {fallback && !loading && results.length > 0 && (
+        <p className="t-small t-muted" style={{ padding: '0 var(--space-md) var(--space-sm)' }}>
+          {t('browse.fallbackNote')}
+        </p>
+      )}
+
+      <div className="browse-grid" style={{ padding: '0 var(--space-md)' }}>
         {loading
-          ? Array.from({ length: 4 }).map((_, i) => <div key={i} className="skeleton" style={{ height: 88 }} />)
-          : services.length === 0
-            ? <p className="t-muted" style={{ textAlign: 'center', padding: 'var(--space-xl)' }}>{t('browse.noResults')}</p>
-            : services.map((s) => <ServiceRow key={s.id} s={s} />)}
+          ? Array.from({ length: 4 }).map((_, i) => <div key={i} className="skeleton" style={{ height: 300, borderRadius: 'var(--radius-sm)' }} />)
+          : results.length === 0
+            ? <p className="t-muted" style={{ gridColumn: '1 / -1', textAlign: 'center', padding: 'var(--space-xl)' }}>{t('browse.noResults')}</p>
+            : results.map((s) => (
+                <ServiceCard
+                  key={s.id}
+                  result={s}
+                  onBook={() => {
+                    if (user) { navigate(`/book/${s.id}`); return; }
+                    requireAuth({ kind: 'book', serviceId: s.id, label: t('common.almostThere') });
+                  }}
+                />
+              ))}
       </div>
     </div>
   );
@@ -98,24 +134,6 @@ function Chip({ label, active, onClick }: { label: string; active: boolean; onCl
   );
 }
 
-function ServiceRow({ s }: { s: ServiceCard }) {
-  const { t } = useTranslation();
-  const price = s.min_price ?? s.base_price;
-  return (
-    <Link to={`/service/${s.id}`}>
-      <Card style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-        {s.photos?.[0]?.url
-          ? <img src={s.photos[0].url} alt="" loading="lazy" style={{ width: 64, height: 64, borderRadius: 'var(--radius-sm)', objectFit: 'cover' }} />
-          : <div style={{ width: 64, height: 64, borderRadius: 'var(--radius-sm)', background: 'var(--primary-light)' }} />}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <p className="t-label" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title}</p>
-          {s.category && <p className="t-small t-muted">{s.category.name}</p>}
-          {price != null && (
-            <p className="t-small"><span className="t-muted">{t('browse.from')} </span><strong>K{price}</strong></p>
-          )}
-        </div>
-        <span aria-hidden style={{ color: 'var(--text-secondary)' }}>›</span>
-      </Card>
-    </Link>
-  );
-}
+// Renders backend-provided facts only: title, category, "from" price, the
+// Promoted label when the backend placed the row, and a Verified marker for
+// verified providers. Never the raw trust score, never coordinates.

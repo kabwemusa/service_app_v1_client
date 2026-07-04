@@ -190,7 +190,7 @@ class SimulatedWebhookTest extends TestCase
         ]);
         $service = \App\Models\Service::create([
             'title' => 'Test Svc', 'category_id' => $category->id,
-            'status' => 'ACTIVE', 'base_price' => 100, 'pricing_model' => 'FIXED',
+            'status' => 'ACTIVE', 'base_price' => 100, 'pricing_model' => 'OUTCOME_FIXED',
             'provider_id' => $provider->id,
         ]);
 
@@ -263,7 +263,7 @@ class SimulatedWebhookTest extends TestCase
         ]);
         $service = \App\Models\Service::create([
             'title' => 'Plumbing', 'category_id' => $category->id, 'status' => 'ACTIVE',
-            'base_price' => 150, 'pricing_model' => 'FIXED', 'description' => 'Pipe and tap repair.',
+            'base_price' => 150, 'pricing_model' => 'OUTCOME_FIXED', 'description' => 'Pipe and tap repair.',
             'provider_id' => $provider->id,
         ]);
         \App\Models\ServicePhoto::create([
@@ -361,7 +361,7 @@ class SimulatedWebhookTest extends TestCase
         ]);
         $service = \App\Models\Service::create([
             'title' => 'Fixture Svc', 'category_id' => $category->id, 'status' => 'ACTIVE',
-            'base_price' => 100, 'pricing_model' => 'FIXED', 'provider_id' => $provider->id,
+            'base_price' => 100, 'pricing_model' => 'OUTCOME_FIXED', 'provider_id' => $provider->id,
         ]);
         $tomorrow = \Carbon\Carbon::tomorrow('Africa/Lusaka');
         $booking = \App\Models\Booking::create([

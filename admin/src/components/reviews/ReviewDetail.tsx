@@ -4,9 +4,9 @@ import { type ReactNode } from 'react'
 import Link from 'next/link'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Star, ShieldCheck, ExternalLink, AlertTriangle, MessageSquare,
-  Calendar, ScrollText, Flag, ShieldAlert,
-} from 'lucide-react'
+  IoStarOutline, IoShieldCheckmarkOutline, IoOpenOutline, IoWarningOutline, IoChatbubbleOutline,
+  IoCalendarOutline, IoDocumentTextOutline, IoFlagOutline, IoShieldHalfOutline,
+} from 'react-icons/io5'
 import { Avatar } from '@/components/ui/Avatar'
 import { StatusPill } from '@/components/ui/StatusPill'
 import { AuditTrail } from '@/components/ui/AuditTrail'
@@ -64,7 +64,7 @@ export function ReviewDetail({ reviewId }: Props) {
           <span>Left {fmtDate(review.created_at)}</span>
           {review.verified_booking && (
             <span className="inline-flex items-center gap-1 rounded-full border border-teal-200 bg-teal-50 px-1.5 py-px font-medium text-teal-700 dark:border-teal-800 dark:bg-teal-900/20 dark:text-teal-400">
-              <ShieldCheck className="size-3" aria-hidden="true" /> Verified booking (§12)
+              <IoShieldCheckmarkOutline className="size-3" aria-hidden="true" /> Verified booking (§12)
             </span>
           )}
         </p>
@@ -72,7 +72,7 @@ export function ReviewDetail({ reviewId }: Props) {
 
       {/* ── Removed banner (read-only with reason + audit) ── */}
       {removed && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm dark:border-red-900/50 dark:bg-red-950/20">
+        <div className="rounded-sm border border-red-200 bg-red-50 p-3 text-sm dark:border-red-900/50 dark:bg-red-950/20">
           <p className="font-medium text-red-700 dark:text-red-400">
             Review removed{review.removed_at && <> · {fmtDate(review.removed_at)}</>}
           </p>
@@ -89,23 +89,23 @@ export function ReviewDetail({ reviewId }: Props) {
 
       {/* ── Flags ── */}
       {review.flags.length > 0 && (
-        <Section title="Flags" icon={AlertTriangle}>
+        <Section title="Flags" icon={IoWarningOutline}>
           <FlagList flags={review.flags} />
           {fraudFlag && (
             <Link
               href={`/fraud?user=${review.provider.id ?? ''}`}
-              className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400"
+              className="mt-2 inline-flex items-center gap-1.5 rounded-sm border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400"
             >
-              <ShieldAlert className="size-3.5" /> Possible coordinated manipulation — open in Fraud <ExternalLink className="size-3" />
+              <IoShieldHalfOutline className="size-3.5" /> Possible coordinated manipulation — open in Fraud <IoOpenOutline className="size-3" />
             </Link>
           )}
         </Section>
       )}
 
       {/* ── Review text ── */}
-      <Section title="Review" icon={MessageSquare}>
+      <Section title="Review" icon={IoChatbubbleOutline}>
         {review.comment ? (
-          <p className="whitespace-pre-wrap rounded-lg border border-slate-200 p-3 text-sm text-slate-700 dark:border-slate-700 dark:text-slate-300">
+          <p className="whitespace-pre-wrap rounded-sm border border-slate-200 p-3 text-sm text-slate-700 dark:border-slate-700 dark:text-slate-300">
             {review.comment}
           </p>
         ) : (
@@ -114,7 +114,7 @@ export function ReviewDetail({ reviewId }: Props) {
       </Section>
 
       {/* ── Booking / service context ── */}
-      <Section title="Booking & service" icon={Calendar}>
+      <Section title="Booking & service" icon={IoCalendarOutline}>
         <div className="grid grid-cols-2 gap-2 text-sm">
           <ContextTile label="Service" value={review.service?.title ?? '—'} href={review.service ? `/services?service=${review.service.id}` : undefined} />
           <ContextTile label="Booking status" value={review.booking?.status ?? '—'} />
@@ -122,7 +122,7 @@ export function ReviewDetail({ reviewId }: Props) {
       </Section>
 
       {/* ── Parties (link out to Users) ── */}
-      <Section title="Parties" icon={ShieldCheck}>
+      <Section title="Parties" icon={IoShieldCheckmarkOutline}>
         <div className="space-y-2">
           <PartyRow role="Reviewer" id={review.reviewer.id} name={review.reviewer.name} />
           <PartyRow
@@ -140,7 +140,7 @@ export function ReviewDetail({ reviewId }: Props) {
       </Section>
 
       {/* ── Provider's current rating (§7.1) ── */}
-      <Section title="Provider rating (§7.1)" icon={Star}>
+      <Section title="Provider rating (§7.1)" icon={IoStarOutline}>
         <div className="grid grid-cols-3 gap-2">
           <RatingTile label="Bayesian" value={review.provider_rating.r_bayes !== null ? review.provider_rating.r_bayes.toFixed(2) : '—'} primary />
           <RatingTile label="Raw average" value={review.provider_rating.r_raw !== null ? review.provider_rating.r_raw.toFixed(2) : '—'} />
@@ -155,8 +155,8 @@ export function ReviewDetail({ reviewId }: Props) {
 
       {/* ── Provider response (moderated separately) ── */}
       {review.response && (
-        <Section title="Provider response" icon={MessageSquare}>
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/50">
+        <Section title="Provider response" icon={IoChatbubbleOutline}>
+          <div className="rounded-sm border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/50">
             <p className="text-sm text-slate-700 dark:text-slate-300">{review.response.text}</p>
             {review.response.responded_at && (
               <p className="mt-1 text-xs text-slate-400">Replied {fmtDate(review.response.responded_at)}</p>
@@ -166,12 +166,12 @@ export function ReviewDetail({ reviewId }: Props) {
       )}
 
       {/* ── Moderation ── */}
-      <Section title="Moderation" icon={Flag}>
+      <Section title="Moderation" icon={IoFlagOutline}>
         <ReviewModerationActions review={review} onChanged={invalidate} />
       </Section>
 
       {/* ── Audit trail (scoped to this review) ── */}
-      <Section title="Audit trail" icon={ScrollText}>
+      <Section title="Audit trail" icon={IoDocumentTextOutline}>
         <AuditTrail targetType="review" targetId={review.id} />
       </Section>
     </div>
@@ -186,9 +186,9 @@ function FlagList({ flags }: { flags: ReviewFlag[] }) {
       {flags.map((f, i) => (
         <li
           key={i}
-          className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm dark:border-amber-800 dark:bg-amber-900/10"
+          className="flex items-start gap-2 rounded-sm border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm dark:border-amber-800 dark:bg-amber-900/10"
         >
-          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+          <IoWarningOutline className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
           <div className="min-w-0">
             <p className="font-medium text-amber-800 dark:text-amber-300">
               {flagLabel(f.reason)}
@@ -220,7 +220,7 @@ function PartyRow({
   accountState?: string
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-slate-200 p-2.5 dark:border-slate-700">
+    <div className="flex items-center gap-3 rounded-sm border border-slate-200 p-2.5 dark:border-slate-700">
       <Avatar name={name} src={avatar} size="sm" />
       <div className="min-w-0 flex-1">
         <p className="text-[11px] uppercase tracking-wide text-slate-400">{role}</p>
@@ -235,7 +235,7 @@ function PartyRow({
           href={`/users?user=${id}`}
           className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-teal-600 hover:underline dark:text-teal-400"
         >
-          Open <ExternalLink className="size-3" />
+          Open <IoOpenOutline className="size-3" />
         </Link>
       )}
     </div>
@@ -244,10 +244,10 @@ function PartyRow({
 
 function ContextTile({ label, value, href }: { label: string; value: string; href?: string }) {
   const inner = (
-    <div className={cn('rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700', href && 'hover:bg-slate-50 dark:hover:bg-slate-700/40')}>
+    <div className={cn('rounded-sm border border-slate-200 px-3 py-2 dark:border-slate-700', href && 'hover:bg-slate-50 dark:hover:bg-slate-700/40')}>
       <p className="flex items-center gap-1 text-[11px] text-slate-400">
         {label}
-        {href && <ExternalLink className="ml-auto size-2.5" />}
+        {href && <IoOpenOutline className="ml-auto size-2.5" />}
       </p>
       <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{value}</p>
     </div>
@@ -257,7 +257,7 @@ function ContextTile({ label, value, href }: { label: string; value: string; hre
 
 function RatingTile({ label, value, primary }: { label: string; value: string; primary?: boolean }) {
   return (
-    <div className={cn('rounded-lg border px-3 py-2', primary ? 'border-teal-200 bg-teal-50/50 dark:border-teal-800 dark:bg-teal-900/10' : 'border-slate-200 dark:border-slate-700')}>
+    <div className={cn('rounded-sm border px-3 py-2', primary ? 'border-teal-200 bg-teal-50/50 dark:border-teal-800 dark:bg-teal-900/10' : 'border-slate-200 dark:border-slate-700')}>
       <p className="text-[11px] text-slate-400">{label}</p>
       <p className={cn('text-base font-semibold', primary ? 'text-teal-700 dark:text-teal-400' : 'text-slate-800 dark:text-slate-200')}>{value}</p>
     </div>
@@ -284,7 +284,7 @@ function DetailSkeleton() {
         <div className="h-3 w-1/4 animate-pulse rounded bg-slate-100 dark:bg-slate-800" />
       </div>
       {Array.from({ length: 4 }).map((_, i) => (
-        <div key={i} className="h-20 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800" />
+        <div key={i} className="h-20 animate-pulse rounded-sm bg-slate-100 dark:bg-slate-800" />
       ))}
     </div>
   )

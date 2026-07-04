@@ -1,15 +1,17 @@
 ﻿'use client'
 
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { UserCheck, AlertTriangle, Clock } from 'lucide-react'
+import { IoCheckmarkCircleOutline, IoWarningOutline, IoTimeOutline } from 'react-icons/io5'
 import { DataTable } from '@/components/ui/DataTable'
 import { FilterBar } from '@/components/ui/FilterBar'
 import { DetailPanel } from '@/components/ui/DetailPanel'
 import { StatusPill } from '@/components/ui/StatusPill'
 import { Avatar } from '@/components/ui/Avatar'
 import { useAuthStore } from '@/lib/store/auth-store'
+import { useAdminChannel } from '@/lib/realtime/useAdminChannel'
+import { useQueueBadgeStore } from '@/lib/realtime/queue-badge-store'
 import { cn, fmtRelative } from '@/lib/utils'
 import {
   verificationApi,
@@ -54,7 +56,7 @@ function SlaCell({ submission }: { submission: VerificationSubmission }) {
                 : 'border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-800',
           )}
         >
-          {sla.breached ? <AlertTriangle className="size-2.5" /> : <Clock className="size-2.5" />}
+          {sla.breached ? <IoWarningOutline className="size-2.5" /> : <IoTimeOutline className="size-2.5" />}
           {sla.label}
         </span>
       )}
@@ -64,6 +66,15 @@ function SlaCell({ submission }: { submission: VerificationSubmission }) {
 
 export function VerificationQueue() {
   const currentUserId = useAuthStore((s) => s.user?.id)
+  const queryClient = useQueryClient()
+  const bumpBadge = useQueueBadgeStore((s) => s.increment)
+
+  useAdminChannel('verification', {
+    'verification.submitted': () => {
+      queryClient.invalidateQueries({ queryKey: ['verifications'] })
+      bumpBadge('verification')
+    },
+  })
 
   // Filters + pagination
   const [page, setPage] = useState(1)
@@ -100,7 +111,7 @@ export function VerificationQueue() {
           const s = row.original
           return (
             <div className="flex items-center gap-2.5">
-              {/* Initials only â€” never the KYC selfie */}
+              {/* Initials only — never the KYC selfie */}
               <Avatar name={s.applicant.display_name} size="sm" />
               <div className="min-w-0">
                 <p className="truncate font-medium text-slate-800 dark:text-slate-200">
@@ -124,7 +135,7 @@ export function VerificationQueue() {
       },
       {
         id: 'submitted',
-        header: 'Submitted Â· SLA',
+        header: 'Submitted · SLA',
         enableSorting: false,
         cell: ({ row }) => <SlaCell submission={row.original} />,
       },
@@ -134,7 +145,7 @@ export function VerificationQueue() {
         enableSorting: false,
         cell: ({ row }) => (
           <span className="line-clamp-2 max-w-xs text-xs text-slate-500 dark:text-slate-400">
-            {row.original.auto_summary || 'â€”'}
+            {row.original.auto_summary || '—'}
           </span>
         ),
       },
@@ -146,7 +157,7 @@ export function VerificationQueue() {
           const claimed = row.original.claimed_by
           return claimed ? (
             <span className="text-xs text-slate-600 dark:text-slate-400">
-              In review Â· {claimed.name}
+              In review · {claimed.name}
             </span>
           ) : (
             <span className="text-xs text-slate-400">Unassigned</span>
@@ -172,7 +183,7 @@ export function VerificationQueue() {
           <button
             type="button"
             onClick={() => setSelectedId(row.original.id)}
-            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
+            className="rounded-sm border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
             aria-label={`Review ${row.original.applicant.display_name}'s ${SUBMISSION_TYPE_LABEL[row.original.type]} submission`}
           >
             Review
@@ -187,7 +198,7 @@ export function VerificationQueue() {
     <div className="space-y-4">
       <div>
         <h1 className="flex items-center gap-2 text-lg font-medium text-slate-900 dark:text-slate-100">
-          <UserCheck className="size-5 text-teal-600" />
+          <IoCheckmarkCircleOutline className="size-5 text-teal-600" />
           Verification queue
         </h1>
         <p className="text-sm text-slate-500 dark:text-slate-400">
@@ -201,7 +212,7 @@ export function VerificationQueue() {
           setSearch(v)
           setPage(1)
         }}
-        searchPlaceholder="Search by applicantâ€¦"
+        searchPlaceholder="Search by applicant…"
         filters={[
           {
             key: 'type',
@@ -253,7 +264,7 @@ export function VerificationQueue() {
         width="xl"
         title={
           selectedRow
-            ? `${selectedRow.applicant.display_name} Â· ${SUBMISSION_TYPE_LABEL[selectedRow.type]}`
+            ? `${selectedRow.applicant.display_name} · ${SUBMISSION_TYPE_LABEL[selectedRow.type]}`
             : 'Verification review'
         }
         subtitle={selectedRow ? STATUS_LABEL[selectedRow.status] : undefined}
@@ -276,7 +287,7 @@ function VerificationDetailSkeleton() {
   return (
     <div className="space-y-4">
       {Array.from({ length: 5 }).map((_, i) => (
-        <div key={i} className="h-24 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800" />
+        <div key={i} className="h-24 animate-pulse rounded-sm bg-slate-100 dark:bg-slate-800" />
       ))}
     </div>
   )

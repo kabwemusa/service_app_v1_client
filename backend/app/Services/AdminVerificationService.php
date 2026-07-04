@@ -348,6 +348,9 @@ class AdminVerificationService
                 'url'      => $this->signedArtifactUrl($doc, 'doc'),
                 'label'    => $this->docTypeLabel($doc->doc_type),
                 'doc_type' => $doc->doc_type,
+                // A single-copy ID may be a PDF — the viewer renders it inline
+                // rather than as an <img>.
+                'is_pdf'   => $this->isPdf($doc->doc_storage_url),
             ];
         }
 
@@ -358,6 +361,7 @@ class AdminVerificationService
                 'url'      => $this->signedArtifactUrl($doc, 'doc_back'),
                 'label'    => $this->docTypeLabel($doc->doc_type) . ' (back)',
                 'doc_type' => $doc->doc_type,
+                'is_pdf'   => $this->isPdf($doc->extracted_fields['doc_back_path']),
             ];
         }
 
@@ -371,6 +375,11 @@ class AdminVerificationService
         }
 
         return $artifacts;
+    }
+
+    private function isPdf(?string $path): bool
+    {
+        return $path !== null && str_ends_with(strtolower($path), '.pdf');
     }
 
     private function signedArtifactUrl(IdentityDocument $doc, string $kind): string

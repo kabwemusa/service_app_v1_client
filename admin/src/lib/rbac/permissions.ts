@@ -25,6 +25,8 @@ export const ALL_CAPABILITIES: Capability[] = [
   'manage:admins',
   'read:audit',
   'write:platform_params',
+  // WhatsApp & Conversation Ops module — nothing existing maps to it.
+  'platform.ops',
 ]
 
 // Capabilities granted to each role. RBAC is additive — no inheritance or
@@ -92,6 +94,11 @@ export const ROLE_CAPABILITIES: Record<AdminRole, Capability[]> = {
     'read:reviews',
     'read:insights',
   ],
+
+  ops: [
+    'read:dashboard',
+    'platform.ops',
+  ],
 }
 
 // Capability required to VIEW each route.
@@ -112,12 +119,13 @@ export const ROUTE_CAPABILITY: Record<string, Capability> = {
   '/reviews': 'read:reviews',
   '/promotions': 'read:promotions',
   '/banners': 'read:banners',
-  '/commissions': 'read:commissions',
-  '/payouts': 'read:payouts',
+  // Finance consolidates Commissions + Escrow + Payouts into one module.
+  '/finance': 'read:commissions',
   '/subscriptions': 'read:subscriptions',
   '/insights': 'read:insights',
   '/settings': 'read:settings',
   '/settings/audit': 'read:audit',
+  '/whatsapp': 'platform.ops',
 }
 
 // Actions that require a step-up (re-auth / MFA confirmation) regardless of

@@ -10,6 +10,16 @@ use App\Contracts\SmsGateway;
 use App\Contracts\TrustEngine;
 use App\Contracts\WalletNameLookupInterface;
 use App\Contracts\WhatsAppGateway;
+use App\Models\Booking;
+use App\Models\EmergencyEvent;
+use App\Models\IdentityDocument;
+use App\Models\ReviewFlag;
+use App\Models\SafetyReport;
+use App\Observers\BookingFinanceObserver;
+use App\Observers\EmergencyEventObserver;
+use App\Observers\IdentityDocumentObserver;
+use App\Observers\ReviewFlagObserver;
+use App\Observers\SafetyReportObserver;
 use App\Services\Dispatch\RealDispatchService;
 use App\Services\Dispatch\RealTrustEngine;
 use App\Services\Gateway\PawapayPaymentGateway;
@@ -69,5 +79,15 @@ class AppServiceProvider extends ServiceProvider
         }
     }
 
-    public function boot(): void {}
+    public function boot(): void
+    {
+        // Admin real-time queue events — fire off the model layer so any
+        // producer of these rows (current or future) reaches the admin
+        // queues live, without touching each controller/job individually.
+        IdentityDocument::observe(IdentityDocumentObserver::class);
+        Booking::observe(BookingFinanceObserver::class);
+        SafetyReport::observe(SafetyReportObserver::class);
+        EmergencyEvent::observe(EmergencyEventObserver::class);
+        ReviewFlag::observe(ReviewFlagObserver::class);
+    }
 }

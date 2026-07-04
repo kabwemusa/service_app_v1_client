@@ -67,6 +67,22 @@ class AdminSafetyController extends Controller
         return response()->json($this->service->restrictContact($kind, $id, $request->user(), $reason));
     }
 
+    public function restrictReportedUser(string $kind, string $id, Request $request): JsonResponse
+    {
+        $this->assertKind($kind);
+        $data = $request->validate([
+            'reason'              => ['required', 'string', 'min:10', 'max:2000'],
+            'suspend_duration_days' => ['nullable', 'integer', 'min:1', 'max:365'],
+        ]);
+        return response()->json($this->service->restrictReportedUser(
+            $kind,
+            $id,
+            $request->user(),
+            $data['reason'],
+            $data['suspend_duration_days'] ?? null,
+        ));
+    }
+
     public function escalateAuthority(string $kind, string $id, Request $request): JsonResponse
     {
         $this->assertKind($kind);

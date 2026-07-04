@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Enums\ErrorCode;
+use App\Events\ReviewModerated;
 use App\Exceptions\Api\ApiException;
 use App\Models\AdminUser;
 use App\Models\Review;
@@ -47,6 +48,7 @@ class AdminReviewModerationService
     public function __construct(
         private readonly AuditedMutationService $audit,
         private readonly RankingService $ranking,
+        private readonly NotificationDispatcher $notifications,
     ) {}
 
     // ── List ─────────────────────────────────────────────────────────────────────
@@ -369,6 +371,8 @@ class AdminReviewModerationService
             },
         );
 
+        $this->notifications->dispatch(new ReviewModerated($review->reviewee_id, $review->id, 'removed', $reason));
+
         return $this->detail($review->fresh());
     }
 
@@ -391,6 +395,8 @@ class AdminReviewModerationService
             },
         );
 
+        $this->notifications->dispatch(new ReviewModerated($review->reviewee_id, $review->id, 'restored', $reason));
+
         return $this->detail($review->fresh());
     }
 
@@ -409,6 +415,8 @@ class AdminReviewModerationService
             metadata: ['after' => ['response_removed' => true]],
             mutation: fn () => $review->forceFill(['response_removed_at' => now()])->save(),
         );
+
+        $this->notifications->dispatch(new ReviewModerated($review->reviewee_id, $review->id, 'response_removed', $reason));
 
         return $this->detail($review->fresh());
     }

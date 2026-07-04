@@ -54,6 +54,8 @@ export default defineConfig({
     proxy: {
       // Dev: proxy API calls to the Laravel backend.
       '/api': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      // Dev: service/provider photos live on the backend's public storage disk.
+      '/storage': { target: 'http://127.0.0.1:8000', changeOrigin: true },
     },
   },
   build: {

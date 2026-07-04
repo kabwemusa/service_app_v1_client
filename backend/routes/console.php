@@ -22,11 +22,15 @@ Schedule::command(BookingExpiryWorker::class)->everyFiveMinutes()->withoutOverla
 
 // ── Escrow Workers ────────────────────────────────────────────────────────────
 
-// Auto-cancel PENDING_PAYMENT bookings past the payment TTL (default 60 min)
+// Auto-cancel PENDING_PAYMENT bookings past the payment TTL (default 30 min)
 Schedule::command(PaymentExpiryWorker::class)->everyMinute()->withoutOverlapping();
 
 // Retry failed PAY_OUT transactions per the exponential backoff schedule
 Schedule::command(PayoutRetryWorker::class)->everyMinute()->withoutOverlapping();
+
+// Provider went dark: cancel + refund FUNDS_HELD bookings whose scheduled
+// window ended a grace period ago without the job starting
+Schedule::command(\App\Console\Commands\NoShowExpiryWorker::class)->everyFifteenMinutes()->withoutOverlapping();
 
 // Auto-complete DELIVERED bookings after the dispute window (default 48 h)
 Schedule::command(DisputeAutoCompleteWorker::class)->everyFifteenMinutes()->withoutOverlapping();

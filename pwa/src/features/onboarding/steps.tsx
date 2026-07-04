@@ -155,21 +155,33 @@ export function IdentityStep({ onDone }: StepProps) {
   );
 }
 
+// Outcome-based pricing — the provider owns every price parameter; customers
+// never input hours anywhere.
+const PRICING_MODELS = [
+  { value: 'OUTCOME_FIXED',  label: 'Fixed price',      hint: 'One price for a defined outcome.' },
+  { value: 'HOURLY_CAPPED',  label: 'Hourly + cap',     hint: 'Your rate; a spend cap protects customers (set on the backend, editable later).' },
+  { value: 'PROVIDER_SCOPE', label: 'Quote after brief', hint: 'Customers describe the job; you send a fixed quote.' },
+  { value: 'QUOTE_DEPOSIT',  label: 'Quote + deposit',  hint: 'Big jobs: full quote, a deposit confirms, balance on completion.' },
+] as const;
+
 export function ServiceStep({ onDone }: StepProps) {
   const { t } = useTranslation();
   const [title, setTitle] = useState('');
   const [price, setPrice] = useState('');
+  const [model, setModel] = useState<string>('OUTCOME_FIXED');
   const [days, setDays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [busy, setBusy] = useState(false);
 
   const toggleDay = (d: number) => setDays((arr) => (arr.includes(d) ? arr.filter((x) => x !== d) : [...arr, d]));
+
+  const needsPrice = model === 'OUTCOME_FIXED' || model === 'HOURLY_CAPPED';
 
   const submit = async () => {
     setBusy(true);
     await onboardingApi.service({
       title,
       price: price ? Number(price) : undefined,
-      pricing_model: 'FIXED',
+      pricing_model: model,
       availability: days.map((d) => ({ day_of_week: d, start_time: '08:00', end_time: '17:00' })),
     });
     setBusy(false);
@@ -177,6 +189,7 @@ export function ServiceStep({ onDone }: StepProps) {
   };
 
   const DOW = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+  const selected = PRICING_MODELS.find((m) => m.value === model)!;
 
   return (
     <div>
@@ -184,9 +197,34 @@ export function ServiceStep({ onDone }: StepProps) {
       <Field label={t('onboarding.serviceName')}>
         <input value={title} onChange={(e) => setTitle(e.target.value)} style={inputStyle} placeholder="e.g. Logo design" />
       </Field>
-      <Field label={t('onboarding.price')}>
-        <input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" style={inputStyle} placeholder="150" />
+      <Field label="How do you price this?">
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {PRICING_MODELS.map((m) => (
+            <button
+              key={m.value}
+              onClick={() => setModel(m.value)}
+              style={{
+                padding: '8px 12px', borderRadius: 'var(--radius-full)', border: '1px solid var(--border)', fontWeight: 600, fontSize: 13,
+                background: model === m.value ? 'var(--primary)' : 'var(--surface)',
+                color: model === m.value ? '#fff' : 'var(--text-primary)',
+              }}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+        <p className="t-small t-muted" style={{ marginTop: 6 }}>{selected.hint}</p>
       </Field>
+      {needsPrice && (
+        <Field label={model === 'HOURLY_CAPPED' ? 'Hourly rate (ZMW)' : t('onboarding.price')}>
+          <input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" style={inputStyle} placeholder={model === 'HOURLY_CAPPED' ? '80' : '150'} />
+          {model === 'HOURLY_CAPPED' && Number(price) > 0 && (
+            <p className="t-small t-muted" style={{ marginTop: 4 }}>
+              Customer sees your hourly rate with a protective spend cap. The exact cap is set on the backend and you can fine-tune it later.
+            </p>
+          )}
+        </Field>
+      )}
       <Field label={t('onboarding.availability')}>
         <div style={{ display: 'flex', gap: 6 }}>
           {DOW.map((d, i) => (
@@ -204,7 +242,7 @@ export function ServiceStep({ onDone }: StepProps) {
           ))}
         </div>
       </Field>
-      <Button onClick={submit} loading={busy} disabled={!title || !price}>{t('common.continue')}</Button>
+      <Button onClick={submit} loading={busy} disabled={!title || (needsPrice && !price)}>{t('common.continue')}</Button>
     </div>
   );
 }

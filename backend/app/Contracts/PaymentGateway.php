@@ -30,14 +30,16 @@ interface PaymentGateway
      * @param  string  $providerPhone Provider's MoMo number
      * @param  float   $amount        Amount to disburse
      * @param  string  $bookingId     Internal booking UUID
-     * @return bool    True if disbursement initiated successfully
+     * @return string|null  Gateway payout reference if disbursement was initiated
+     *                      successfully (persist it for reconciling the async
+     *                      payout callback), null on failure.
      */
     public function releaseFunds(
         string $holdRef,
         string $providerPhone,
         float  $amount,
         string $bookingId,
-    ): bool;
+    ): ?string;
 
     /**
      * Refund held funds back to the customer.

@@ -221,6 +221,37 @@ class AvailabilityService
         });
     }
 
+    /**
+     * The provider's recurring weekly schedule as stored rows.
+     * Shape: [ ['day_of_week' => 1, 'start_time' => '08:00', 'end_time' => '17:00'], … ]
+     */
+    public function getSchedule(string $providerId): array
+    {
+        return ProviderAvailability::where('provider_id', $providerId)
+            ->where('is_recurring', true)
+            ->orderBy('day_of_week')
+            ->orderBy('start_time')
+            ->get()
+            ->map(fn ($slot) => [
+                'day_of_week' => (int) $slot->day_of_week,
+                'start_time'  => substr($slot->start_time, 0, 5),
+                'end_time'    => substr($slot->end_time, 0, 5),
+            ])
+            ->all();
+    }
+
+    /** Upcoming blocked (time-off) dates, today onward. */
+    public function blockedDates(string $providerId): array
+    {
+        return ProviderAvailability::where('provider_id', $providerId)
+            ->where('is_blocked', true)
+            ->whereDate('specific_date', '>=', Carbon::now(self::TZ)->toDateString())
+            ->orderBy('specific_date')
+            ->pluck('specific_date')
+            ->map(fn ($d) => Carbon::parse($d)->toDateString())
+            ->all();
+    }
+
     public function blockDate(string $providerId, string $date): void
     {
         ProviderAvailability::updateOrCreate(
@@ -236,6 +267,61 @@ class AvailabilityService
                 'is_recurring' => false,
             ],
         );
+    }
+
+    public function unblockDate(string $providerId, string $date): void
+    {
+        ProviderAvailability::where('provider_id', $providerId)
+            ->whereDate('specific_date', $date)
+            ->where('is_blocked', true)
+            ->delete();
+    }
+
+    // ── availability_matrix bridge ───────────────────────────────────────────
+    //
+    // The RN profile editor and older screens persist weekly hours as the
+    // profile's `availability_matrix` JSONB ({MON: [{start,end}], …}). The
+    // WhatsApp date-picker, dispatch eligibility and conflict checks all read
+    // the relational `provider_availability` rows. These two helpers keep the
+    // stores in lock-step regardless of which surface wrote first.
+
+    private const MATRIX_DAYS = ['SUN' => 0, 'MON' => 1, 'TUE' => 2, 'WED' => 3, 'THU' => 4, 'FRI' => 5, 'SAT' => 6];
+
+    /** Overwrite the recurring schedule from an availability_matrix payload. */
+    public function syncFromMatrix(string $providerId, array $matrix): void
+    {
+        $slots = [];
+        foreach (self::MATRIX_DAYS as $key => $dow) {
+            foreach (($matrix[$key] ?? []) as $window) {
+                if (empty($window['start']) || empty($window['end'])) {
+                    continue;
+                }
+                $slots[] = [
+                    'day_of_week' => $dow,
+                    'start_time'  => substr($window['start'], 0, 5),
+                    'end_time'    => substr($window['end'], 0, 5),
+                ];
+            }
+        }
+
+        $this->setSchedule($providerId, $slots);
+    }
+
+    /** Render the recurring schedule back into availability_matrix shape. */
+    public function toMatrix(string $providerId): array
+    {
+        $byDow = array_flip(self::MATRIX_DAYS); // 0 => 'SUN', …
+
+        $matrix = [];
+        foreach ($this->getSchedule($providerId) as $slot) {
+            $key = $byDow[$slot['day_of_week']] ?? null;
+            if ($key === null) {
+                continue;
+            }
+            $matrix[$key][] = ['start' => $slot['start_time'], 'end' => $slot['end_time']];
+        }
+
+        return $matrix;
     }
 
     private function haversineKm(float $lat1, float $lng1, float $lat2, float $lng2): float

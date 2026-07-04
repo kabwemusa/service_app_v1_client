@@ -96,8 +96,10 @@ class ProviderOnboardingController extends Controller
         $data = $request->validate([
             'title'              => ['required', 'string', 'max:120'],
             'description'        => ['sometimes', 'nullable', 'string', 'max:2000'],
-            'pricing_model'      => ['sometimes', 'in:FIXED,HOURLY,QUOTE'],
-            'price'              => ['required_unless:pricing_model,QUOTE', 'nullable', 'numeric', 'min:0.01', 'max:99999.99'],
+            'pricing_model'      => ['sometimes', 'in:OUTCOME_FIXED,PROVIDER_SCOPE,HOURLY_CAPPED,QUOTE_DEPOSIT'],
+            // OUTCOME_FIXED: the outcome price. HOURLY_CAPPED: the hourly rate
+            // (a default 1-hr min / 4-hr cap is applied, flagged for review).
+            'price'              => ['required_unless:pricing_model,PROVIDER_SCOPE,QUOTE_DEPOSIT', 'nullable', 'numeric', 'min:0.01', 'max:99999.99'],
             'availability'                 => ['sometimes', 'array'],
             'availability.*.day_of_week'   => ['required_with:availability', 'integer', 'between:0,6'],
             'availability.*.start_time'    => ['required_with:availability', 'string'],

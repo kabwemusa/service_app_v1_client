@@ -4,64 +4,70 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  /* ── Design tokens (v3.1 §2) ───────────────────────────────────────── */
+  /* ── Design tokens — mirrors mobile/src/theme/{palette,spacing,typography}.ts ─
+     Keep these two in sync manually; there is no shared package between the
+     Next.js admin and the Expo app. */
 
-  /* Typography — two weights only; body 16 px */
-  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  /* Typography — DM Sans (self-hosted via next/font/google in layout.tsx),
+     matches the app's font family */
+  --font-sans: var(--font-dm-sans), system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 
-  /* Trust / verified accent — teal */
-  --color-teal-50:  oklch(0.98 0.02 185);
-  --color-teal-100: oklch(0.94 0.05 185);
-  --color-teal-200: oklch(0.88 0.08 185);
-  --color-teal-400: oklch(0.70 0.13 185);
-  --color-teal-500: oklch(0.60 0.14 185);
-  --color-teal-600: oklch(0.52 0.13 185);
-  --color-teal-700: oklch(0.44 0.11 185);
-  --color-teal-900: oklch(0.27 0.07 185);
+  /* Trust / verified / positive accent — mirrors palette.success / successLight */
+  --color-teal-50:  #E6F5EE;
+  --color-teal-100: #BADACB;
+  --color-teal-200: #8CBEA7;
+  --color-teal-400: #469370;
+  --color-teal-500: #1E7A50;
+  --color-teal-600: #1A6844;
+  --color-teal-700: #155538;
+  --color-teal-900: #0B2E1E;
 
-  /* Warning / needs-attention — amber */
-  --color-amber-50:  oklch(0.99 0.02 85);
-  --color-amber-100: oklch(0.95 0.06 85);
-  --color-amber-200: oklch(0.90 0.09 85);
-  --color-amber-400: oklch(0.78 0.15 80);
-  --color-amber-500: oklch(0.72 0.17 75);
-  --color-amber-600: oklch(0.64 0.16 70);
-  --color-amber-700: oklch(0.56 0.14 70);
-  --color-amber-900: oklch(0.35 0.09 70);
+  /* Warning / needs-attention — mirrors palette.warning / warningLight */
+  --color-amber-50:  #FFF3E0;
+  --color-amber-100: #EFD5B4;
+  --color-amber-200: #DFB586;
+  --color-amber-400: #C68540;
+  --color-amber-500: #B86918;
+  --color-amber-600: #9C5914;
+  --color-amber-700: #814A11;
+  --color-amber-900: #462809;
 
-  /* Danger — red (understated per v3.1 §2) */
-  --color-red-50:  oklch(0.99 0.01 20);
-  --color-red-100: oklch(0.94 0.04 20);
-  --color-red-200: oklch(0.88 0.07 20);
-  --color-red-500: oklch(0.62 0.19 20);
-  --color-red-600: oklch(0.55 0.20 20);
-  --color-red-700: oklch(0.47 0.18 20);
+  /* Danger — mirrors palette.danger / dangerLight */
+  --color-red-50:  #FEE2E2;
+  --color-red-100: #EFB6B6;
+  --color-red-200: #DF8989;
+  --color-red-500: #B91C1C;
+  --color-red-600: #9D1818;
+  --color-red-700: #821414;
 
-  /* Neutral slate */
-  --color-slate-50:  oklch(0.98 0.004 250);
-  --color-slate-100: oklch(0.95 0.007 250);
-  --color-slate-200: oklch(0.91 0.009 250);
-  --color-slate-300: oklch(0.84 0.011 250);
-  --color-slate-400: oklch(0.70 0.013 250);
-  --color-slate-500: oklch(0.57 0.014 250);
-  --color-slate-600: oklch(0.45 0.013 250);
-  --color-slate-700: oklch(0.37 0.012 250);
-  --color-slate-800: oklch(0.28 0.010 250);
-  --color-slate-900: oklch(0.20 0.008 250);
-  --color-slate-950: oklch(0.13 0.006 250);
+  /* Neutral — ramp interpolated from the app's discrete neutrals (surface,
+     background, border, textDisabled, textSecondary, textPrimary); the app
+     itself has no full 50–950 scale. */
+  --color-slate-50:  #FBF7F8;
+  --color-slate-100: #F4E6EB;
+  --color-slate-200: #EDD5DE;
+  --color-slate-300: #D9BBC7;
+  --color-slate-400: #C4A0B0;
+  --color-slate-500: #A3798A;
+  --color-slate-600: #7B4A5C;
+  --color-slate-700: #4F2D3B;
+  --color-slate-800: #321A25;
+  --color-slate-900: #1A0A12;
+  --color-slate-950: #11070C;
 
-  /* Supporting colours */
+  /* Supporting colours — app defines no "info"/extra accent; left unchanged. */
   --color-blue-50:   oklch(0.97 0.02 240);
   --color-blue-100:  oklch(0.93 0.05 240);
   --color-blue-200:  oklch(0.87 0.08 240);
   --color-blue-500:  oklch(0.60 0.18 240);
   --color-blue-700:  oklch(0.43 0.14 240);
 
-  --color-green-50:  oklch(0.98 0.02 150);
-  --color-green-100: oklch(0.94 0.05 150);
-  --color-green-200: oklch(0.88 0.09 150);
-  --color-green-500: oklch(0.67 0.17 150);
-  --color-green-700: oklch(0.46 0.13 150);
+  /* Aliased to the success scale above for consistency with `teal-*`. */
+  --color-green-50:  #E6F5EE;
+  --color-green-100: #BADACB;
+  --color-green-200: #8CBEA7;
+  --color-green-500: #1E7A50;
+  --color-green-700: #155538;
 
   --color-purple-50:  oklch(0.98 0.01 300);
   --color-purple-100: oklch(0.94 0.04 300);
@@ -72,12 +78,14 @@
   /* Hairline border (0.5 px visual weight) */
   --border-width-hairline: 0.5px;
 
-  /* Radius */
-  --radius-sm: 0.375rem;
-  --radius-md: 0.625rem;
-  --radius-lg: 0.875rem;
-  --radius-xl: 1.25rem;
-  --radius-2xl: 1.5rem;
+  /* Radius — mirrors mobile/src/theme/spacing.ts's radius scale exactly.
+     `sm` (8px) is the ONLY radius a content container (Card/DataTable/
+     DetailPanel) should use. */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.875rem;
+  --radius-lg: 1.25rem;
+  --radius-xl: 1.75rem;
+  --radius-2xl: 1.75rem;
   --radius-full: 9999px;
 }
 

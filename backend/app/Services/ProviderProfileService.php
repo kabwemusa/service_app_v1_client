@@ -75,6 +75,18 @@ class ProviderProfileService
         $profile->profile_completeness = $this->calculateCompleteness($profile);
         $profile->save();
 
+        // Write-through bridge: whenever weekly hours arrive as the legacy
+        // availability_matrix (RN profile editor / setup screen), mirror them
+        // into the relational provider_availability rows that the WhatsApp
+        // date-picker, PWA picker and dispatch eligibility read. Without this
+        // an app-onboarded provider is never dispatchable.
+        if (array_key_exists('availability_matrix', $data)) {
+            app(AvailabilityService::class)->syncFromMatrix(
+                $user->id,
+                (array) ($data['availability_matrix'] ?? []),
+            );
+        }
+
         return $profile->fresh();
     }
 

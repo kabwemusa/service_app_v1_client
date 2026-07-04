@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { EyeOff, Undo2, RotateCcw, FolderInput } from 'lucide-react'
+import { IoEyeOffOutline, IoArrowUndoOutline, IoFolderOpenOutline } from 'react-icons/io5'
 import { cn } from '@/lib/utils'
 import { Can } from '@/lib/rbac/Can'
 import { useAuditedMutation } from '@/lib/audit/audited-mutation'
@@ -74,28 +74,28 @@ export function ServiceModerationActions({ service, onChanged }: Props) {
       <div className="space-y-3">
         <div className="flex flex-wrap gap-2">
           <ActionButton
-            icon={EyeOff}
+            icon={IoEyeOffOutline}
             label="Hide / take down"
             tone="red"
             disabled={!canHide || hide.isPending}
             onClick={() => hide.trigger({})}
           />
           <ActionButton
-            icon={Undo2}
+            icon={IoArrowUndoOutline}
             label="Require changes"
             tone="amber"
             disabled={!canRequire || requireChanges.isPending}
             onClick={() => requireChanges.trigger({})}
           />
           <ActionButton
-            icon={RotateCcw}
+            icon={IoArrowUndoOutline}
             label="Restore"
             tone="teal"
             disabled={!canRestore || restore.isPending}
             onClick={() => restore.trigger({})}
           />
           <ActionButton
-            icon={FolderInput}
+            icon={IoFolderOpenOutline}
             label="Reassign category"
             tone="slate"
             disabled={reassign.isPending}
@@ -140,7 +140,7 @@ function ReassignForm({
 
   if (isError) {
     return (
-      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-800/50">
+      <div className="rounded-sm border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-800/50">
         Category list unavailable — your role can moderate services but cannot read the category
         catalogue. Ask a moderator or super-admin to reassign.
       </div>
@@ -148,14 +148,14 @@ function ReassignForm({
   }
 
   return (
-    <div className="flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/50">
+    <div className="flex flex-wrap items-end gap-2 rounded-sm border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/50">
       <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
         Move to category (banded only)
         <select
           value={value}
           onChange={(e) => setValue(e.target.value === '' ? '' : Number(e.target.value))}
           disabled={isLoading}
-          className="mt-1 block h-9 w-64 rounded-lg border border-slate-200 bg-white px-3 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+          className="mt-1 block h-9 w-64 rounded-sm border border-slate-200 bg-white px-3 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
         >
           <option value="">{isLoading ? 'Loading…' : 'Select a category…'}</option>
           {options.map((o) => (
@@ -170,7 +170,7 @@ function ReassignForm({
         type="button"
         disabled={value === '' || value === currentCategoryId}
         onClick={() => value !== '' && onSubmit(value)}
-        className="h-9 rounded-lg bg-slate-700 px-4 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-40 dark:bg-slate-600"
+        className="h-9 rounded-sm bg-slate-700 px-4 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-40 dark:bg-slate-600"
       >
         Continue
       </button>
@@ -228,7 +228,7 @@ function ActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        'inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-sm font-medium transition-colors',
+        'inline-flex h-9 items-center gap-1.5 rounded-sm border px-3 text-sm font-medium transition-colors',
         'disabled:cursor-not-allowed disabled:opacity-40',
         TONES[tone],
       )}

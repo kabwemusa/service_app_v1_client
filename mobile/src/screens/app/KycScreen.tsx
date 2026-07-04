@@ -1,54 +1,113 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Image, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
-import { ActivityIndicator, Button, Chip, HelperText, ProgressBar, Text, TextInput, TouchableRipple } from 'react-native-paper';
+import { ActivityIndicator, Button, Chip, ProgressBar, Text, TextInput, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { DocType, KycDocument } from '../../api/kyc';
-import { useSnackbar } from '../../providers/SnackbarProvider';
-import { useKycStore } from '../../store/kycStore';
 import { OnboardingProgress } from '../../components/provider/OnboardingProgress';
+import { useSnackbar } from '../../providers/SnackbarProvider';
+import { useAuthStore } from '../../store/authStore';
+import { useKycStore } from '../../store/kycStore';
+import { useVerificationStore } from '../../store/verificationStore';
+import type { KycStatus } from '../../api/kyc';
+import type { PendingListing, TierState, VerificationTierRow } from '../../api/verification';
 import { palette, radius as r, spacing, typography } from '../../theme';
 
-// ── Types ──────────────────────────────────────────────────────────────────
-
-type Step = 'overview' | 'tier1_name' | 'tier1_selfie' | 'tier2_doctype' | 'tier2_doc' | 'tier2_selfie' | 'done';
-
-const DOC_TYPES: { value: DocType; label: string; icon: string }[] = [
-  { value: 'NRC',             label: 'National Registration Card', icon: 'card-account-details-outline' },
-  { value: 'PASSPORT',        label: 'Passport',                   icon: 'passport'                    },
-  { value: 'DRIVERS_LICENSE', label: "Driver's License",           icon: 'car-outline'                 },
-];
-
-const TIER_LABELS = ['Unverified', 'Basic', 'Identified', 'Verified', 'Professional'];
-
-const DOC_LABEL: Record<string, string> = {
-  NRC: 'National Registration Card',
-  PASSPORT: 'Passport',
-  DRIVERS_LICENSE: "Driver's License",
-  PROOF_OF_ADDRESS: 'Proof of address',
-  CERTIFICATE: 'Certificate',
-  SELFIE: 'Selfie',
+// ── The gate's requirement vocabulary (mirrors the server ladder) ────────────
+// Keys are the `verification_type` values the dispatch gate can require; the
+// labels are what we show the provider. `unverified` is the trust<1 sentinel.
+const REQUIREMENT_LABEL: Record<string, string> = {
+  unverified:      'Verify your identity (Tier 1)',
+  nrc:             'Verify your identity — NRC + selfie',
+  momo_name_match: 'Confirm your Mobile Money identity',
+  portfolio:       'Add a portfolio of your work',
+  police_clearance:'Add a police clearance certificate',
+  selfie_match:    'Complete your selfie check',
+  service_not_found: 'This listing is no longer available',
 };
 
-// ── Component ──────────────────────────────────────────────────────────────
+type Step = 'overview' | 'tier1' | 'portfolio' | 'clearance' | 'submitted';
+// How the government ID is provided: two photos (front + back) or one copy
+// (a scanned PDF or a single photo).
+type IdMode = 'two_side' | 'single';
 
+const isPdfUri = (uri: string | null) => !!uri && uri.toLowerCase().split('?')[0].endsWith('.pdf');
+
+const TIER_ICON: Record<number, string> = {
+  1: 'card-account-details-outline',
+  2: 'image-multiple-outline',
+  3: 'shield-check-outline',
+  4: 'trophy-outline',
+};
+
+/**
+ * The verification ladder's base (Tier 1) row only reports DONE / ADD — it can't
+ * express "under review" because the gate flips only on admin approval. So we
+ * overlay the KYC document lifecycle (kyc status) to give the provider real
+ * feedback after they submit their NRC + selfie. documents are newest-first.
+ */
+function deriveTier1State(baseState: TierState, kyc: KycStatus | null): { state: TierState; reason?: string } {
+  if (baseState === 'DONE') return { state: 'DONE' };
+  const docs = kyc?.documents ?? [];
+  const attn = docs.find(
+    (d) => d.info_requested || ['SUBMITTED', 'MANUAL_REVIEW', 'AUTO_REJECTED', 'REJECTED', 'EXPIRED'].includes(d.status),
+  );
+  if (!attn) return { state: 'ADD' };
+  if (attn.info_requested) {
+    return { state: 'NEEDS_CHANGES', reason: attn.review_note ?? 'The reviewer needs more detail on your ID.' };
+  }
+  if (['AUTO_REJECTED', 'REJECTED', 'EXPIRED'].includes(attn.status)) {
+    return { state: 'NEEDS_CHANGES', reason: attn.review_note ?? 'Your ID could not be verified. Submit a clearer photo.' };
+  }
+  return { state: 'UNDER_REVIEW' };
+}
+
+const IDENTITY_MISSING = ['unverified', 'nrc', 'momo_name_match', 'selfie_match'];
+
+// ── Component ────────────────────────────────────────────────────────────────
 export default function KycScreen({ navigation, route }: any) {
   const onboardingStep: number | undefined = route?.params?.onboardingStep;
-  const { status, loading, error, fetchStatus, submitTier1, submitDocument, clearError } = useKycStore();
-  const { showSuccess, showError } = useSnackbar();
+  const activeRole = useAuthStore((s) => s.activeRole);
 
-  const [step, setStep]           = useState<Step>('overview');
+  const { status, loading, error, fetchStatus, submitPortfolio, submitPoliceClearance, submitting, clearError } =
+    useVerificationStore();
+  // Tier 1 (NRC + selfie) is written by the KYC pipeline — the verification
+  // ladder has no Tier-1 submit endpoint, so we reuse the kyc store for it.
+  const kyc = useKycStore();
+
+  const { showSuccess, showError, showSnackbar } = useSnackbar();
+
+  const [step, setStep] = useState<Step>('overview');
+
+  // Tier 1 capture
   const [legalName, setLegalName] = useState('');
+  const [idMode, setIdMode] = useState<IdMode>('two_side');
+  const [nrcUri, setNrcUri] = useState<string | null>(null);       // front (two_side)
+  const [nrcBackUri, setNrcBackUri] = useState<string | null>(null); // back (two_side)
+  const [copyUri, setCopyUri] = useState<string | null>(null);      // single copy (photo or PDF)
   const [selfieUri, setSelfieUri] = useState<string | null>(null);
-  const [docType, setDocType]     = useState<DocType>('NRC');
-  const [docUri, setDocUri]       = useState<string | null>(null);
-  const [docBackUri, setDocBackUri] = useState<string | null>(null);
-  const [hasTwoSides, setHasTwoSides] = useState(true);
-  const [doc2SelfieUri, setDoc2SelfieUri] = useState<string | null>(null);
 
-  useEffect(() => { fetchStatus(); }, []);
+  // Tier 2 (portfolio)
+  const [portfolioUris, setPortfolioUris] = useState<string[]>([]);
+
+  // Tier 3 (police clearance)
+  const [clearanceUri, setClearanceUri] = useState<string | null>(null);
+  const [certNumber, setCertNumber] = useState('');
+  const [issuedOn, setIssuedOn] = useState('');
+  const [expiresOn, setExpiresOn] = useState('');
+
+  // Refresh BOTH surfaces: the verification ladder (tiers 2–4 + gates) and the
+  // KYC document lifecycle (Tier 1 review state).
+  const refreshAll = useCallback(() => {
+    fetchStatus();
+    kyc.fetchStatus();
+  }, []);
+
+  useEffect(() => {
+    if (activeRole === 'PROVIDER') refreshAll();
+  }, [activeRole]);
 
   useEffect(() => {
     if (error) {
@@ -57,284 +116,172 @@ export default function KycScreen({ navigation, route }: any) {
     }
   }, [error]);
 
-  const currentTier = status?.trust_tier ?? 0;
-
-  // Newest submission the provider should be aware of: needs-info, pending, or
-  // not-approved. (documents come newest-first from the API.)
-  const documents = status?.documents ?? [];
-  const attention = documents.find((d) =>
-    d.info_requested ||
-    ['SUBMITTED', 'MANUAL_REVIEW', 'AUTO_REJECTED', 'REJECTED', 'EXPIRED'].includes(d.status),
-  );
-
-  const resubmitFor = (doc: KycDocument) => {
-    if (doc.doc_type === 'PROOF_OF_ADDRESS') {
-      navigation.navigate('KycAddress');
-    } else {
-      setDocUri(null);
-      setDocBackUri(null);
-      setHasTwoSides(true);
-      setDoc2SelfieUri(null);
-      setStep('tier2_doctype');
-    }
-  };
-
-  const renderReviewStatus = () => {
-    if (!attention) return null;
-    const label = DOC_LABEL[attention.doc_type] ?? 'Document';
-    const rejected = ['AUTO_REJECTED', 'REJECTED', 'EXPIRED'].includes(attention.status);
-
-    const cfg = attention.info_requested
-      ? {
-          icon: 'alert-circle-outline' as const,
-          color: palette.warning,
-          bg: palette.warningLight,
-          title: 'More information needed',
-          body: attention.review_note ||
-            'The reviewer needs additional details before they can verify this submission.',
-          action: 'Resubmit document',
-        }
-      : rejected
-        ? {
-            icon: 'close-circle-outline' as const,
-            color: palette.danger,
-            bg: palette.dangerLight,
-            title: 'Submission not approved',
-            body: attention.review_note ||
-              'Your document could not be verified. Please check it and submit again.',
-            action: 'Resubmit document',
-          }
-        : {
-            icon: 'clock-outline' as const,
-            color: palette.primary,
-            bg: palette.primaryLight,
-            title: 'Pending review',
-            body: "We're reviewing your documents. This usually takes up to 24 hours — we'll notify you once it's done.",
-            action: null as string | null,
-          };
-
-    return (
-      <View style={[styles.statusCard, { backgroundColor: cfg.bg, borderColor: cfg.color }]}>
-        <View style={styles.statusHeaderRow}>
-          <MaterialCommunityIcons name={cfg.icon} size={22} color={cfg.color} />
-          <Text style={[styles.statusTitle, { color: cfg.color }]}>{cfg.title}</Text>
-        </View>
-        <Text style={styles.statusDocLabel}>{label}</Text>
-        <Text style={styles.statusBody}>{cfg.body}</Text>
-        {cfg.action && (
-          <Button
-            mode="contained"
-            buttonColor={cfg.color}
-            onPress={() => resubmitFor(attention)}
-            style={styles.statusBtn}
-            compact
-          >
-            {cfg.action}
-          </Button>
-        )}
-      </View>
-    );
-  };
-
-  // ── Helpers ──────────────────────────────────────────────────────────────
-
+  // ── Image helpers ──────────────────────────────────────────────────────────
   const pickImage = async (setter: (uri: string) => void) => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) {
-      showError('Camera roll access is required to upload documents.');
-      return;
-    }
+    if (!perm.granted) return showError('Photo access is required to upload documents.');
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       quality: 0.85,
-      // iPhone photos are HEIC by default; the backend (and admin reviewer's
-      // <img> preview) only handle jpg/png/webp. "Compatible" makes iOS hand
-      // back the transcoded JPEG representation instead of the raw HEIC.
       preferredAssetRepresentationMode:
         ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
     });
-    if (!result.canceled && result.assets[0]) {
-      setter(result.assets[0].uri);
-    }
+    if (!result.canceled && result.assets[0]) setter(result.assets[0].uri);
   };
 
-  const takePhoto = async (setter: (uri: string) => void) => {
+  const takePhoto = async (setter: (uri: string) => void, front = false) => {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
-    if (!perm.granted) {
-      showError('Camera access is required to take a selfie.');
-      return;
-    }
+    if (!perm.granted) return showError('Camera access is required.');
     const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       quality: 0.85,
-      cameraType: ImagePicker.CameraType.front,
+      cameraType: front ? ImagePicker.CameraType.front : ImagePicker.CameraType.back,
     });
-    if (!result.canceled && result.assets[0]) {
-      setter(result.assets[0].uri);
+    if (!result.canceled && result.assets[0]) setter(result.assets[0].uri);
+  };
+
+  // Single-copy ID: a scanned file — allow images AND PDFs.
+  const pickDocument = async (setter: (uri: string) => void) => {
+    const result = await DocumentPicker.getDocumentAsync({
+      type: ['image/*', 'application/pdf'],
+      copyToCacheDirectory: true,
+    });
+    if (!result.canceled && result.assets?.[0]) setter(result.assets[0].uri);
+  };
+
+  const pickPortfolio = async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) return showError('Photo access is required to upload your portfolio.');
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 0.85,
+      allowsMultipleSelection: true,
+      selectionLimit: 8,
+    });
+    if (!result.canceled) {
+      const uris = result.assets.map((a) => a.uri);
+      setPortfolioUris((prev) => [...prev, ...uris].slice(0, 8));
     }
   };
 
-  // ── Submit handlers ──────────────────────────────────────────────────────
+  // ── Submit handlers ─────────────────────────────────────────────────────────
+  const resetCapture = () => {
+    setLegalName(''); setIdMode('two_side'); setNrcUri(null); setNrcBackUri(null); setCopyUri(null); setSelfieUri(null);
+    setPortfolioUris([]);
+    setClearanceUri(null); setCertNumber(''); setIssuedOn(''); setExpiresOn('');
+  };
+
+  // Front photo (two-side) or the single copy — plus the optional back.
+  const idDocUri = idMode === 'two_side' ? nrcUri : copyUri;
+  const idBackUri = idMode === 'two_side' ? nrcBackUri : null;
+  const idReady = idMode === 'two_side' ? !!nrcUri && !!nrcBackUri : !!copyUri;
 
   const handleSubmitTier1 = async () => {
-    if (!selfieUri) return;
+    if (!idDocUri || !selfieUri || legalName.trim().length < 2 || !idReady) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    const ok = await submitTier1(legalName.trim(), selfieUri);
-    if (ok) {
-      showSuccess('Tier 1 approved! You can now list services.');
-      setStep('done');
-    }
+    // Tier 1 base = selfie + legal name, then the NRC document pipeline. The
+    // document may be two photos (front + back) or one copy (photo or PDF); both
+    // write the provider_verifications the dispatch gate reads.
+    const okSelfie = await kyc.submitTier1(legalName.trim(), selfieUri);
+    if (!okSelfie) return showError(kyc.error?.message ?? 'Could not submit your selfie.');
+    const okDoc = await kyc.submitDocument('NRC', idDocUri, selfieUri, idBackUri);
+    if (!okDoc) return showError(kyc.error?.message ?? 'Could not submit your NRC.');
+    await refreshAll();
+    resetCapture();
+    setStep('submitted');
   };
 
-  const handleSubmitTier2 = async () => {
-    if (!docUri || !doc2SelfieUri) return;
+  const handleSubmitPortfolio = async () => {
+    if (portfolioUris.length < 3) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    const ok = await submitDocument(docType, docUri, doc2SelfieUri, hasTwoSides ? docBackUri : null);
-    if (ok) {
-      showSuccess('Document submitted. We\'ll notify you once verified.');
-      setStep('done');
+    const ok = await submitPortfolio(portfolioUris);
+    if (ok) { resetCapture(); setStep('submitted'); }
+  };
+
+  const isValidDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
+
+  const handleSubmitClearance = async () => {
+    if (!clearanceUri || certNumber.trim().length < 3 || !isValidDate(issuedOn)) return;
+    if (expiresOn && !isValidDate(expiresOn)) return showError('Expiry date must be YYYY-MM-DD.');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const ok = await submitPoliceClearance(clearanceUri, certNumber.trim(), issuedOn, expiresOn || null);
+    if (ok) { resetCapture(); setStep('submitted'); }
+  };
+
+  // Tier 1's real state = the base row overlaid with the KYC document lifecycle.
+  const baseTier1 = (status?.tiers ?? []).find((t) => t.tier === 1);
+  const tier1 = deriveTier1State(baseTier1?.state ?? 'ADD', kyc.status);
+  const identityUnderReview = tier1.state === 'UNDER_REVIEW';
+
+  // ── Routing a tier / a blocked-listing requirement to its capture flow ──────
+  const startTierAction = (row: VerificationTierRow) => {
+    if (row.tier === 1) {
+      if (identityUnderReview) return showSnackbar({ message: "Your identity is under review — we'll let you know the outcome." });
+      return setStep('tier1');
     }
+    if (row.verification_type === 'portfolio') return setStep('portfolio');
+    if (row.verification_type === 'police_clearance') return setStep('clearance');
   };
 
-  // ── Render helpers ───────────────────────────────────────────────────────
-
-  const renderTierBadge = (tier: number) => {
-    const colors = [palette.textDisabled, palette.warning, palette.primary, palette.success, palette.secondary];
-    return (
-      <View style={[styles.tierBadge, { borderColor: colors[tier] }]}>
-        <Text style={[styles.tierLabel, { color: colors[tier] }]}>{TIER_LABELS[tier]}</Text>
-      </View>
-    );
+  const startForMissing = (miss: string) => {
+    if (miss === 'portfolio') return setStep('portfolio');
+    if (miss === 'police_clearance') return setStep('clearance');
+    // unverified / nrc / momo_name_match / selfie_match all resolve at Tier 1
+    if (identityUnderReview) return showSnackbar({ message: "Your identity is under review — we'll let you know the outcome." });
+    return setStep('tier1');
   };
 
-  const renderPhotoButton = (uri: string | null, label: string, onCamera: () => void, onGallery: () => void) => (
-    <View style={styles.photoArea}>
-      {uri ? (
-        <TouchableRipple onPress={onGallery} borderless style={styles.photoPreviewWrap}>
-          <Image source={{ uri }} style={styles.photoPreview} />
-        </TouchableRipple>
-      ) : (
-        <View style={styles.photoPlaceholder}>
-          <MaterialCommunityIcons name="image-outline" size={40} color={palette.textDisabled} />
-          <Text style={styles.photoPlaceholderText}>{label}</Text>
-        </View>
-      )}
-      <View style={styles.photoBtnRow}>
-        <Button mode="outlined" onPress={onCamera} icon="camera" style={styles.photoBtn} compact>
-          Camera
-        </Button>
-        <Button mode="outlined" onPress={onGallery} icon="image" style={styles.photoBtn} compact>
-          Gallery
-        </Button>
-      </View>
-    </View>
-  );
-
-  // ── Screens ───────────────────────────────────────────────────────────────
-
-  if (loading && !status) {
+  // ── Non-provider guard ──────────────────────────────────────────────────────
+  if (activeRole !== 'PROVIDER') {
     return (
       <SafeAreaView style={styles.safe}>
         <View style={styles.center}>
-          <ActivityIndicator size="large" color={palette.primary} />
+          <MaterialCommunityIcons name="shield-account-outline" size={56} color={palette.textDisabled} />
+          <Text style={[styles.heading, { marginTop: spacing.md, textAlign: 'center' }]}>Provider verification</Text>
+          <Text style={[styles.sub, { textAlign: 'center' }]}>
+            Identity verification unlocks paid work. Switch to your provider account to continue.
+          </Text>
         </View>
       </SafeAreaView>
     );
   }
 
-  // Overview
-  if (step === 'overview') {
+  // ── Loading ─────────────────────────────────────────────────────────────────
+  if (loading && !status) {
     return (
       <SafeAreaView style={styles.safe}>
-        <ScrollView
-          contentContainerStyle={styles.scroll}
-          refreshControl={
-            <RefreshControl refreshing={loading} onRefresh={fetchStatus} tintColor={palette.primary} />
-          }
-        >
-          {onboardingStep != null && <OnboardingProgress step={onboardingStep} />}
-
-          <Text style={styles.heading}>Identity Verification</Text>
-          <Text style={styles.sub}>
-            Verify your identity to unlock earning on Sebenza. Higher tiers unlock larger bookings and better placement in search.
-          </Text>
-
-          <View style={styles.card}>
-            <View style={styles.tierRow}>
-              <Text style={styles.sectionLabel}>Current tier</Text>
-              {renderTierBadge(currentTier)}
-            </View>
-            <ProgressBar
-              progress={currentTier / 4}
-              color={palette.primary}
-              style={styles.tierBar}
-            />
-          </View>
-
-          {/* Latest review status — pending / needs-info / not approved */}
-          {renderReviewStatus()}
-
-          {/* Tier 1 */}
-          <TierCard
-            tier={1}
-            title="Basic — Start earning"
-            description="Selfie + legal name. Unlocks listing services up to ZMW 300."
-            complete={currentTier >= 1}
-            onPress={() => currentTier < 1 ? setStep('tier1_name') : undefined}
-            actionLabel={currentTier >= 1 ? 'Completed' : 'Start'}
-          />
-
-          {/* Tier 2 */}
-          <TierCard
-            tier={2}
-            title="Identified — Earn more"
-            description="Government ID + selfie. Unlocks bookings up to ZMW 2,000."
-            complete={currentTier >= 2}
-            disabled={currentTier < 1}
-            onPress={() => currentTier === 1 ? setStep('tier2_doctype') : undefined}
-            actionLabel={currentTier >= 2 ? 'Completed' : currentTier < 1 ? 'Complete Tier 1 first' : 'Verify'}
-          />
-
-          {/* Tier 3 */}
-          <TierCard
-            tier={3}
-            title="Verified — Unlock full platform"
-            description="Proof of address. Removes weekly caps, adds Verified badge."
-            complete={currentTier >= 3}
-            disabled={currentTier < 2}
-            onPress={() => currentTier === 2 ? navigation.navigate('KycAddress') : undefined}
-            actionLabel={currentTier >= 3 ? 'Completed' : currentTier < 2 ? 'Complete Tier 2 first' : 'Submit'}
-          />
-        </ScrollView>
+        <View style={styles.center}><ActivityIndicator size="large" color={palette.primary} /></View>
       </SafeAreaView>
     );
   }
 
-  // Done
-  if (step === 'done') {
+  // ── Submitted confirmation ──────────────────────────────────────────────────
+  if (step === 'submitted') {
     return (
       <SafeAreaView style={styles.safe}>
         <View style={styles.center}>
           <MaterialCommunityIcons name="check-circle-outline" size={72} color={palette.success} />
-          <Text style={[styles.heading, { marginTop: spacing.md }]}>Submitted!</Text>
+          <Text style={[styles.heading, { marginTop: spacing.md }]}>Submitted for review</Text>
           <Text style={[styles.sub, { textAlign: 'center' }]}>
-            We'll notify you once your documents are reviewed.
+            A reviewer will check your documents — usually within 24 hours. We'll notify you the moment it's decided.
           </Text>
-          <Button mode="contained" onPress={() => { setStep('overview'); fetchStatus(); }} style={{ marginTop: spacing.lg }}>
-            Back to overview
+          <Button mode="contained" onPress={() => { setStep('overview'); refreshAll(); }} style={{ marginTop: spacing.lg }}>
+            Back to verification
           </Button>
         </View>
       </SafeAreaView>
     );
   }
 
-  // ── Tier 1: legal name ────────────────────────────────────────────────────
-  if (step === 'tier1_name') {
+  // ── Tier 1 capture (NRC + selfie) ───────────────────────────────────────────
+  if (step === 'tier1') {
+    const canSubmit = idReady && !!selfieUri && legalName.trim().length >= 2;
     return (
       <SafeAreaView style={styles.safe}>
         <ScrollView contentContainerStyle={styles.scroll}>
-          <StepHeader step={1} total={2} title="Your legal name" onBack={() => setStep('overview')} />
-          <Text style={styles.sub}>Enter your name exactly as it appears on your ID.</Text>
+          <CaptureHeader title="Verify your identity" subtitle="Tier 1 · unlocks remote & digital jobs" onBack={() => setStep('overview')} />
+          <Text style={styles.sub}>Enter your name exactly as it appears on your NRC. We match it against your Mobile Money wallet.</Text>
+
           <View style={styles.card}>
             <TextInput
               mode="outlined"
@@ -347,192 +294,40 @@ export default function KycScreen({ navigation, route }: any) {
               left={<TextInput.Icon icon="account-outline" />}
             />
           </View>
-          <Button
-            mode="contained"
-            disabled={legalName.trim().length < 2}
-            onPress={() => setStep('tier1_selfie')}
-            style={styles.cta}
-            contentStyle={styles.ctaContent}
-          >
-            Continue
-          </Button>
-        </ScrollView>
-      </SafeAreaView>
-    );
-  }
 
-  // ── Tier 1: selfie ────────────────────────────────────────────────────────
-  if (step === 'tier1_selfie') {
-    return (
-      <SafeAreaView style={styles.safe}>
-        <ScrollView contentContainerStyle={styles.scroll}>
-          <StepHeader step={2} total={2} title="Take a selfie" onBack={() => setStep('tier1_name')} />
-          <Text style={styles.sub}>Look directly at the camera in good lighting.</Text>
-          <View style={styles.card}>
-            {renderPhotoButton(
-              selfieUri,
-              'Your selfie',
-              () => takePhoto(setSelfieUri),
-              () => pickImage(setSelfieUri),
-            )}
-          </View>
-          <Button
-            mode="contained"
-            disabled={!selfieUri || loading}
-            loading={loading}
-            onPress={handleSubmitTier1}
-            style={styles.cta}
-            contentStyle={styles.ctaContent}
-          >
-            Submit for Tier 1
-          </Button>
-        </ScrollView>
-      </SafeAreaView>
-    );
-  }
-
-  // ── Tier 2: doc type ──────────────────────────────────────────────────────
-  if (step === 'tier2_doctype') {
-    return (
-      <SafeAreaView style={styles.safe}>
-        <ScrollView contentContainerStyle={styles.scroll}>
-          <StepHeader step={1} total={3} title="Choose document type" onBack={() => setStep('overview')} />
-          <View style={styles.card}>
-            {DOC_TYPES.map((dt) => (
-              <TouchableRipple
-                key={dt.value}
-                onPress={() => { setDocType(dt.value); Haptics.selectionAsync(); }}
-                style={[styles.docTypeRow, docType === dt.value && styles.docTypeRowActive]}
-              >
-                <View style={styles.docTypeInner}>
-                  <MaterialCommunityIcons
-                    name={dt.icon as any}
-                    size={24}
-                    color={docType === dt.value ? palette.primary : palette.textSecondary}
-                  />
-                  <Text style={[styles.docTypeLabel, docType === dt.value && { color: palette.primary }]}>
-                    {dt.label}
-                  </Text>
-                  {docType === dt.value && (
-                    <MaterialCommunityIcons name="check-circle" size={20} color={palette.primary} />
-                  )}
-                </View>
-              </TouchableRipple>
-            ))}
-          </View>
-          <Button mode="contained" onPress={() => setStep('tier2_doc')} style={styles.cta} contentStyle={styles.ctaContent}>
-            Continue
-          </Button>
-        </ScrollView>
-      </SafeAreaView>
-    );
-  }
-
-  // ── Tier 2: document image (front + optional back) ────────────────────────
-  if (step === 'tier2_doc') {
-    const selected = DOC_TYPES.find((d) => d.value === docType)!;
-    const canContinue = docUri && (!hasTwoSides || docBackUri);
-    return (
-      <SafeAreaView style={styles.safe}>
-        <ScrollView contentContainerStyle={styles.scroll}>
-          <StepHeader step={2} total={3} title={`Upload your ${selected.label}`} onBack={() => setStep('tier2_doctype')} />
-          <Text style={styles.sub}>Make sure all text is clearly visible. No glare or shadows.</Text>
-
-          {/* Toggle: single copy vs front & back */}
-          <View style={styles.uploadToggle}>
-            <TouchableRipple
-              onPress={() => { setHasTwoSides(false); setDocBackUri(null); }}
-              style={[styles.toggleOption, !hasTwoSides && styles.toggleActive]}
-              borderless
-            >
-              <View style={styles.toggleInner}>
-                <MaterialCommunityIcons
-                  name="file-document-outline"
-                  size={20}
-                  color={!hasTwoSides ? palette.primary : palette.textSecondary}
-                />
-                <Text style={[styles.toggleText, !hasTwoSides && styles.toggleTextActive]}>Single copy</Text>
-              </View>
-            </TouchableRipple>
-            <TouchableRipple
-              onPress={() => setHasTwoSides(true)}
-              style={[styles.toggleOption, hasTwoSides && styles.toggleActive]}
-              borderless
-            >
-              <View style={styles.toggleInner}>
-                <MaterialCommunityIcons
-                  name="file-document-multiple-outline"
-                  size={20}
-                  color={hasTwoSides ? palette.primary : palette.textSecondary}
-                />
-                <Text style={[styles.toggleText, hasTwoSides && styles.toggleTextActive]}>Front & back</Text>
-              </View>
-            </TouchableRipple>
+          {/* Choose how to provide the ID: two photos or a single copy (PDF/photo). */}
+          <Text style={styles.photoLabel}>How would you like to add your NRC?</Text>
+          <View style={styles.modeToggle}>
+            <ModeButton active={idMode === 'two_side'} icon="card-account-details-outline" label="Front & back" onPress={() => setIdMode('two_side')} />
+            <ModeButton active={idMode === 'single'} icon="file-document-outline" label="Single copy" onPress={() => setIdMode('single')} />
           </View>
 
-          {/* Front side (or the single copy) */}
-          <Text style={styles.photoLabel}>{hasTwoSides ? 'Front side' : `${selected.label}`}</Text>
-          <View style={styles.card}>
-            {renderPhotoButton(
-              docUri,
-              hasTwoSides ? 'Front of your ID' : `${selected.label} photo`,
-              () => takePhoto(setDocUri),
-              () => pickImage(setDocUri),
-            )}
-          </View>
-
-          {/* Back side */}
-          {hasTwoSides && (
+          {idMode === 'two_side' ? (
             <>
-              <Text style={styles.photoLabel}>Back side</Text>
+              <Text style={styles.photoLabel}>NRC — front</Text>
               <View style={styles.card}>
-                {renderPhotoButton(
-                  docBackUri,
-                  'Back of your ID',
-                  () => takePhoto(setDocBackUri),
-                  () => pickImage(setDocBackUri),
-                )}
+                <PhotoField uri={nrcUri} label="Front of your NRC" onCamera={() => takePhoto(setNrcUri)} onGallery={() => pickImage(setNrcUri)} />
+              </View>
+              <Text style={styles.photoLabel}>NRC — back</Text>
+              <View style={styles.card}>
+                <PhotoField uri={nrcBackUri} label="Back of your NRC" onCamera={() => takePhoto(setNrcBackUri)} onGallery={() => pickImage(setNrcBackUri)} />
+              </View>
+            </>
+          ) : (
+            <>
+              <Text style={styles.photoLabel}>NRC — single copy (PDF or photo)</Text>
+              <View style={styles.card}>
+                <DocField uri={copyUri} onPick={() => pickDocument(setCopyUri)} onClear={() => setCopyUri(null)} />
               </View>
             </>
           )}
 
-          <Button
-            mode="contained"
-            disabled={!canContinue}
-            onPress={() => setStep('tier2_selfie')}
-            style={styles.cta}
-            contentStyle={styles.ctaContent}
-          >
-            Continue
-          </Button>
-        </ScrollView>
-      </SafeAreaView>
-    );
-  }
-
-  // ── Tier 2: live selfie ───────────────────────────────────────────────────
-  if (step === 'tier2_selfie') {
-    return (
-      <SafeAreaView style={styles.safe}>
-        <ScrollView contentContainerStyle={styles.scroll}>
-          <StepHeader step={3} total={3} title="Take a live selfie" onBack={() => setStep('tier2_doc')} />
-          <Text style={styles.sub}>This is used to match your face with the document.</Text>
+          <Text style={styles.photoLabel}>Selfie</Text>
           <View style={styles.card}>
-            {renderPhotoButton(
-              doc2SelfieUri,
-              'Live selfie',
-              () => takePhoto(setDoc2SelfieUri),
-              () => pickImage(setDoc2SelfieUri),
-            )}
+            <PhotoField uri={selfieUri} label="Look straight at the camera" onCamera={() => takePhoto(setSelfieUri, true)} onGallery={() => pickImage(setSelfieUri)} />
           </View>
-          <Button
-            mode="contained"
-            disabled={!doc2SelfieUri || loading}
-            loading={loading}
-            onPress={handleSubmitTier2}
-            style={styles.cta}
-            contentStyle={styles.ctaContent}
-          >
+
+          <Button mode="contained" disabled={!canSubmit || kyc.loading} loading={kyc.loading} onPress={handleSubmitTier1} style={styles.cta} contentStyle={styles.ctaContent}>
             Submit for verification
           </Button>
         </ScrollView>
@@ -540,67 +335,306 @@ export default function KycScreen({ navigation, route }: any) {
     );
   }
 
-  return null;
+  // ── Tier 2 capture (portfolio) ──────────────────────────────────────────────
+  if (step === 'portfolio') {
+    return (
+      <SafeAreaView style={styles.safe}>
+        <ScrollView contentContainerStyle={styles.scroll}>
+          <CaptureHeader title="Add your portfolio" subtitle="Tier 2 · unlocks public-venue jobs" onBack={() => setStep('overview')} />
+          <Text style={styles.sub}>Add 3 to 8 clear photos of your own work. Each photo is checked before review.</Text>
+
+          <View style={styles.thumbGrid}>
+            {portfolioUris.map((uri, i) => (
+              <View key={uri + i} style={styles.thumbWrap}>
+                <Image source={{ uri }} style={styles.thumb} />
+                <TouchableRipple
+                  onPress={() => setPortfolioUris((p) => p.filter((_, idx) => idx !== i))}
+                  borderless
+                  style={styles.thumbRemove}
+                >
+                  <MaterialCommunityIcons name="close-circle" size={22} color={palette.danger} />
+                </TouchableRipple>
+              </View>
+            ))}
+            {portfolioUris.length < 8 && (
+              <TouchableRipple onPress={pickPortfolio} style={styles.thumbAdd} borderless>
+                <View style={styles.thumbAddInner}>
+                  <MaterialCommunityIcons name="plus" size={28} color={palette.primary} />
+                  <Text style={styles.thumbAddText}>Add photos</Text>
+                </View>
+              </TouchableRipple>
+            )}
+          </View>
+          <Text style={styles.countHint}>{portfolioUris.length} of 8 · minimum 3</Text>
+
+          <Button mode="contained" disabled={portfolioUris.length < 3 || submitting} loading={submitting} onPress={handleSubmitPortfolio} style={styles.cta} contentStyle={styles.ctaContent}>
+            Submit portfolio
+          </Button>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // ── Tier 3 capture (police clearance) ───────────────────────────────────────
+  if (step === 'clearance') {
+    const canSubmit = !!clearanceUri && certNumber.trim().length >= 3 && isValidDate(issuedOn) && (!expiresOn || isValidDate(expiresOn));
+    return (
+      <SafeAreaView style={styles.safe}>
+        <ScrollView contentContainerStyle={styles.scroll}>
+          <CaptureHeader title="Police clearance" subtitle="Tier 3 · unlocks in-home jobs" onBack={() => setStep('overview')} />
+          <Text style={styles.sub}>Upload a clear photo of your Zambia Police clearance certificate and its details.</Text>
+
+          <Text style={styles.photoLabel}>Certificate photo</Text>
+          <View style={styles.card}>
+            <PhotoField uri={clearanceUri} label="Photo of the certificate" onCamera={() => takePhoto(setClearanceUri)} onGallery={() => pickImage(setClearanceUri)} />
+          </View>
+
+          <View style={styles.card}>
+            <TextInput mode="outlined" label="Certificate number" value={certNumber} onChangeText={setCertNumber} style={styles.input} outlineStyle={styles.inputOutline} left={<TextInput.Icon icon="identifier" />} />
+            <TextInput mode="outlined" label="Issued on (YYYY-MM-DD)" value={issuedOn} onChangeText={setIssuedOn} placeholder="2026-01-15" style={[styles.input, { marginTop: spacing.sm }]} outlineStyle={styles.inputOutline} left={<TextInput.Icon icon="calendar" />} />
+            <TextInput mode="outlined" label="Expires on (optional)" value={expiresOn} onChangeText={setExpiresOn} placeholder="2028-01-15" style={[styles.input, { marginTop: spacing.sm }]} outlineStyle={styles.inputOutline} left={<TextInput.Icon icon="calendar-clock" />} />
+          </View>
+
+          <Button mode="contained" disabled={!canSubmit || submitting} loading={submitting} onPress={handleSubmitClearance} style={styles.cta} contentStyle={styles.ctaContent}>
+            Submit clearance
+          </Button>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // ── Overview (the ladder) ────────────────────────────────────────────────────
+  const currentTier = status?.current_tier ?? 0;
+  const tiers = status?.tiers ?? [];
+  const pending = status?.pending_listings ?? [];
+
+  return (
+    <SafeAreaView style={styles.safe}>
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        refreshControl={<RefreshControl refreshing={loading} onRefresh={refreshAll} tintColor={palette.primary} />}
+      >
+        {onboardingStep != null && <OnboardingProgress step={onboardingStep} />}
+
+        <Text style={styles.heading}>Identity verification</Text>
+        <Text style={styles.sub}>
+          Each tier clears you for a wider set of jobs. You only need the tier your listings actually require.
+        </Text>
+
+        <View style={styles.card}>
+          <View style={styles.tierRow}>
+            <Text style={styles.sectionLabel}>Current tier</Text>
+            <View style={[styles.tierBadge, { borderColor: palette.primary }]}>
+              <Text style={[styles.tierLabel, { color: palette.primary }]}>
+                {currentTier > 0 ? `Tier ${currentTier}` : 'Unverified'}
+              </Text>
+            </View>
+          </View>
+          <ProgressBar progress={currentTier / 4} color={palette.primary} style={styles.tierBar} />
+        </View>
+
+        {/* Gate surface — services the eligibility check currently blocks. */}
+        {pending.length > 0 && <GateBanner listings={pending} onFix={startForMissing} />}
+
+        {/* The ladder, straight from the server's eligibility mirror. Tier 1 is
+            overlaid with its live KYC review state (submitted / under review /
+            needs changes) so the provider always knows where their ID stands. */}
+        {tiers.map((row) => {
+          const shown = row.tier === 1 ? { ...row, state: tier1.state, reason: tier1.reason ?? row.reason } : row;
+          return <TierRow key={row.tier} row={shown} currentTier={currentTier} onAction={() => startTierAction(row)} />;
+        })}
+      </ScrollView>
+    </SafeAreaView>
+  );
 }
 
-// ── Sub-components ─────────────────────────────────────────────────────────
+// ── Gate banner ───────────────────────────────────────────────────────────────
+function GateBanner({ listings, onFix }: { listings: PendingListing[]; onFix: (miss: string) => void }) {
+  // Collect the distinct missing requirements across all blocked listings.
+  const missing = Array.from(
+    new Set(listings.flatMap((l) => l.eligibility.missing).filter((m) => m !== 'service_not_found')),
+  );
+  return (
+    <View style={[styles.statusCard, { backgroundColor: palette.warningLight, borderColor: palette.warning }]}>
+      <View style={styles.statusHeaderRow}>
+        <MaterialCommunityIcons name="lock-alert-outline" size={22} color={palette.warning} />
+        <Text style={[styles.statusTitle, { color: palette.warning }]}>
+          {listings.length} {listings.length === 1 ? 'listing' : 'listings'} can't take bookings yet
+        </Text>
+      </View>
+      <Text style={styles.statusBody}>
+        {listings.map((l) => l.title).filter(Boolean).join(', ') || 'Some of your services'} need more verification before customers can book them.
+      </Text>
+      <View style={styles.gateActions}>
+        {missing.map((m) => (
+          <Button key={m} mode="contained" compact buttonColor={palette.warning} onPress={() => onFix(m)} style={styles.gateBtn} labelStyle={styles.gateBtnLabel}>
+            {REQUIREMENT_LABEL[m] ?? m}
+          </Button>
+        ))}
+      </View>
+    </View>
+  );
+}
 
-function StepHeader({ step, total, title, onBack }: { step: number; total: number; title: string; onBack: () => void }) {
+// ── Tier row ──────────────────────────────────────────────────────────────────
+function TierRow({ row, currentTier, onAction }: { row: VerificationTierRow; currentTier: number; onAction: () => void }) {
+  const icon = TIER_ICON[row.tier] ?? 'shield-outline';
+  const done = row.state === 'DONE' || row.state === 'EARNED';
+  // Identity (Tier 1) is the ONLY universal prerequisite — the gate returns
+  // `unverified` below trust tier 1. Portfolio (Tier 2) and police clearance
+  // (Tier 3) are independent job-type unlocks, so they are NOT locked behind
+  // each other; only behind identity.
+  const locked = row.kind === 'upload' && currentTier < 1 && !done;
+
+  const stateChip = (() => {
+    switch (row.state) {
+      case 'DONE':
+      case 'EARNED':          return { label: 'Done', color: palette.success, bg: palette.successLight };
+      case 'UNDER_REVIEW':    return { label: 'Under review', color: palette.primary, bg: palette.primaryLight };
+      case 'NEEDS_CHANGES':   return { label: 'Needs changes', color: palette.danger, bg: palette.dangerLight };
+      case 'EARNED_PROGRESS': return { label: 'In progress', color: palette.textSecondary, bg: palette.border };
+      default:                return null; // ADD
+    }
+  })();
+
+  return (
+    <View style={[styles.tierCard, done && styles.tierCardDone, locked && styles.tierCardDisabled]}>
+      <View style={styles.tierCardInner}>
+        <View style={styles.tierCardLeft}>
+          <MaterialCommunityIcons name={(done ? 'check-circle' : icon) as any} size={26} color={done ? palette.success : locked ? palette.textDisabled : palette.primary} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <View style={styles.tierTitleRow}>
+            <Text style={[styles.tierCardTitle, locked && { color: palette.textDisabled }]}>Tier {row.tier} · {row.label}</Text>
+            {stateChip && (
+              <View style={[styles.stateChip, { backgroundColor: stateChip.bg }]}>
+                <Text style={[styles.stateChipText, { color: stateChip.color }]}>{stateChip.label}</Text>
+              </View>
+            )}
+          </View>
+          {!!row.requirement && <Text style={styles.tierReq}>{row.requirement}</Text>}
+          <Text style={styles.tierCardDesc}>Unlocks: {row.unlocks}</Text>
+
+          {/* Reviewer asked for changes */}
+          {row.state === 'NEEDS_CHANGES' && !!row.reason && (
+            <Text style={styles.tierReason}>{row.reason}</Text>
+          )}
+
+          {/* Tier 4 earned progress */}
+          {row.progress && (
+            <View style={styles.progressRows}>
+              <ProgressLine met={row.progress.jobs_met} label={`${row.progress.completed_jobs} / ${row.progress.required_jobs} jobs completed`} />
+              <ProgressLine met={row.progress.rating_met} label={`${row.progress.avg_rating ?? '–'} / ${row.progress.required_rating} rating`} />
+              <ProgressLine met={row.progress.disputes_met} label={`${row.progress.upheld_disputes} upheld disputes`} />
+            </View>
+          )}
+
+          {/* Action */}
+          {(row.state === 'ADD' || row.state === 'NEEDS_CHANGES') && !locked && (
+            <Button mode={row.state === 'NEEDS_CHANGES' ? 'contained' : 'outlined'} compact onPress={onAction} style={styles.tierActionBtn} buttonColor={row.state === 'NEEDS_CHANGES' ? palette.danger : undefined}>
+              {row.state === 'NEEDS_CHANGES' ? 'Resubmit' : row.tier === 1 ? 'Verify identity' : 'Add'}
+            </Button>
+          )}
+          {row.state === 'DONE' && row.expires_at && (
+            <Text style={styles.tierExpiry}>Valid until {new Date(row.expires_at).toLocaleDateString()}</Text>
+          )}
+          {locked && <Text style={styles.tierLockedHint}>Verify your identity (Tier 1) first</Text>}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function ProgressLine({ met, label }: { met: boolean; label: string }) {
+  return (
+    <View style={styles.progressLine}>
+      <MaterialCommunityIcons name={met ? 'check-circle' : 'circle-outline'} size={16} color={met ? palette.success : palette.textDisabled} />
+      <Text style={[styles.progressText, met && { color: palette.textPrimary }]}>{label}</Text>
+    </View>
+  );
+}
+
+// ── Shared capture sub-components ─────────────────────────────────────────────
+function CaptureHeader({ title, subtitle, onBack }: { title: string; subtitle: string; onBack: () => void }) {
   return (
     <View style={styles.stepHeader}>
       <TouchableRipple onPress={onBack} borderless style={styles.backBtn}>
         <MaterialCommunityIcons name="arrow-left" size={24} color={palette.textPrimary} />
       </TouchableRipple>
       <View style={{ flex: 1 }}>
-        <Text style={styles.stepCount}>Step {step} of {total}</Text>
         <Text style={styles.stepTitle}>{title}</Text>
-        <ProgressBar progress={step / total} color={palette.primary} style={styles.stepBar} />
+        <Text style={styles.stepCount}>{subtitle}</Text>
       </View>
     </View>
   );
 }
 
-function TierCard({ tier, title, description, complete, disabled, onPress, actionLabel }: {
-  tier: number; title: string; description: string;
-  complete: boolean; disabled?: boolean; onPress?: () => void; actionLabel: string;
-}) {
+function ModeButton({ active, icon, label, onPress }: { active: boolean; icon: string; label: string; onPress: () => void }) {
   return (
-    <TouchableRipple
-      onPress={!complete && !disabled ? onPress : undefined}
-      style={[styles.tierCard, complete && styles.tierCardDone, disabled && styles.tierCardDisabled]}
-      borderless
-    >
-      <View style={styles.tierCardInner}>
-        <View style={styles.tierCardLeft}>
-          <MaterialCommunityIcons
-            name={complete ? 'check-circle' : 'shield-outline'}
-            size={28}
-            color={complete ? palette.success : disabled ? palette.textDisabled : palette.primary}
-          />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.tierCardTitle, disabled && { color: palette.textDisabled }]}>{title}</Text>
-          <Text style={styles.tierCardDesc}>{description}</Text>
-        </View>
-        {!complete && (
-          <Chip
-            compact
-            mode="flat"
-            style={[styles.tierChip, disabled && styles.tierChipDisabled]}
-            textStyle={{ fontSize: 11 }}
-          >
-            {actionLabel}
-          </Chip>
-        )}
+    <TouchableRipple onPress={onPress} borderless style={[styles.modeOption, active && styles.modeOptionActive]}>
+      <View style={styles.modeInner}>
+        <MaterialCommunityIcons name={icon as any} size={20} color={active ? palette.primary : palette.textSecondary} />
+        <Text style={[styles.modeText, active && { color: palette.primary }]}>{label}</Text>
       </View>
     </TouchableRipple>
   );
 }
 
-// ── Styles ─────────────────────────────────────────────────────────────────
+function DocField({ uri, onPick, onClear }: { uri: string | null; onPick: () => void; onClear: () => void }) {
+  const pdf = isPdfUri(uri);
+  return (
+    <View style={styles.photoArea}>
+      {uri ? (
+        pdf ? (
+          <View style={styles.pdfChip}>
+            <MaterialCommunityIcons name="file-pdf-box" size={34} color={palette.danger} />
+            <Text style={styles.pdfChipText}>PDF copy attached</Text>
+            <TouchableRipple onPress={onClear} borderless style={styles.pdfClear}>
+              <MaterialCommunityIcons name="close-circle" size={22} color={palette.textDisabled} />
+            </TouchableRipple>
+          </View>
+        ) : (
+          <TouchableRipple onPress={onPick} borderless style={styles.photoPreviewWrap}>
+            <Image source={{ uri }} style={styles.photoPreview} />
+          </TouchableRipple>
+        )
+      ) : (
+        <View style={styles.photoPlaceholder}>
+          <MaterialCommunityIcons name="file-upload-outline" size={40} color={palette.textDisabled} />
+          <Text style={styles.photoPlaceholderText}>A scanned copy of your NRC</Text>
+        </View>
+      )}
+      <Button mode="outlined" onPress={onPick} icon="file-document-outline" style={styles.photoBtn} compact>
+        {uri ? 'Choose a different file' : 'Choose file (PDF or photo)'}
+      </Button>
+    </View>
+  );
+}
 
+function PhotoField({ uri, label, onCamera, onGallery }: { uri: string | null; label: string; onCamera: () => void; onGallery: () => void }) {
+  return (
+    <View style={styles.photoArea}>
+      {uri ? (
+        <TouchableRipple onPress={onGallery} borderless style={styles.photoPreviewWrap}>
+          <Image source={{ uri }} style={styles.photoPreview} />
+        </TouchableRipple>
+      ) : (
+        <View style={styles.photoPlaceholder}>
+          <MaterialCommunityIcons name="image-outline" size={40} color={palette.textDisabled} />
+          <Text style={styles.photoPlaceholderText}>{label}</Text>
+        </View>
+      )}
+      <View style={styles.photoBtnRow}>
+        <Button mode="outlined" onPress={onCamera} icon="camera" style={styles.photoBtn} compact>Camera</Button>
+        <Button mode="outlined" onPress={onGallery} icon="image" style={styles.photoBtn} compact>Gallery</Button>
+      </View>
+    </View>
+  );
+}
+
+// ── Styles ────────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  safe:  { flex: 1, backgroundColor: palette.background },
+  safe:   { flex: 1, backgroundColor: palette.background },
   scroll: { padding: spacing.lg, paddingBottom: spacing.xxl },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.lg },
 
@@ -609,121 +643,91 @@ const styles = StyleSheet.create({
   sectionLabel: { ...typography.label, color: palette.textSecondary },
 
   card: {
-    backgroundColor: palette.surface,
-    borderRadius: r.sm,
-    borderWidth: 1,
-    borderColor: palette.border,
-    padding: spacing.md,
-    marginBottom: spacing.md,
+    backgroundColor: palette.surface, borderRadius: r.sm, borderWidth: 1,
+    borderColor: palette.border, padding: spacing.md, marginBottom: spacing.md,
   },
 
-  // Tier overview
+  // Current tier
   tierRow:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
   tierBar:  { height: 6, borderRadius: 3 },
-  tierBadge: { borderWidth: 1.5, borderRadius: r.full, paddingHorizontal: spacing.sm, paddingVertical: 3 },
-  tierLabel: { ...typography.label, fontSize: 12 },
+  tierBadge:{ borderWidth: 1.5, borderRadius: r.full, paddingHorizontal: spacing.sm, paddingVertical: 3 },
+  tierLabel:{ ...typography.label, fontSize: 12 },
 
-  tierCard: {
-    backgroundColor: palette.surface,
-    borderRadius: r.sm,
-    borderWidth: 1,
-    borderColor: palette.border,
-    marginBottom: spacing.sm,
-    overflow: 'hidden',
-  },
-  tierCardDone:     { borderColor: palette.success, backgroundColor: '#F0FFF4' },
-  tierCardDisabled: { opacity: 0.5 },
-  tierCardInner:    { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md },
-  tierCardLeft:     { width: 36, alignItems: 'center' },
-  tierCardTitle:    { ...typography.label, color: palette.textPrimary, marginBottom: 2 },
-  tierCardDesc:     { ...typography.bodySmall, color: palette.textSecondary },
-  tierChip:         { backgroundColor: palette.primaryLight, alignSelf: 'flex-start' },
-  tierChipDisabled: { backgroundColor: palette.border },
+  // Ladder rows
+  tierCard: { backgroundColor: palette.surface, borderRadius: r.sm, borderWidth: 1, borderColor: palette.border, marginBottom: spacing.sm, overflow: 'hidden' },
+  tierCardDone:     { borderColor: palette.success, backgroundColor: palette.successLight },
+  tierCardDisabled: { opacity: 0.55 },
+  tierCardInner:    { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, padding: spacing.md },
+  tierCardLeft:     { width: 32, alignItems: 'center', marginTop: 2 },
+  tierTitleRow:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
+  tierCardTitle:    { ...typography.label, color: palette.textPrimary, flexShrink: 1 },
+  tierReq:          { ...typography.bodySmall, color: palette.textPrimary, marginTop: 2 },
+  tierCardDesc:     { ...typography.bodySmall, color: palette.textSecondary, marginTop: 1 },
+  tierReason:       { ...typography.bodySmall, color: palette.danger, marginTop: spacing.xs },
+  tierActionBtn:    { alignSelf: 'flex-start', marginTop: spacing.sm, borderRadius: r.sm },
+  tierExpiry:       { ...typography.bodySmall, color: palette.textSecondary, marginTop: spacing.xs },
+  tierLockedHint:   { ...typography.bodySmall, color: palette.textDisabled, marginTop: spacing.xs },
 
-  // Step header
+  stateChip:     { borderRadius: r.full, paddingHorizontal: spacing.sm, paddingVertical: 2 },
+  stateChipText: { ...typography.label, fontSize: 11 },
+
+  // Tier 4 progress
+  progressRows: { marginTop: spacing.sm, gap: spacing.xs },
+  progressLine: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  progressText: { ...typography.bodySmall, color: palette.textSecondary },
+
+  // Gate banner
+  statusCard:      { borderRadius: r.sm, borderWidth: 1, padding: spacing.md, marginBottom: spacing.md },
+  statusHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  statusTitle:     { ...typography.label, fontSize: 15, flex: 1 },
+  statusBody:      { ...typography.body, color: palette.textPrimary, marginTop: spacing.xs },
+  gateActions:     { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.md },
+  gateBtn:         { borderRadius: r.sm },
+  gateBtnLabel:    { fontSize: 12 },
+
+  // Capture header
   stepHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, marginBottom: spacing.md },
   backBtn:    { padding: spacing.xs, marginTop: 2, borderRadius: r.full },
   stepCount:  { ...typography.bodySmall, color: palette.textSecondary },
-  stepTitle:  { ...typography.heading3, color: palette.textPrimary, marginBottom: spacing.xs },
-  stepBar:    { height: 4, borderRadius: 2 },
+  stepTitle:  { ...typography.heading3, color: palette.textPrimary },
 
-  // Photo upload
+  // ID mode toggle
+  modeToggle:       { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
+  modeOption:       { flex: 1, borderRadius: r.sm, borderWidth: 1, borderColor: palette.border, backgroundColor: palette.surface, overflow: 'hidden' },
+  modeOptionActive: { borderColor: palette.primary, backgroundColor: palette.primaryLight },
+  modeInner:        { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, paddingVertical: spacing.sm + 2, paddingHorizontal: spacing.sm },
+  modeText:         { ...typography.label, fontSize: 13, color: palette.textSecondary },
+
+  // PDF single-copy chip
+  pdfChip:     { height: 120, borderRadius: r.sm, borderWidth: 1, borderColor: palette.border, backgroundColor: palette.background, alignItems: 'center', justifyContent: 'center', gap: spacing.xs },
+  pdfChipText: { ...typography.label, fontSize: 13, color: palette.textPrimary },
+  pdfClear:    { position: 'absolute', top: spacing.xs, right: spacing.xs, borderRadius: r.full },
+
+  // Photo field
+  photoLabel:         { ...typography.label, fontSize: 13, color: palette.textSecondary, marginBottom: spacing.xs },
   photoArea:          { gap: spacing.sm },
-  photoPlaceholder:   {
-    height: 180, borderRadius: r.sm, borderWidth: 2, borderStyle: 'dashed',
-    borderColor: palette.border, alignItems: 'center', justifyContent: 'center', gap: spacing.xs,
-  },
+  photoPlaceholder:   { height: 170, borderRadius: r.sm, borderWidth: 2, borderStyle: 'dashed', borderColor: palette.border, alignItems: 'center', justifyContent: 'center', gap: spacing.xs },
   photoPlaceholderText: { ...typography.bodySmall, color: palette.textSecondary },
-  photoPreviewWrap:     { borderRadius: r.sm, overflow: 'hidden' },
-  photoPreview:         { width: '100%', height: 200, borderRadius: r.sm },
-  photoBtnRow:          { flexDirection: 'row', gap: spacing.sm },
-  photoBtn:             { flex: 1, borderRadius: r.md },
+  photoPreviewWrap:   { borderRadius: r.sm, overflow: 'hidden' },
+  photoPreview:       { width: '100%', height: 190, borderRadius: r.sm },
+  photoBtnRow:        { flexDirection: 'row', gap: spacing.sm },
+  photoBtn:           { flex: 1, borderRadius: r.md },
 
-  // Upload toggle (single / front & back)
-  uploadToggle: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    marginBottom: spacing.md,
-  },
-  toggleOption: {
-    flex: 1,
-    borderRadius: r.sm,
-    borderWidth: 1,
-    borderColor: palette.border,
-    backgroundColor: palette.surface,
-    overflow: 'hidden',
-  },
-  toggleActive: {
-    borderColor: palette.primary,
-    backgroundColor: palette.primaryLight,
-  },
-  toggleInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.xs,
-    paddingVertical: spacing.sm + 2,
-    paddingHorizontal: spacing.sm,
-  },
-  toggleText: {
-    ...typography.label,
-    fontSize: 13,
-    color: palette.textSecondary,
-  },
-  toggleTextActive: {
-    color: palette.primary,
-  },
-  photoLabel: {
-    ...typography.label,
-    fontSize: 13,
-    color: palette.textSecondary,
-    marginBottom: spacing.xs,
-  },
+  // Portfolio grid
+  thumbGrid:    { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  thumbWrap:    { width: '31%', aspectRatio: 1, borderRadius: r.sm, overflow: 'hidden' },
+  thumb:        { width: '100%', height: '100%' },
+  thumbRemove:  { position: 'absolute', top: 2, right: 2, backgroundColor: '#fff', borderRadius: r.full },
+  thumbAdd:     { width: '31%', aspectRatio: 1, borderRadius: r.sm, borderWidth: 2, borderStyle: 'dashed', borderColor: palette.primary },
+  thumbAddInner:{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2 },
+  thumbAddText: { ...typography.bodySmall, fontSize: 11, color: palette.primary },
+  countHint:    { ...typography.bodySmall, color: palette.textSecondary, marginTop: spacing.sm, marginBottom: spacing.md },
 
-  // Doc type
-  docTypeRow:       { flexDirection: 'row', borderRadius: r.md, marginBottom: spacing.xs, overflow: 'hidden' },
-  docTypeRowActive: { backgroundColor: palette.primaryLight },
-  docTypeInner:     { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md },
-  docTypeLabel:     { ...typography.body, flex: 1, color: palette.textSecondary },
-
-  // Input
-  input:       { backgroundColor: '#FFFFFF' },
-  inputOutline:{ borderRadius: r.sm },
+  // Inputs
+  input:        { backgroundColor: '#FFFFFF' },
+  inputOutline: { borderRadius: r.sm },
 
   // CTA
   cta:        { borderRadius: r.sm, marginTop: spacing.sm },
   ctaContent: { height: 54 },
-
-  // Review status banner
-  statusCard: {
-    borderRadius: r.sm,
-    borderWidth: 1,
-    padding: spacing.md,
-    marginBottom: spacing.md,
-  },
-  statusHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
-  statusTitle:     { ...typography.label, fontSize: 15 },
-  statusDocLabel:  { ...typography.bodySmall, color: palette.textSecondary, marginTop: 2 },
-  statusBody:      { ...typography.body, color: palette.textPrimary, marginTop: spacing.xs },
-  statusBtn:       { borderRadius: r.md, marginTop: spacing.md, alignSelf: 'flex-start' },
 });

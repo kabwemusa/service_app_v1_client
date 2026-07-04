@@ -24,8 +24,8 @@ import Animated, {
 import { Button, Text } from 'react-native-paper';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { bookingsApi } from '../../api/bookings';
-import { ServiceAddon } from '../../api/services';
-import { DURATION_OPTIONS, HOUR_OPTIONS, isHourPast, useBookingFlow } from '../../hooks/useBookingFlow';
+import { PricingModel, ServiceAddon } from '../../api/services';
+import { HOUR_OPTIONS, isHourPast, useBookingFlow } from '../../hooks/useBookingFlow';
 import { DeliveryLocation } from '../../store/locationStore';
 import { LocationPickerSheet } from '../location/LocationPickerSheet';
 import { palette, radius as r, shadow, spacing, typography } from '../../theme';
@@ -101,7 +101,17 @@ interface Props {
   serviceId:       string;
   serviceTitle:    string;
   basePrice:       number;
-  pricingModel?:   'FIXED' | 'HOURLY' | 'QUOTE';
+  // Outcome-based pricing — customers never input hours anywhere in this sheet.
+  pricingModel?:   PricingModel;
+  // HOURLY_CAPPED parameters (provider-set)
+  hourlyRate?:     number | null;
+  minimumHours?:   number | null;
+  capHours?:       number | null;
+  capAmount?:      number | null;
+  // QUOTE_DEPOSIT
+  depositPercent?: number | null;
+  // Structured brief questions (PROVIDER_SCOPE / QUOTE_DEPOSIT)
+  scopePrompts?:   string[];
   // Platform payment mode — drives total breakdown + CTA copy (DIRECT = no escrow, no 2% fee).
   paymentMode?:    'DIRECT' | 'ESCROW';
   // Provider availability: keys are SUN/MON/…/SAT, values are [{start, end}] windows.
@@ -121,9 +131,16 @@ interface Props {
   onBooked:        (bookingId: string) => void;
 }
 
+const DEFAULT_BRIEF_PROMPTS = [
+  'What exactly needs doing?',
+  'How big is the job? (rooms, items, or size)',
+  'Any special conditions the provider should know about?',
+];
+
 export function BookingSheet({
   visible, onClose, serviceId, serviceTitle, basePrice,
-  pricingModel = 'FIXED', paymentMode = 'ESCROW', availabilityMatrix,
+  pricingModel = 'OUTCOME_FIXED', paymentMode = 'ESCROW', availabilityMatrix,
+  hourlyRate, minimumHours, capHours, capAmount, depositPercent, scopePrompts,
   thumbUri, categoryId, categoryIcon, providerName, durationMins,
   addons, selectedAddons = [], onBooked,
 }: Props) {
@@ -134,7 +151,14 @@ export function BookingSheet({
 
   const avail   = availabilityMatrix ?? null;
   const isDirect = paymentMode === 'DIRECT';
-  const isQuote  = pricingModel === 'QUOTE';
+  // Quote-first models: structured brief → provider quote → approval → escrow.
+  const isQuote  = pricingModel === 'PROVIDER_SCOPE' || pricingModel === 'QUOTE_DEPOSIT';
+  const isCapped = pricingModel === 'HOURLY_CAPPED';
+
+  const briefPrompts = isQuote
+    ? (scopePrompts && scopePrompts.length ? scopePrompts : DEFAULT_BRIEF_PROMPTS)
+    : [];
+  const [briefAnswers, setBriefAnswers] = useState<string[]>([]);
 
   // Add-on list to render as toggles; falls back to the pre-selected list for
   // callers that don't pass the full catalogue.
@@ -176,6 +200,7 @@ export function BookingSheet({
       flow.reset(firstAvailableDay);
       setSelectedIds(new Set(selectedAddons.map((a) => a.id)));
       setNotes('');
+      setBriefAnswers(briefPrompts.map(() => ''));
       setBookedHours(new Set());
 
       bookingsApi.bookedSlots(serviceId).then(({ slots }) => {
@@ -230,11 +255,17 @@ export function BookingSheet({
   const backdropStyle = useAnimatedStyle(() => ({ opacity: backdropOpacity.value }));
 
   // ── Totals ──────────────────────────────────────────────────────────────────
-  const svcCost  = pricingModel === 'HOURLY' ? basePrice * flow.durationHrs : basePrice;
+  // HOURLY_CAPPED: the amount held is the SPEND CAP (provider-set) — the
+  // customer never chooses hours; actual time is charged and the rest refunded.
+  const svcCost  = isCapped
+    ? (capAmount ?? (hourlyRate && capHours ? hourlyRate * capHours : basePrice))
+    : basePrice;
   const addonSum = addonList.filter((a) => selectedIds.has(a.id)).reduce((s, a) => s + a.price, 0);
   // No buyer-protection fee in DIRECT mode — there is no escrow to back it.
   const prot     = !isDirect && !isQuote ? Math.min((svcCost + addonSum) * 0.02, 50) : 0;
   const total    = svcCost + addonSum + prot;
+
+  const briefComplete = !isQuote || briefAnswers.every((a) => a.trim().length > 0);
 
   const catColor = CAT_PALETTE[(categoryId ?? 0) % CAT_PALETTE.length];
 
@@ -247,9 +278,18 @@ export function BookingSheet({
   };
 
   async function handleConfirm() {
-    const booking = await flow.submit(Array.from(selectedIds), isQuote ? notes : undefined);
+    // Quote-first models submit the structured brief; nothing is charged here.
+    const scopeBrief = isQuote
+      ? briefPrompts.map((q, i) => ({ question: q, answer: briefAnswers[i]?.trim() ?? '' }))
+      : undefined;
+
+    const booking = await flow.submit(
+      Array.from(selectedIds),
+      isQuote && notes.trim() ? notes : undefined,
+      scopeBrief,
+    );
     if (booking) {
-      // ESCROW (fixed-price): kick off the mobile-money collection immediately so the
+      // ESCROW (priced models): kick off the mobile-money collection immediately so the
       // customer gets the USSD prompt. The gateway callback advances REQUESTED →
       // PENDING_PAYMENT → FUNDS_HELD. If the push can't be initiated the booking stays
       // REQUESTED and the customer can retry "Pay & hold funds" from the booking detail.
@@ -262,9 +302,11 @@ export function BookingSheet({
   }
 
   const ctaLabel = isQuote
-    ? 'Request quote'
+    ? (pricingModel === 'QUOTE_DEPOSIT' ? 'Send brief · get quote' : 'Send brief · get quote')
     : isDirect
     ? 'Request booking'
+    : isCapped
+    ? `Confirm · hold ZMW ${total.toFixed(0)}`
     : `Confirm booking · ZMW ${total.toFixed(0)}`;
 
   const durationLabel = durationMins
@@ -413,26 +455,28 @@ export function BookingSheet({
                 })}
               </ScrollView>
 
-              {/* ── Duration ───────────────────────────────────── */}
-              <Text style={styles.sLabel}>Duration</Text>
-              <View style={styles.durationRow}>
-                {DURATION_OPTIONS.map((d) => {
-                  const active = d === flow.durationHrs;
-                  return (
-                    <TouchableOpacity
-                      key={d}
-                      style={[styles.durChip, active && styles.durChipSel]}
-                      onPress={() => flow.setDurationHrs(d)}
-                      accessibilityRole="radio"
-                      accessibilityState={{ selected: active }}
-                    >
-                      <Text style={[styles.durTxt, active && styles.durTxtSel]}>
-                        {d === 1 ? '1 hr' : `${d} hrs`}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+              {/* ── Duration guide (provider-set — never a customer input) ── */}
+              {durationLabel && !isCapped && (
+                <View style={styles.durationGuide}>
+                  <Ionicons name="time-outline" size={14} color={palette.textSecondary} />
+                  <Text style={styles.durationGuideTxt}>
+                    Estimated duration: {durationLabel} — set by the provider as a guide.
+                  </Text>
+                </View>
+              )}
+
+              {/* ── HOURLY_CAPPED: rate / minimum / cap card ────── */}
+              {isCapped && (
+                <View style={styles.capCard}>
+                  <Text style={styles.capHeadline}>
+                    ZMW {(hourlyRate ?? 0).toFixed(0)}/hr · {minimumHours ?? 1}-hr minimum · max ZMW {svcCost.toFixed(0)}
+                  </Text>
+                  <Text style={styles.capNote}>
+                    We hold ZMW {svcCost.toFixed(0)} (the maximum). You'll only be charged for the
+                    actual time worked — any unused amount is refunded automatically.
+                  </Text>
+                </View>
+              )}
 
               {/* ── Where: active delivery location + Change ───── */}
               <Text style={styles.sLabel}>Where</Text>
@@ -486,13 +530,31 @@ export function BookingSheet({
                 </>
               )}
 
-              {/* ── Notes (QUOTE only) ─────────────────────────── */}
+              {/* ── Structured brief (quote-first models) ───────── */}
               {isQuote && (
                 <>
-                  <Text style={styles.sLabel}>Anything the provider should know?</Text>
+                  <Text style={styles.sLabel}>Tell the provider about the job</Text>
+                  {briefPrompts.map((question, i) => (
+                    <View key={i} style={styles.briefField}>
+                      <Text style={styles.briefQuestion}>{question}</Text>
+                      <TextInput
+                        style={styles.briefInput}
+                        placeholder="Your answer…"
+                        placeholderTextColor={palette.textDisabled}
+                        value={briefAnswers[i] ?? ''}
+                        onChangeText={(t) => setBriefAnswers((prev) => {
+                          const next = [...prev];
+                          next[i] = t;
+                          return next;
+                        })}
+                        accessibilityLabel={question}
+                      />
+                    </View>
+                  ))}
+                  <Text style={styles.sLabel}>Anything else? (optional)</Text>
                   <TextInput
                     style={styles.notesInput}
-                    placeholder="Describe what you need (optional)…"
+                    placeholder="Extra details for the provider…"
                     placeholderTextColor={palette.textDisabled}
                     value={notes}
                     onChangeText={setNotes}
@@ -508,14 +570,18 @@ export function BookingSheet({
                   <View style={styles.quoteNote}>
                     <Ionicons name="chatbubble-ellipses-outline" size={16} color={palette.textSecondary} />
                     <Text style={styles.quoteNoteTxt}>
-                      No fixed price yet — you’ll agree a price with{' '}
-                      {providerName ?? 'the provider'} after they review your request.
+                      {pricingModel === 'QUOTE_DEPOSIT'
+                        ? `${providerName ?? 'The provider'} will send a full quote after reviewing your brief. `
+                          + `A ${depositPercent ?? 30}% deposit confirms the booking — the balance is collected on completion. `
+                          + 'Nothing is charged until you approve the quote.'
+                        : `${providerName ?? 'The provider'} will review your brief and send a quote with the price, `
+                          + "duration and what's included. Nothing is charged until you approve it."}
                     </Text>
                   </View>
                 ) : (
                   <>
                     <View style={styles.feeRow}>
-                      <Text style={styles.feeLbl}>Service{pricingModel === 'HOURLY' ? ` (${flow.durationHrs} hr${flow.durationHrs > 1 ? 's' : ''})` : ''}</Text>
+                      <Text style={styles.feeLbl}>{isCapped ? 'Held (maximum)' : 'Service'}</Text>
                       <Text style={styles.feeAmt}>ZMW {svcCost.toFixed(0)}</Text>
                     </View>
                     {addonList.filter((a) => selectedIds.has(a.id)).map((addon) => (
@@ -551,6 +617,10 @@ export function BookingSheet({
                   <Text style={styles.modeNote}>
                     {isDirect
                       ? `You'll pay ${providerName ?? 'the provider'} directly after the job · they'll confirm your request.`
+                      : isCapped
+                      ? 'The maximum is held in escrow — you pay only for actual time, the rest is refunded when you confirm completion.'
+                      : isQuote
+                      ? 'Escrow protection applies once you approve the quote — funds are released only when you confirm the job is complete.'
                       : 'Held securely in escrow — released to the provider only when you confirm the job is complete.'}
                   </Text>
                 </View>
@@ -562,7 +632,7 @@ export function BookingSheet({
                   labelStyle={styles.ctaLabel}
                   onPress={handleConfirm}
                   loading={flow.submitting}
-                  disabled={!flow.canSubmit}
+                  disabled={!flow.canSubmit || !briefComplete}
                 >
                   {ctaLabel}
                 </Button>
@@ -680,18 +750,41 @@ const styles = StyleSheet.create({
   },
   timeChipTxt: { ...typography.bodySmall, color: palette.textPrimary },
 
-  durationRow: { flexDirection: 'row', gap: spacing.xs, flexWrap: 'wrap' },
-  durChip: {
+  // Provider-set duration guide (customers never input hours)
+  durationGuide: {
+    flexDirection: 'row',
+    alignItems:    'center',
+    gap:           spacing.xs,
+    marginTop:     spacing.md,
+  },
+  durationGuideTxt: { ...typography.bodySmall, color: palette.textSecondary, flex: 1 },
+
+  // HOURLY_CAPPED rate/min/cap card
+  capCard: {
+    marginTop:       spacing.md,
+    backgroundColor: palette.primaryLight,
+    borderRadius:    r.sm,
+    padding:         spacing.md,
+    gap:             4,
+  },
+  capHeadline: { ...typography.label, color: palette.primary, fontSize: 14 },
+  capNote:     { ...typography.bodySmall, color: palette.textSecondary, lineHeight: 17 },
+
+  // Structured brief fields (quote-first models)
+  briefField:    { marginBottom: spacing.sm },
+  briefQuestion: { ...typography.bodySmall, color: palette.textPrimary, marginBottom: 4 },
+  briefInput: {
+    backgroundColor: palette.background,
+    borderRadius:    r.sm,
+    borderWidth:     1,
+    borderColor:     palette.border,
     paddingHorizontal: spacing.md,
     paddingVertical:   spacing.sm,
-    borderRadius:      r.sm,
-    borderWidth:       1,
-    borderColor:       palette.border,
-    backgroundColor:   palette.background,
+    minHeight:       44,
+    fontFamily:      fontFamily.regular,
+    fontSize:        14,
+    color:           palette.textPrimary,
   },
-  durChipSel: { backgroundColor: palette.primaryLight, borderColor: palette.primary },
-  durTxt:     { ...typography.bodySmall, color: palette.textPrimary },
-  durTxtSel:  { ...typography.bodySmall, color: palette.primary },
 
   // Location row
   locationRow: {

@@ -1,6 +1,6 @@
 'use client'
 
-import { Trash2, RotateCcw, MessageSquareOff, ShieldCheck } from 'lucide-react'
+import { IoTrashOutline, IoArrowUndoOutline, IoChatbubbleOutline, IoShieldCheckmarkOutline } from 'react-icons/io5'
 import { cn } from '@/lib/utils'
 import { Can } from '@/lib/rbac/Can'
 import { useAuditedMutation } from '@/lib/audit/audited-mutation'
@@ -61,13 +61,13 @@ export function ReviewModerationActions({ review, onChanged }: Props) {
     >
       <div className="flex flex-wrap gap-2">
         {!removed ? (
-          <ActionButton icon={Trash2} label="Remove review" tone="red" disabled={remove.isPending} onClick={() => remove.trigger({})} />
+          <ActionButton icon={IoTrashOutline} label="Remove review" tone="red" disabled={remove.isPending} onClick={() => remove.trigger({})} />
         ) : (
-          <ActionButton icon={RotateCcw} label="Restore review" tone="teal" disabled={restore.isPending} onClick={() => restore.trigger({})} />
+          <ActionButton icon={IoArrowUndoOutline} label="Restore review" tone="teal" disabled={restore.isPending} onClick={() => restore.trigger({})} />
         )}
 
         <ActionButton
-          icon={ShieldCheck}
+          icon={IoShieldCheckmarkOutline}
           label="Mark not a violation"
           tone="slate"
           disabled={!hasFlags || removed || clearFlags.isPending}
@@ -75,7 +75,7 @@ export function ReviewModerationActions({ review, onChanged }: Props) {
         />
 
         <ActionButton
-          icon={MessageSquareOff}
+          icon={IoChatbubbleOutline}
           label="Remove response"
           tone="amber"
           disabled={!hasResponse || removeResponse.isPending}
@@ -112,7 +112,7 @@ function ActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        'inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-sm font-medium transition-colors',
+        'inline-flex h-9 items-center gap-1.5 rounded-sm border px-3 text-sm font-medium transition-colors',
         'disabled:cursor-not-allowed disabled:opacity-40',
         TONES[tone],
       )}

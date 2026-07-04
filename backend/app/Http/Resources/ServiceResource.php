@@ -19,9 +19,18 @@ class ServiceResource extends JsonResource
             // Platform payment mode a new booking for this service would be created under
             // (DIRECT = pay provider directly, no escrow). Drives mode-aware CTA copy.
             'payment_mode'           => config('booking.payment_mode', 'DIRECT'),
-            // §5.1/§5.5 — QUOTE listings carry no price; the client shows "By quote".
+            // Outcome-based pricing — customers never input hours. base_price is the
+            // browse "from" price (outcome price / spend cap); the per-model fields
+            // below drive the booking sheet copy.
             'pricing_model'          => $this->pricing_model,
             'base_price'             => $this->base_price,
+            'hourly_rate'            => $this->hourly_rate !== null ? (float) $this->hourly_rate : null,
+            'minimum_hours'          => $this->minimum_hours !== null ? (float) $this->minimum_hours : null,
+            'cap_hours'              => $this->cap_hours !== null ? (float) $this->cap_hours : null,
+            'cap_amount'             => $this->cap_amount !== null ? (float) $this->cap_amount : null,
+            'deposit_percent'        => $this->deposit_percent,
+            'scope_prompts'          => $this->scope_prompts ?? [],
+            'needs_pricing_review'   => (bool) $this->needs_pricing_review,
             'duration_estimate_mins' => $this->duration_estimate_mins,
             'status'                 => $this->status,
             'is_pinned'              => (bool) $this->is_pinned,

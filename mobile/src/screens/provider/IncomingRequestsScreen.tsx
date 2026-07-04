@@ -92,8 +92,9 @@ function RequestCard({ entry, scheduled, c, busy, onAccept, onDecline, onQuote, 
 }) {
   const isDirect = entry.payment_mode === 'DIRECT';
   // Awaiting a quote (provider must respond) vs already quoted (waiting on buyer).
-  const needsQuote = entry.pricing_model === 'QUOTE' && entry.status === 'REQUESTED';
-  const quoteSent  = entry.status === 'QUOTED';
+  const quoteFirst = entry.pricing_model === 'PROVIDER_SCOPE' || entry.pricing_model === 'QUOTE_DEPOSIT';
+  const needsQuote = entry.status === 'SCOPE_PENDING' || (quoteFirst && entry.status === 'REQUESTED');
+  const quoteSent  = entry.status === 'QUOTED' || entry.status === 'QUOTE_SENT';
   const locationLabel = entry.delivery_label ?? entry.delivery_region ?? 'Location on file';
   const timer = scheduled || quoteSent ? null : replyTimer(entry.created_at);
 
@@ -187,7 +188,9 @@ function RequestCard({ entry, scheduled, c, busy, onAccept, onDecline, onQuote, 
 function LeadCard({ entry, c, onAccept, onQuote }: { entry: ProviderRequestFeedEntry; c: ThemeC; onAccept: () => void; onQuote: () => void }) {
   const deadline  = deadlineLabel(entry.respond_by);
   const responded = entry.my_response != null;
-  const canAccept = entry.service.base_price != null && entry.service.pricing_model !== 'QUOTE';
+  const canAccept = entry.service.base_price != null
+    && entry.service.pricing_model !== 'PROVIDER_SCOPE'
+    && entry.service.pricing_model !== 'QUOTE_DEPOSIT';
 
   return (
     <View style={[styles.card, { backgroundColor: c.surface, borderColor: c.border }]}>

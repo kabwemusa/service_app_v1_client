@@ -2,9 +2,9 @@
 
 import { useMemo, useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { Briefcase, AlertTriangle, ExternalLink } from 'lucide-react'
+import { IoBriefcaseOutline, IoWarningOutline, IoOpenOutline } from 'react-icons/io5'
 import { DataTable } from '@/components/ui/DataTable'
 import { FilterBar } from '@/components/ui/FilterBar'
 import { DetailPanel } from '@/components/ui/DetailPanel'
@@ -21,6 +21,8 @@ import {
   type ServiceFlag,
 } from '@/lib/api/services'
 import { ServiceDetail } from '@/components/services/ServiceDetail'
+import { useAdminChannel } from '@/lib/realtime/useAdminChannel'
+import { useQueueBadgeStore } from '@/lib/realtime/queue-badge-store'
 
 type Tab = 'needs_review' | 'all'
 
@@ -90,6 +92,16 @@ export function ServicesManager() {
     queryFn: () => servicesApi.list(params),
   })
 
+  const queryClient = useQueryClient()
+  const bumpBadge = useQueueBadgeStore((s) => s.increment)
+
+  useAdminChannel('services', {
+    'service.flagged': () => {
+      queryClient.invalidateQueries({ queryKey: ['services'] })
+      bumpBadge('services')
+    },
+  })
+
   const switchTab = useCallback((t: Tab) => {
     setTab(t)
     setPage(1)
@@ -126,7 +138,7 @@ export function ServicesManager() {
             onClick={(e) => e.stopPropagation()}
           >
             <span className="max-w-32 truncate">{row.original.provider.name}</span>
-            <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
+            <IoOpenOutline className="size-3 shrink-0" aria-hidden="true" />
           </Link>
         ),
       },
@@ -144,7 +156,7 @@ export function ServicesManager() {
               onClick={(e) => e.stopPropagation()}
             >
               <span className="max-w-32 truncate">{c.name ?? 'Category'}</span>
-              <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
+              <IoOpenOutline className="size-3 shrink-0" aria-hidden="true" />
             </Link>
           )
         },
@@ -181,7 +193,7 @@ export function ServicesManager() {
           <button
             type="button"
             onClick={() => select(row.original.id)}
-            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
+            className="rounded-sm border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
             aria-label={`Review ${row.original.title}`}
           >
             Review
@@ -203,7 +215,7 @@ export function ServicesManager() {
     <div className="space-y-4">
       <div>
         <h1 className="flex items-center gap-2 text-lg font-medium text-slate-900 dark:text-slate-100">
-          <Briefcase className="size-5 text-teal-600" />
+          <IoBriefcaseOutline className="size-5 text-teal-600" />
           Services
         </h1>
         <p className="text-sm text-slate-500 dark:text-slate-400">
@@ -253,7 +265,7 @@ export function ServicesManager() {
                 onChange={(e) => resetPageThen(setPriceMin)(e.target.value)}
                 placeholder="Min ZMW"
                 aria-label="Minimum price"
-                className="h-9 w-24 rounded-lg border border-slate-200 bg-white px-3 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+                className="h-9 w-24 rounded-sm border border-slate-200 bg-white px-3 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
               />
               <span className="text-slate-400">–</span>
               <input
@@ -263,7 +275,7 @@ export function ServicesManager() {
                 onChange={(e) => resetPageThen(setPriceMax)(e.target.value)}
                 placeholder="Max ZMW"
                 aria-label="Maximum price"
-                className="h-9 w-24 rounded-lg border border-slate-200 bg-white px-3 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+                className="h-9 w-24 rounded-sm border border-slate-200 bg-white px-3 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
               />
             </div>
           ) : undefined
@@ -358,7 +370,7 @@ function FlagCells({ flags }: { flags: ServiceFlag[] }) {
           key={reason}
           className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-px text-[11px] font-medium text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400"
         >
-          <AlertTriangle className="size-2.5" aria-hidden="true" />
+          <IoWarningOutline className="size-2.5" aria-hidden="true" />
           {flagLabel(reason)}
         </span>
       ))}

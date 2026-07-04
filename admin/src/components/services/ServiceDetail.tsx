@@ -4,9 +4,9 @@ import { useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Eye, ShieldCheck, ExternalLink, ImageIcon, Tag, ScrollText,
-  AlertTriangle, Trash2, Phone, Star, Calendar, Image as ImgIcon,
-} from 'lucide-react'
+  IoEyeOutline, IoShieldCheckmarkOutline, IoOpenOutline, IoImageOutline as ImageIcon, IoPricetagOutline, IoDocumentTextOutline,
+  IoWarningOutline, IoTrashOutline, IoCallOutline, IoStarOutline, IoCalendarOutline, IoImageOutline as ImgIcon,
+} from 'react-icons/io5'
 import { Avatar } from '@/components/ui/Avatar'
 import { StatusPill } from '@/components/ui/StatusPill'
 import { AuditTrail } from '@/components/ui/AuditTrail'
@@ -68,7 +68,7 @@ export function ServiceDetail({ serviceId }: Props) {
       {(readOnly || service.status === 'DRAFT') && service.moderation_reason && (
         <div
           className={cn(
-            'rounded-lg border p-3 text-sm',
+            'rounded-sm border p-3 text-sm',
             readOnly
               ? 'border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-950/20'
               : 'border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/20',
@@ -88,16 +88,16 @@ export function ServiceDetail({ serviceId }: Props) {
 
       {/* ── Policy + flags ── */}
       {service.flags.length > 0 && (
-        <Section title="Flags & policy checks" icon={AlertTriangle}>
+        <Section title="Flags & policy checks" icon={IoWarningOutline}>
           <FlagList flags={service.flags} />
         </Section>
       )}
 
       {/* ── In-flight bookings advisory ── */}
       {service.in_flight_bookings > 0 && (
-        <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm dark:border-blue-900/50 dark:bg-blue-950/20">
+        <div className="rounded-sm border border-blue-200 bg-blue-50 p-3 text-sm dark:border-blue-900/50 dark:bg-blue-950/20">
           <p className="flex items-center gap-1.5 font-medium text-blue-700 dark:text-blue-400">
-            <Calendar className="size-4" />
+            <IoCalendarOutline className="size-4" />
             {service.in_flight_bookings} in-flight booking{service.in_flight_bookings === 1 ? '' : 's'}
           </p>
           <p className="mt-1 text-blue-700/90 dark:text-blue-300/90">
@@ -108,7 +108,7 @@ export function ServiceDetail({ serviceId }: Props) {
       )}
 
       {/* ── Listing as customers see it ── */}
-      <Section title="Listing (as customers see it)" icon={Eye}>
+      <Section title="Listing (as customers see it)" icon={IoEyeOutline}>
         {service.description ? (
           <p className="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{service.description}</p>
         ) : (
@@ -129,7 +129,7 @@ export function ServiceDetail({ serviceId }: Props) {
         {service.addons.length > 0 && (
           <div className="mt-3">
             <p className="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400">Add-ons</p>
-            <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-700 dark:border-slate-700">
+            <div className="divide-y divide-slate-100 rounded-sm border border-slate-200 bg-white dark:divide-slate-700 dark:border-slate-700 dark:bg-slate-800">
               {service.addons.map((a) => (
                 <div key={a.id} className="flex items-center justify-between px-3 py-1.5 text-sm">
                   <span className="text-slate-700 dark:text-slate-300">{a.name}</span>
@@ -159,8 +159,8 @@ export function ServiceDetail({ serviceId }: Props) {
       </Section>
 
       {/* ── Owner ── */}
-      <Section title="Owner" icon={ShieldCheck}>
-        <div className="flex items-start gap-3 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+      <Section title="Owner" icon={IoShieldCheckmarkOutline}>
+        <div className="flex items-start gap-3 rounded-sm border border-slate-200 p-3 dark:border-slate-700">
           <Avatar name={service.provider.name} src={service.provider.avatar_url} size="md" />
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -171,14 +171,14 @@ export function ServiceDetail({ serviceId }: Props) {
             <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400">
               {service.provider.rating !== null ? (
                 <span className="inline-flex items-center gap-1">
-                  <Star className="size-3 fill-amber-400 text-amber-400" /> {service.provider.rating.toFixed(2)} ({service.provider.reviews_count})
+                  <IoStarOutline className="size-3 fill-amber-400 text-amber-400" /> {service.provider.rating.toFixed(2)} ({service.provider.reviews_count})
                 </span>
               ) : (
                 <span>No reviews</span>
               )}
               {service.provider.open_reports > 0 && (
                 <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
-                  <AlertTriangle className="size-3" /> {service.provider.open_reports} open report{service.provider.open_reports === 1 ? '' : 's'}
+                  <IoWarningOutline className="size-3" /> {service.provider.open_reports} open report{service.provider.open_reports === 1 ? '' : 's'}
                 </span>
               )}
             </p>
@@ -186,7 +186,7 @@ export function ServiceDetail({ serviceId }: Props) {
               href={`/users?user=${service.provider.id}`}
               className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:underline dark:text-teal-400"
             >
-              Open provider record (standing, prior actions) <ExternalLink className="size-3" />
+              Open provider record (standing, prior actions) <IoOpenOutline className="size-3" />
             </Link>
           </div>
         </div>
@@ -197,10 +197,10 @@ export function ServiceDetail({ serviceId }: Props) {
       </Section>
 
       {/* ── Category + §8.1 commission band ── */}
-      <Section title="Category & commission band (§8.1)" icon={Tag}>
+      <Section title="Category & commission band (§8.1)" icon={IoPricetagOutline}>
         {service.category ? (
           <div className={cn(
-            'flex items-center justify-between gap-3 rounded-lg border p-3',
+            'flex items-center justify-between gap-3 rounded-sm border p-3',
             service.category.band_valid
               ? 'border-slate-200 dark:border-slate-700'
               : 'border-amber-200 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-900/10',
@@ -210,7 +210,7 @@ export function ServiceDetail({ serviceId }: Props) {
                 href={`/categories?category=${service.category.id}`}
                 className="inline-flex items-center gap-1 font-medium text-slate-800 hover:text-teal-600 hover:underline dark:text-slate-200 dark:hover:text-teal-400"
               >
-                {service.category.name} <ExternalLink className="size-3" />
+                {service.category.name} <IoOpenOutline className="size-3" />
               </Link>
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
                 Band: {bandLabel(service.category.commission_band)}
@@ -223,7 +223,7 @@ export function ServiceDetail({ serviceId }: Props) {
             )}
           </div>
         ) : (
-          <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-3 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/10 dark:text-amber-400">
+          <div className="rounded-sm border border-amber-200 bg-amber-50/50 p-3 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/10 dark:text-amber-400">
             This listing has no category — it cannot be priced for commission. Reassign it to a banded
             category below.
           </div>
@@ -231,12 +231,12 @@ export function ServiceDetail({ serviceId }: Props) {
       </Section>
 
       {/* ── Moderation ── */}
-      <Section title="Moderation" icon={ShieldCheck}>
+      <Section title="Moderation" icon={IoShieldCheckmarkOutline}>
         <ServiceModerationActions service={service} onChanged={invalidate} />
       </Section>
 
       {/* ── Audit trail (scoped to this service) ── */}
-      <Section title="Audit trail" icon={ScrollText}>
+      <Section title="Audit trail" icon={IoDocumentTextOutline}>
         <AuditTrail targetType="service" targetId={service.id} />
       </Section>
     </div>
@@ -260,12 +260,12 @@ function FlagList({ flags }: { flags: ServiceFlag[] }) {
         {flags.map((f, i) => (
           <li
             key={i}
-            className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm dark:border-amber-800 dark:bg-amber-900/10"
+            className="flex items-start gap-2 rounded-sm border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm dark:border-amber-800 dark:bg-amber-900/10"
           >
             {f.reason === 'CONTACT_IN_LISTING' ? (
-              <Phone className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+              <IoCallOutline className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
             ) : (
-              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+              <IoWarningOutline className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
             )}
             <div className="min-w-0">
               <p className="font-medium text-amber-800 dark:text-amber-300">
@@ -319,7 +319,7 @@ function PhotoCard({
 
   return (
     <div className={cn(
-      'overflow-hidden rounded-lg border',
+      'overflow-hidden rounded-sm border',
       flagged ? 'border-amber-300 dark:border-amber-700' : 'border-slate-200 dark:border-slate-700',
     )}>
       <div className="relative aspect-square bg-slate-100 dark:bg-slate-800">
@@ -350,7 +350,7 @@ function PhotoCard({
               disabled={remove.isPending}
               className="inline-flex items-center gap-1 text-[11px] font-medium text-red-600 hover:text-red-700 disabled:opacity-50 dark:text-red-400"
             >
-              <Trash2 className="size-3" /> Remove photo
+              <IoTrashOutline className="size-3" /> Remove photo
             </button>
           </Can>
         )}
@@ -405,7 +405,7 @@ function DetailSkeleton() {
         <div className="h-3 w-1/3 animate-pulse rounded bg-slate-100 dark:bg-slate-800" />
       </div>
       {Array.from({ length: 4 }).map((_, i) => (
-        <div key={i} className="h-24 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800" />
+        <div key={i} className="h-24 animate-pulse rounded-sm bg-slate-100 dark:bg-slate-800" />
       ))}
     </div>
   )

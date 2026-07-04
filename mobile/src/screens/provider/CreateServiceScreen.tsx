@@ -51,11 +51,40 @@ import { fontFamily } from '../../theme/typography';
 
 type SectionKey = 'details' | 'pricing' | 'extras' | 'photos';
 
-const PRICING_OPTIONS: { value: PricingModel; label: string }[] = [
-  { value: 'FIXED',  label: 'Fixed'    },
-  { value: 'HOURLY', label: 'Hourly'   },
-  { value: 'QUOTE',  label: 'By quote' },
+// Outcome-based pricing — the provider owns every price parameter; customers
+// never input hours anywhere.
+const PRICING_OPTIONS: { value: PricingModel; label: string; description: string }[] = [
+  {
+    value: 'OUTCOME_FIXED',
+    label: 'Fixed outcome',
+    description: 'One price for a defined outcome. Customers book and pay it upfront.',
+  },
+  {
+    value: 'HOURLY_CAPPED',
+    label: 'Hourly with a cap',
+    description: 'Rate + minimum + spend cap. The cap is held; customers only pay for actual time.',
+  },
+  {
+    value: 'PROVIDER_SCOPE',
+    label: 'Quote after brief',
+    description: 'Customers answer your questions; you send a fixed quote they approve before paying.',
+  },
+  {
+    value: 'QUOTE_DEPOSIT',
+    label: 'Quote + deposit',
+    description: 'For large jobs: full quote after the brief, a deposit confirms, balance on completion.',
+  },
 ];
+
+// Legacy model names may still arrive from cached payloads — map them forward.
+function normalizeModel(model: string | undefined): PricingModel {
+  switch (model) {
+    case 'FIXED':  return 'OUTCOME_FIXED';
+    case 'HOURLY': return 'HOURLY_CAPPED';
+    case 'QUOTE':  return 'PROVIDER_SCOPE';
+    default:       return (model as PricingModel) ?? 'OUTCOME_FIXED';
+  }
+}
 
 const STATUS_OPTIONS: { value: ServiceStatus; label: string }[] = [
   { value: 'DRAFT',  label: 'Draft'  },
@@ -96,8 +125,19 @@ export default function CreateServiceScreen({ navigation, route }: any) {
   const [categoryId, setCategoryId]     = useState<number | undefined>(editing?.category_id);
   const [title, setTitle]               = useState(editing?.title ?? '');
   const [description, setDescription]   = useState(editing?.description ?? '');
-  const [pricingModel, setPricingModel] = useState<PricingModel>(editing?.pricing_model ?? 'FIXED');
+  const [pricingModel, setPricingModel] = useState<PricingModel>(normalizeModel(editing?.pricing_model));
   const [price, setPrice]               = useState(editing?.base_price != null ? String(editing.base_price) : '');
+  // HOURLY_CAPPED parameters — all provider-set, all required to publish.
+  const [hourlyRate, setHourlyRate]     = useState(editing?.hourly_rate != null ? String(editing.hourly_rate) : '');
+  const [minimumHours, setMinimumHours] = useState(editing?.minimum_hours != null ? String(editing.minimum_hours) : '1');
+  const [capHours, setCapHours]         = useState(editing?.cap_hours != null ? String(editing.cap_hours) : '4');
+  // QUOTE_DEPOSIT
+  const [depositPercent, setDepositPercent] = useState(
+    editing?.deposit_percent != null ? String(editing.deposit_percent) : '30'
+  );
+  // PROVIDER_SCOPE / QUOTE_DEPOSIT — structured brief questions for the customer.
+  const [scopePrompts, setScopePrompts]         = useState<string[]>(editing?.scope_prompts ?? []);
+  const [scopePromptDraft, setScopePromptDraft] = useState('');
   const [duration, setDuration]         = useState(
     editing?.duration_estimate_mins != null ? String(editing.duration_estimate_mins) : ''
   );
@@ -182,14 +222,22 @@ export default function CreateServiceScreen({ navigation, route }: any) {
     return sub;
   }, [navigation]);
 
+  // The customer-facing "worst case" amount per model: outcome price, or the
+  // hourly spend cap (rate × cap hours). Quote-first models have none yet.
+  const previewBasis = pricingModel === 'OUTCOME_FIXED'
+    ? parseFloat(price)
+    : pricingModel === 'HOURLY_CAPPED'
+      ? (parseFloat(hourlyRate) || 0) * (parseFloat(capHours) || 0)
+      : NaN;
+
   // ── Live commission preview — only ESCROW mode charges commission ───────────
   useEffect(() => {
     if (previewDebounce.current) clearTimeout(previewDebounce.current);
-    if (paymentMode !== 'ESCROW' || pricingModel === 'QUOTE' || !categoryId) {
+    if (paymentMode !== 'ESCROW' || !categoryId) {
       setPreview(null);
       return;
     }
-    const numeric = parseFloat(price);
+    const numeric = previewBasis;
     if (Number.isNaN(numeric) || numeric <= 0) { setPreview(null); return; }
 
     previewDebounce.current = setTimeout(async () => {
@@ -203,7 +251,23 @@ export default function CreateServiceScreen({ navigation, route }: any) {
       }
     }, 450);
     return () => { if (previewDebounce.current) clearTimeout(previewDebounce.current); };
-  }, [categoryId, price, pricingModel, paymentMode]);
+  }, [categoryId, price, hourlyRate, capHours, pricingModel, paymentMode]);
+
+  // ── Scope prompts (brief questions) ─────────────────────────────────────────
+  const addScopePrompt = () => {
+    const text = scopePromptDraft.trim();
+    if (!text) return;
+    if (scopePrompts.length >= 8) { showError('You can ask up to 8 questions.'); return; }
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setScopePrompts((prev) => [...prev, text]);
+    setScopePromptDraft('');
+    markDirty();
+  };
+  const removeScopePrompt = (index: number) => {
+    Haptics.selectionAsync();
+    setScopePrompts((prev) => prev.filter((_, i) => i !== index));
+    markDirty();
+  };
 
   // ── Inclusions ──────────────────────────────────────────────────────────────
   const addInclusion = () => {
@@ -342,7 +406,25 @@ export default function CreateServiceScreen({ navigation, route }: any) {
     // location (set once in your profile). Providers can still override per service.
     // Required only to publish (move to ACTIVE).
     if (forStatus === 'ACTIVE') {
-      if (pricingModel !== 'QUOTE' && !(parseFloat(price) > 0)) errs.push({ tab: 'pricing', field: 'price' });
+      if (pricingModel === 'OUTCOME_FIXED' && !(parseFloat(price) > 0)) {
+        errs.push({ tab: 'pricing', field: 'price' });
+      }
+      if (pricingModel === 'HOURLY_CAPPED') {
+        const rate = parseFloat(hourlyRate);
+        const min  = parseFloat(minimumHours);
+        const cap  = parseFloat(capHours);
+        if (!(rate > 0)) errs.push({ tab: 'pricing', field: 'hourly_rate' });
+        if (!(min > 0))  errs.push({ tab: 'pricing', field: 'minimum_hours' });
+        // No uncapped hourly: the cap is required and must cover the minimum.
+        if (!(cap > 0) || (min > 0 && cap < min)) errs.push({ tab: 'pricing', field: 'cap_hours' });
+      }
+      if (pricingModel === 'PROVIDER_SCOPE' && !(parseFloat(hourlyRate) > 0)) {
+        errs.push({ tab: 'pricing', field: 'hourly_rate' });
+      }
+      if (pricingModel === 'QUOTE_DEPOSIT') {
+        const pct = parseInt(depositPercent, 10);
+        if (!(pct >= 10 && pct <= 90)) errs.push({ tab: 'pricing', field: 'deposit_percent' });
+      }
       if (inclusions.length === 0) errs.push({ tab: 'extras', field: 'inclusions' });
     }
     return errs;
@@ -383,7 +465,15 @@ export default function CreateServiceScreen({ navigation, route }: any) {
       title:                  title.trim(),
       description:            description.trim() || undefined,
       pricing_model:          pricingModel,
-      base_price:             pricingModel === 'QUOTE' ? null : (parseFloat(price) || null),
+      // Per-model pricing parameters — the backend clears whatever the model doesn't use.
+      base_price:             pricingModel === 'OUTCOME_FIXED' ? (parseFloat(price) || null) : null,
+      hourly_rate:            ['HOURLY_CAPPED', 'PROVIDER_SCOPE'].includes(pricingModel)
+        ? (parseFloat(hourlyRate) || null) : null,
+      minimum_hours:          pricingModel === 'HOURLY_CAPPED' ? (parseFloat(minimumHours) || null) : null,
+      cap_hours:              pricingModel === 'HOURLY_CAPPED' ? (parseFloat(capHours) || null) : null,
+      deposit_percent:        pricingModel === 'QUOTE_DEPOSIT' ? (parseInt(depositPercent, 10) || 30) : null,
+      scope_prompts:          ['PROVIDER_SCOPE', 'QUOTE_DEPOSIT'].includes(pricingModel) && scopePrompts.length
+        ? scopePrompts : null,
       duration_estimate_mins: durationMins,
       status,
       is_pinned:              isPinned,
@@ -421,7 +511,6 @@ export default function CreateServiceScreen({ navigation, route }: any) {
   };
 
   // ── Render helpers ──────────────────────────────────────────────────────────
-  const priceLabelText = pricingModel === 'HOURLY' ? 'Hourly rate (ZMW)' : 'Price (ZMW)';
   const categoryName = categories.find((c) => c.id === categoryId)?.name;
 
   const tabs: TabItem[] = [
@@ -524,7 +613,7 @@ export default function CreateServiceScreen({ navigation, route }: any) {
               <View style={styles.switchRow}>
                 <View style={styles.switchText}>
                   <Text style={styles.switchTitle}>Pin to profile highlights</Text>
-                  <Text style={styles.hint}>Feature this service near the top of your public profile (§5.4).</Text>
+                  <Text style={styles.hint}>Feature this service near the top of your public profile.</Text>
                 </View>
                 <Switch value={isPinned} onValueChange={(v) => { setIsPinned(v); markDirty(); }} color={palette.primary} />
               </View>
@@ -534,22 +623,47 @@ export default function CreateServiceScreen({ navigation, route }: any) {
           {/* ── PRICING ───────────────────────────────────────────────── */}
           {section === 'pricing' && (
             <>
-              <Text style={styles.subLabel}>How do you price this?</Text>
-              <SegmentedButtons
-                value={pricingModel}
-                onValueChange={(v) => { Haptics.selectionAsync(); setPricingModel(v as PricingModel); markDirty(); }}
-                buttons={PRICING_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-              />
+              {editing?.needs_pricing_review && (
+                <View style={styles.reviewBanner}>
+                  <Ionicons name="alert-circle-outline" size={16} color={palette.warning} />
+                  <Text style={styles.reviewBannerText}>
+                    Your hourly service now needs a spend cap — we've set a default of 4 hours.
+                    Review it below and save to confirm.
+                  </Text>
+                </View>
+              )}
 
-              {pricingModel === 'QUOTE' ? (
-                <Text style={styles.quoteHint}>
-                  Customers see “By quote” and request a custom price from you instead of a listed rate. No price or
-                  duration needed.
-                </Text>
-              ) : (
+              <Text style={styles.subLabel}>How do you price this?</Text>
+              {PRICING_OPTIONS.map((opt) => {
+                const active = pricingModel === opt.value;
+                return (
+                  <TouchableRipple
+                    key={opt.value}
+                    onPress={() => { Haptics.selectionAsync(); setPricingModel(opt.value); markDirty(); }}
+                    borderless
+                    style={[styles.modelCard, active && styles.modelCardActive]}
+                  >
+                    <View style={styles.modelCardInner}>
+                      <Ionicons
+                        name={active ? 'radio-button-on' : 'radio-button-off'}
+                        size={18}
+                        color={active ? palette.primary : palette.textDisabled}
+                      />
+                      <View style={styles.modelCardText}>
+                        <Text style={[styles.modelCardTitle, active && { color: palette.primary }]}>{opt.label}</Text>
+                        <Text style={styles.modelCardDesc}>{opt.description}</Text>
+                      </View>
+                    </View>
+                  </TouchableRipple>
+                );
+              })}
+
+              <View style={styles.divider} />
+
+              {/* ── OUTCOME_FIXED: outcome price + estimate ─────────────── */}
+              {pricingModel === 'OUTCOME_FIXED' && (
                 <>
-                  <View style={styles.divider} />
-                  <Text style={styles.subLabel}>{priceLabelText}</Text>
+                  <Text style={styles.subLabel}>Price for the outcome (ZMW)</Text>
                   <TextInput
                     ref={priceRef}
                     mode="outlined"
@@ -560,11 +674,11 @@ export default function CreateServiceScreen({ navigation, route }: any) {
                     style={styles.input}
                     outlineStyle={styles.inputOutline}
                     left={<TextInput.Icon icon="cash" />}
-                    right={pricingModel === 'HOURLY' ? <TextInput.Affix text="/ hr" /> : undefined}
                   />
                   {hasError('price') && <HelperText type="error" visible>Enter a price to publish.</HelperText>}
+                  <Text style={styles.hint}>Describe the outcome in the title, and what's covered under Extras → What's included.</Text>
 
-                  <Text style={styles.subLabel}>Estimated duration</Text>
+                  <Text style={styles.subLabel}>Estimated duration — shown to customers as a guide</Text>
                   <TextInput
                     mode="outlined"
                     label="Minutes (optional)"
@@ -575,11 +689,153 @@ export default function CreateServiceScreen({ navigation, route }: any) {
                     outlineStyle={styles.inputOutline}
                     left={<TextInput.Icon icon="clock-outline" />}
                   />
+                  <Text style={styles.hint}>Customers never enter hours — this is only a guide on your listing.</Text>
+                </>
+              )}
+
+              {/* ── HOURLY_CAPPED: rate + minimum + cap ─────────────────── */}
+              {pricingModel === 'HOURLY_CAPPED' && (
+                <>
+                  <Text style={styles.subLabel}>Hourly rate (ZMW)</Text>
+                  <TextInput
+                    mode="outlined"
+                    keyboardType="decimal-pad"
+                    value={hourlyRate}
+                    onChangeText={(t) => { setHourlyRate(t); markDirty(); }}
+                    error={hasError('hourly_rate')}
+                    style={styles.input}
+                    outlineStyle={styles.inputOutline}
+                    left={<TextInput.Icon icon="cash" />}
+                    right={<TextInput.Affix text="/ hr" />}
+                  />
+                  {hasError('hourly_rate') && <HelperText type="error" visible>Enter your hourly rate.</HelperText>}
+
+                  <View style={styles.hourlyRow}>
+                    <View style={styles.hourlyCol}>
+                      <Text style={styles.subLabel}>Minimum hours</Text>
+                      <TextInput
+                        mode="outlined"
+                        keyboardType="decimal-pad"
+                        value={minimumHours}
+                        onChangeText={(t) => { setMinimumHours(t); markDirty(); }}
+                        error={hasError('minimum_hours')}
+                        style={styles.input}
+                        outlineStyle={styles.inputOutline}
+                      />
+                    </View>
+                    <View style={styles.hourlyCol}>
+                      <Text style={styles.subLabel}>Maximum hours (cap)</Text>
+                      <TextInput
+                        mode="outlined"
+                        keyboardType="decimal-pad"
+                        value={capHours}
+                        onChangeText={(t) => { setCapHours(t); markDirty(); }}
+                        error={hasError('cap_hours')}
+                        style={styles.input}
+                        outlineStyle={styles.inputOutline}
+                      />
+                    </View>
+                  </View>
+                  {hasError('minimum_hours') && <HelperText type="error" visible>Set a minimum (e.g. 1).</HelperText>}
+                  {hasError('cap_hours') && <HelperText type="error" visible>Set a cap of at least the minimum — no uncapped hourly.</HelperText>}
+
+                  {parseFloat(hourlyRate) > 0 && parseFloat(capHours) > 0 && (
+                    <View style={styles.previewBox}>
+                      <Ionicons name="eye-outline" size={16} color={palette.primary} />
+                      <Text style={styles.previewText}>
+                        Customer sees: ZMW {parseFloat(hourlyRate).toFixed(0)}/hr · {parseFloat(minimumHours) || 1}-hr minimum
+                        · max ZMW {(parseFloat(hourlyRate) * parseFloat(capHours)).toFixed(0)}.{'\n'}
+                        The cap is held at booking; you log the actual time when done and the customer is refunded the difference.
+                      </Text>
+                    </View>
+                  )}
+                </>
+              )}
+
+              {/* ── PROVIDER_SCOPE: rate + brief questions ──────────────── */}
+              {pricingModel === 'PROVIDER_SCOPE' && (
+                <>
+                  <Text style={styles.subLabel}>Your rate (ZMW — your basis for quoting)</Text>
+                  <TextInput
+                    mode="outlined"
+                    keyboardType="decimal-pad"
+                    value={hourlyRate}
+                    onChangeText={(t) => { setHourlyRate(t); markDirty(); }}
+                    error={hasError('hourly_rate')}
+                    style={styles.input}
+                    outlineStyle={styles.inputOutline}
+                    left={<TextInput.Icon icon="cash" />}
+                    right={<TextInput.Affix text="/ hr" />}
+                  />
+                  {hasError('hourly_rate') && <HelperText type="error" visible>Enter your rate — it's your quoting basis (not shown as a fixed price).</HelperText>}
+                  <Text style={styles.quoteHint}>
+                    Customers answer your questions below, you review the brief and send a scoped quote
+                    (price + duration + what's included). Money is only held after they approve it.
+                  </Text>
+                </>
+              )}
+
+              {/* ── QUOTE_DEPOSIT: deposit % ────────────────────────────── */}
+              {pricingModel === 'QUOTE_DEPOSIT' && (
+                <>
+                  <Text style={styles.subLabel}>Deposit to confirm (%)</Text>
+                  <TextInput
+                    mode="outlined"
+                    keyboardType="number-pad"
+                    value={depositPercent}
+                    onChangeText={(t) => { setDepositPercent(t); markDirty(); }}
+                    error={hasError('deposit_percent')}
+                    style={styles.input}
+                    outlineStyle={styles.inputOutline}
+                    left={<TextInput.Icon icon="percent" />}
+                  />
+                  {hasError('deposit_percent') && <HelperText type="error" visible>Deposit must be between 10% and 90%.</HelperText>}
+                  <Text style={styles.quoteHint}>
+                    For large or complex jobs: the customer sends a detailed brief, you send a full quote.
+                    They pay {parseInt(depositPercent, 10) || 30}% into escrow to confirm; the balance is
+                    collected automatically when the job completes (two Mobile Money collections).
+                  </Text>
+                </>
+              )}
+
+              {/* ── Brief questions (both quote-first models) ───────────── */}
+              {(pricingModel === 'PROVIDER_SCOPE' || pricingModel === 'QUOTE_DEPOSIT') && (
+                <>
+                  <View style={styles.divider} />
+                  <Text style={styles.subLabel}>Questions customers answer when booking</Text>
+                  <Text style={styles.hint}>
+                    Structured prompts — e.g. "How many bedrooms?", "Any pets?". Leave empty to use our defaults.
+                  </Text>
+                  {scopePrompts.map((prompt, index) => (
+                    <View key={`${prompt}-${index}`} style={styles.listRow}>
+                      <Ionicons name="help-circle-outline" size={18} color={palette.primary} />
+                      <Text style={styles.listText} numberOfLines={2}>{prompt}</Text>
+                      <TouchableRipple onPress={() => removeScopePrompt(index)} borderless style={styles.listActionBtn}>
+                        <Ionicons name="close" size={16} color={palette.danger} />
+                      </TouchableRipple>
+                    </View>
+                  ))}
+                  <View style={styles.addRow}>
+                    <TextInput
+                      mode="outlined"
+                      placeholder='e.g. "How many rooms?"'
+                      value={scopePromptDraft}
+                      onChangeText={setScopePromptDraft}
+                      onSubmitEditing={addScopePrompt}
+                      returnKeyType="done"
+                      style={[styles.input, styles.addInput]}
+                      outlineStyle={styles.inputOutline}
+                      dense
+                    />
+                    <TouchableRipple onPress={addScopePrompt} borderless style={styles.addBtn}>
+                      <Ionicons name="add" size={20} color="#FFFFFF" />
+                    </TouchableRipple>
+                  </View>
                 </>
               )}
 
               {/* Earnings preview — payment_mode-aware (§ commission rule) */}
-              {pricingModel !== 'QUOTE' && parseFloat(price) > 0 && (
+              {previewBasis > 0 && (
                 <View style={[styles.previewBox, paymentMode === 'DIRECT' && styles.previewBoxDirect]}>
                   <Ionicons
                     name={paymentMode === 'DIRECT' ? 'checkmark-circle-outline' : 'information-circle-outline'}
@@ -588,7 +844,7 @@ export default function CreateServiceScreen({ navigation, route }: any) {
                   />
                   {paymentMode === 'DIRECT' ? (
                     <Text style={styles.previewText}>
-                      You’re paid the full ZMW {parseFloat(price).toFixed(0)} directly — no commission is charged.
+                      You’re paid the full ZMW {previewBasis.toFixed(0)} directly — no commission is charged.
                     </Text>
                   ) : previewLoading && !preview ? (
                     <Text style={styles.previewText}>Calculating your commission…</Text>
@@ -1020,6 +1276,34 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     marginTop: spacing.md,
   },
+
+  // Outcome-based pricing model picker
+  modelCard: {
+    borderWidth: 1,
+    borderColor: palette.border,
+    borderRadius: r.sm,
+    backgroundColor: palette.background,
+    marginBottom: spacing.xs,
+  },
+  modelCardActive: { borderColor: palette.primary, backgroundColor: palette.primaryLight },
+  modelCardInner:  { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, padding: spacing.md },
+  modelCardText:   { flex: 1 },
+  modelCardTitle:  { ...typography.label, color: palette.textPrimary, fontSize: 14 },
+  modelCardDesc:   { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12, marginTop: 2 },
+
+  hourlyRow: { flexDirection: 'row', gap: spacing.sm },
+  hourlyCol: { flex: 1 },
+
+  reviewBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.xs,
+    backgroundColor: palette.warningLight,
+    borderRadius: r.sm,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  reviewBannerText: { ...typography.bodySmall, color: palette.warning, flex: 1, lineHeight: 18 },
 
   previewBox: {
     flexDirection: 'row',

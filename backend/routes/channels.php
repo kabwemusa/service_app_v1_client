@@ -1,5 +1,7 @@
 <?php
 
+use App\Models\AdminUser;
+use App\Support\AdminCapabilities;
 use Illuminate\Support\Facades\Broadcast;
 
 /*
@@ -15,3 +17,35 @@ use Illuminate\Support\Facades\Broadcast;
 Broadcast::channel('user.{userId}', function ($user, $userId) {
     return $user->id === $userId;
 });
+
+/*
+|--------------------------------------------------------------------------
+| Admin queue channels
+|--------------------------------------------------------------------------
+|
+| One private channel per admin module (verification/finance/safety/reviews/
+| services). Authorized against the `admin` guard + the same capability
+| strings the REST endpoints for that module already require.
+|
+*/
+
+Broadcast::channel('admin.{module}', function (AdminUser $admin, string $module) {
+    $capability = match ($module) {
+        'verification' => 'read:verification',
+        'finance'      => 'read:commissions',
+        'safety'       => 'safety.handle',
+        'reviews'      => 'read:reviews',
+        'services'     => 'read:services',
+        default        => null,
+    };
+
+    return $capability !== null
+        && in_array($capability, AdminCapabilities::forRole($admin->role), true);
+}, ['guards' => ['admin']]);
+
+// Registers POST /api/admin/broadcasting/auth, guarded by the admin JWT guard
+// (mirrors the `auth:admin` middleware used by every other admin/* route).
+Broadcast::routes([
+    'middleware' => ['auth:admin'],
+    'prefix'     => 'api/admin',
+]);

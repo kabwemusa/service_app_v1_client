@@ -21,6 +21,7 @@ class AuthService
 {
     private const OTP_KEY_PREFIX     = 'otp:';
     private const REFRESH_KEY_PREFIX = 'refresh:';
+    private const USER_REFRESH_SET_PREFIX = 'refresh_tokens_by_user:';
     private const OTP_RATE_PREFIX    = 'otp_rate:';
     private const OTP_COOLDOWN_PREFIX = 'otp_cd:';
 
@@ -224,12 +225,35 @@ class AuthService
     public function logout(string $refreshToken): void
     {
         JWTAuth::invalidate(JWTAuth::getToken());
+        $userId = Redis::get(self::REFRESH_KEY_PREFIX . $refreshToken);
         Redis::del(self::REFRESH_KEY_PREFIX . $refreshToken);
+        if ($userId) {
+            Redis::srem(self::USER_REFRESH_SET_PREFIX . $userId, $refreshToken);
+        }
     }
 
     public function resendOtp(User $user): void
     {
         $this->sendOtp($user);
+    }
+
+    /**
+     * Cut every active session for a user immediately (ban/suspend). All
+     * refresh tokens are deleted so they can no longer be redeemed, and the
+     * revocation watermark is set so any still-live JWT access token is
+     * rejected by EnsureAccountActive on its very next request — regardless
+     * of the token's remaining TTL.
+     */
+    public function invalidateAllSessions(string $userId): void
+    {
+        $setKey = self::USER_REFRESH_SET_PREFIX . $userId;
+        $tokens = Redis::smembers($setKey);
+        foreach ($tokens as $token) {
+            Redis::del(self::REFRESH_KEY_PREFIX . $token);
+        }
+        Redis::del($setKey);
+
+        User::where('id', $userId)->update(['session_invalidated_at' => now()]);
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
@@ -252,6 +276,8 @@ class AuthService
         $expiry = (int) config('jwt.refresh_ttl', 10080);
 
         Redis::setex(self::REFRESH_KEY_PREFIX . $token, $expiry * 60, $userId);
+        Redis::sadd(self::USER_REFRESH_SET_PREFIX . $userId, $token);
+        Redis::expire(self::USER_REFRESH_SET_PREFIX . $userId, $expiry * 60);
 
         return $token;
     }

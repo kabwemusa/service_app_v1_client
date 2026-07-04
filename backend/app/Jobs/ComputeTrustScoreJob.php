@@ -2,6 +2,8 @@
 
 namespace App\Jobs;
 
+use App\Events\AdminQueueEvent;
+use App\Models\TrustRecomputeLog;
 use App\Services\Ranking\RankingService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -112,9 +114,28 @@ class ComputeTrustScoreJob implements ShouldQueue
                     completedJobs:         $completedJobs,
                 );
 
+                $previousScore = DB::table('provider_profiles')
+                    ->where('user_id', $row->user_id)
+                    ->value('trust_score');
+
                 DB::table('provider_profiles')
                     ->where('user_id', $row->user_id)
                     ->update(['trust_score' => $score]);
+
+                // Passive observability only — never blocks the recompute.
+                if ($previousScore === null || round((float) $previousScore, 2) !== round($score, 2)) {
+                    try {
+                        TrustRecomputeLog::create([
+                            'provider_id' => $row->user_id,
+                            'reason'      => 'scheduled',
+                            'old_score'   => $previousScore !== null ? (float) $previousScore : null,
+                            'new_score'   => $score,
+                            'created_at'  => now(),
+                        ]);
+                    } catch (\Throwable $e) {
+                        Log::warning('TrustRecomputeLog: failed to persist', ['error' => $e->getMessage()]);
+                    }
+                }
 
                 $updated++;
             } catch (\Throwable $e) {
@@ -239,6 +260,15 @@ class ComputeTrustScoreJob implements ShouldQueue
                         'price'           => (float) $row->base_price,
                         'category_median' => $median,
                     ]),
+                ]);
+
+                AdminQueueEvent::fire('services', 'service.flagged', $row->id, [
+                    'service_id'      => $row->id,
+                    'provider_id'     => $row->provider_id,
+                    'title'           => $row->title,
+                    'reason'          => 'LOWBALL_PRICE',
+                    'price'           => (float) $row->base_price,
+                    'category_median' => $median,
                 ]);
 
                 $flagged++;

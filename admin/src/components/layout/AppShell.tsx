@@ -9,7 +9,7 @@ import { ToastContainer } from '@/components/ui/Toast'
 import { useAuthStore } from '@/lib/store/auth-store'
 import { useIdleTimeout } from '@/lib/auth/idle-timeout'
 import type { AdminTokenPayload } from '@/lib/api/types'
-import { AlertTriangle } from 'lucide-react'
+import { IoWarningOutline } from 'react-icons/io5'
 import { cn } from '@/lib/utils'
 
 interface AppShellProps {
@@ -53,7 +53,7 @@ export function AppShell({ initialSession, children }: AppShellProps) {
         {/* Idle warning banner */}
         {idleWarning && (
           <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-700 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-400">
-            <AlertTriangle className="size-4 shrink-0" />
+            <IoWarningOutline className="size-4 shrink-0" />
             <span>Your session will expire in 5 minutes. Move the mouse or press a key to stay signed in.</span>
             <button
               onClick={() => setIdleWarning(false)}

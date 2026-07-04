@@ -3,7 +3,7 @@
 import { useRef, useState, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { api, ApiResponseError } from '@/lib/api/client'
-import { ShieldCheck } from 'lucide-react'
+import { IoShieldCheckmarkOutline } from 'react-icons/io5'
 import { cn } from '@/lib/utils'
 
 interface MfaResponse {
@@ -63,8 +63,8 @@ export default function MfaPage() {
     <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6 dark:bg-slate-950">
       <div className="w-full max-w-sm space-y-6">
         <div className="flex flex-col items-center gap-2">
-          <div className="flex size-10 items-center justify-center rounded-lg bg-teal-600">
-            <ShieldCheck className="size-5 text-white" />
+          <div className="flex size-10 items-center justify-center rounded-sm bg-teal-600">
+            <IoShieldCheckmarkOutline className="size-5 text-white" />
           </div>
           <h1 className="text-base font-medium text-slate-900 dark:text-slate-100">
             Two-factor authentication
@@ -76,7 +76,7 @@ export default function MfaPage() {
 
         <form
           onSubmit={handleSubmit}
-          className="space-y-4 rounded-lg border border-slate-200 bg-white p-6 dark:border-slate-700 dark:bg-slate-800"
+          className="space-y-4 rounded-sm border border-slate-200 bg-white p-6 dark:border-slate-700 dark:bg-slate-800"
         >
           <div className="space-y-1.5">
             <label htmlFor="mfa-code" className="block text-xs font-medium text-slate-700 dark:text-slate-300">
@@ -96,7 +96,7 @@ export default function MfaPage() {
               }}
               placeholder="000000"
               className={cn(
-                'h-11 w-full rounded-lg border px-3 text-center text-xl tracking-[0.3em]',
+                'h-11 w-full rounded-sm border px-3 text-center text-xl tracking-[0.3em]',
                 'border-slate-200 bg-white dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100',
                 'focus:outline-none focus:ring-2 focus:ring-teal-500',
                 error && 'border-red-400',
@@ -105,7 +105,7 @@ export default function MfaPage() {
           </div>
 
           {error && (
-            <p className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-600">
+            <p className="rounded-sm bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-600">
               {error}
             </p>
           )}
@@ -113,9 +113,9 @@ export default function MfaPage() {
           <button
             type="submit"
             disabled={code.length !== 6 || submitting}
-            className="w-full rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-60"
+            className="w-full rounded-sm bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-60"
           >
-            {submitting ? 'Verifyingâ€¦' : 'Verify'}
+            {submitting ? 'Verifying…' : 'Verify'}
           </button>
         </form>
 

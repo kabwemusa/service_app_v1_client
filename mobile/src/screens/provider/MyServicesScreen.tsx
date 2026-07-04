@@ -44,7 +44,9 @@ function draftMissing(svc: Service): string {
   const missing: string[] = [];
   if (!svc.title?.trim()) missing.push('title');
   if (!svc.category)      missing.push('category');
-  if (svc.pricing_model !== 'QUOTE' && svc.base_price == null) missing.push('price');
+  if (svc.pricing_model === 'OUTCOME_FIXED' && svc.base_price == null) missing.push('price');
+  if (svc.pricing_model === 'HOURLY_CAPPED' && (svc.hourly_rate == null || svc.cap_hours == null)) missing.push('rate & cap');
+  if (svc.needs_pricing_review) missing.push('cap review');
   if (!svc.inclusions?.length) missing.push("what's included");
   return missing.length ? `Missing ${missing.join(', ')}` : 'Ready to publish';
 }

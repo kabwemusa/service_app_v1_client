@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { ShieldOff } from 'lucide-react'
+import { IoShieldOutline } from 'react-icons/io5'
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = { title: '403 Forbidden' }
@@ -7,7 +7,7 @@ export const metadata: Metadata = { title: '403 Forbidden' }
 export default function ForbiddenPage() {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-4 text-center p-8">
-      <ShieldOff className="size-12 text-slate-300" strokeWidth={1.5} />
+      <IoShieldOutline className="size-12 text-slate-300" />
       <div className="space-y-1">
         <h1 className="text-lg font-medium text-slate-800 dark:text-slate-200">
           Access denied
@@ -19,7 +19,7 @@ export default function ForbiddenPage() {
       </div>
       <Link
         href="/dashboard"
-        className="rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700"
+        className="rounded-sm bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700"
       >
         Back to dashboard
       </Link>

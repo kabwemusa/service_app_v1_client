@@ -63,17 +63,32 @@ function responseLabel(p50: number): string {
   return "same day";
 }
 
+// Quote-first models: price only exists after the provider's scoped quote.
+function isQuoteFirst(s: Service): boolean {
+  return s.pricing_model === "PROVIDER_SCOPE" || s.pricing_model === "QUOTE_DEPOSIT";
+}
+
+function capTotal(s: Service): number | null {
+  return s.cap_amount ?? (s.hourly_rate != null && s.cap_hours != null ? s.hourly_rate * s.cap_hours : null);
+}
+
 function priceLabel(s: Service): string {
-  if (s.pricing_model === "QUOTE") return "By quote";
-  if (s.pricing_model === "HOURLY" && s.base_price != null)
-    return `ZMW ${s.base_price.toFixed(0)}/hr`;
+  if (isQuoteFirst(s)) return "Quoted after brief";
+  if (s.pricing_model === "HOURLY_CAPPED" && s.hourly_rate != null) {
+    const cap = capTotal(s);
+    return `ZMW ${s.hourly_rate.toFixed(0)}/hr · ${s.minimum_hours ?? 1}-hr min${cap != null ? ` · max ZMW ${cap.toFixed(0)}` : ""}`;
+  }
   return s.base_price != null ? `ZMW ${s.base_price.toFixed(0)}` : "—";
 }
 
 function ctaText(s: Service): string {
-  if (s.pricing_model === "QUOTE") return "Request quote";
+  if (isQuoteFirst(s)) return "Get a quote";
   // DIRECT: provider confirms the request, customer pays them directly afterwards.
   if (s.payment_mode === "DIRECT") return "Request booking";
+  if (s.pricing_model === "HOURLY_CAPPED") {
+    const cap = capTotal(s);
+    return cap != null ? `Book · hold ZMW ${cap.toFixed(0)}` : "Book";
+  }
   // ESCROW: customer funds into escrow up front — surface the price on the CTA.
   return s.base_price != null ? `Book · ZMW ${s.base_price.toFixed(0)}` : "Book";
 }
@@ -457,18 +472,25 @@ export default function ServiceDetailScreen({ navigation, route }: any) {
       <View style={[st.bottomBar, { paddingBottom: Math.max(insets.bottom, spacing.sm) + spacing.xs }]}>
         <View style={st.bottomInner}>
           <View style={st.bottomLeft}>
-            {service.pricing_model !== "QUOTE" && service.base_price != null ? (
+            {isQuoteFirst(service) ? (
+              <Text style={st.bottomQuote}>Quoted after brief</Text>
+            ) : service.pricing_model === "HOURLY_CAPPED" && service.hourly_rate != null ? (
+              <>
+                <Text style={st.bottomPrice}>
+                  ZMW {service.hourly_rate.toFixed(0)}
+                  <Text style={st.bottomPriceUnit}>/hr</Text>
+                </Text>
+                {capTotal(service) != null && (
+                  <Text style={st.bottomFrom}>max ZMW {capTotal(service)!.toFixed(0)}</Text>
+                )}
+              </>
+            ) : service.base_price != null ? (
               <>
                 <Text style={st.bottomFrom}>from</Text>
-                <Text style={st.bottomPrice}>
-                  ZMW {service.base_price.toFixed(0)}
-                  <Text style={st.bottomPriceUnit}>
-                    {service.pricing_model === "HOURLY" ? "/hr" : ""}
-                  </Text>
-                </Text>
+                <Text style={st.bottomPrice}>ZMW {service.base_price.toFixed(0)}</Text>
               </>
             ) : (
-              <Text style={st.bottomQuote}>By quote</Text>
+              <Text style={st.bottomQuote}>Quoted after brief</Text>
             )}
           </View>
           <Pressable
@@ -490,6 +512,12 @@ export default function ServiceDetailScreen({ navigation, route }: any) {
         serviceTitle={service.title}
         basePrice={service.base_price ?? 0}
         pricingModel={service.pricing_model}
+        hourlyRate={service.hourly_rate}
+        minimumHours={service.minimum_hours}
+        capHours={service.cap_hours}
+        capAmount={service.cap_amount}
+        depositPercent={service.deposit_percent}
+        scopePrompts={service.scope_prompts}
         paymentMode={service.payment_mode}
         availabilityMatrix={service.provider?.availability_matrix}
         thumbUri={service.photos?.[0] ? storageUrl(service.photos[0].path) : undefined}

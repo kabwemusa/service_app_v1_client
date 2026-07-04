@@ -218,6 +218,10 @@ export default function ProviderAccountScreen({ navigation }: any) {
                 <Text style={[styles.verifySub, { color: c.t2 }]}>{verified ? 'Identity (ID) verified' : 'Identity not yet verified'}</Text>
               </View>
             </View>
+            {/* Always-present entry — the provider's home for identity docs. */}
+            <Row icon="shield-checkmark-outline" label="Identity verification"
+              sub={verified ? 'Manage your ID & clearances' : 'Verify your ID to unlock jobs'}
+              onPress={() => navigation.navigate('Kyc')} c={c} />
             {dashboard.next_tier ? (
               <Row icon="trophy-outline" label={`Reach ${dashboard.next_tier.label}`}
                 sub={dashboard.next_tier.requirements?.[0]} onPress={() => navigation.navigate('Kyc')} c={c} />

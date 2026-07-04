@@ -1,6 +1,6 @@
 ﻿'use client'
 
-import { X } from 'lucide-react'
+import { IoCloseOutline } from 'react-icons/io5'
 import { cn } from '@/lib/utils'
 import { useEffect, useRef, type ReactNode } from 'react'
 
@@ -114,10 +114,10 @@ export function DetailPanel({
           </div>
           <button
             onClick={onClose}
-            className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
+            className="rounded-sm p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
             aria-label="Close panel"
           >
-            <X className="size-4" />
+            <IoCloseOutline className="size-4" />
           </button>
         </div>
 

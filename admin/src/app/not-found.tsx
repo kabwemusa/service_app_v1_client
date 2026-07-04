@@ -1,10 +1,10 @@
 import Link from 'next/link'
-import { SearchX } from 'lucide-react'
+import { IoCompassOutline } from 'react-icons/io5'
 
 export default function NotFound() {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-4 text-center p-8">
-      <SearchX className="size-12 text-slate-300" strokeWidth={1.5} />
+      <IoCompassOutline className="size-12 text-slate-300" />
       <div className="space-y-1">
         <h1 className="text-lg font-medium text-slate-800 dark:text-slate-200">
           Page not found
@@ -15,7 +15,7 @@ export default function NotFound() {
       </div>
       <Link
         href="/dashboard"
-        className="rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700"
+        className="rounded-sm bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700"
       >
         Back to dashboard
       </Link>

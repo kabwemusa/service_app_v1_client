@@ -1,5 +1,5 @@
 import type { Metadata } from 'next'
-import { Megaphone } from 'lucide-react'
+import { IoMegaphoneOutline } from 'react-icons/io5'
 import { EmptyState } from '@/components/ui/EmptyState'
 
 export const metadata: Metadata = { title: 'Promotions' }
@@ -11,7 +11,7 @@ export default function PromotionsPage() {
       <EmptyState
         title="Promoted slot management"
         description="Active promoted slots, bid amounts, impressions, click-through, and bookings sourced per slot."
-        icon={Megaphone}
+        icon={IoMegaphoneOutline}
       />
     </div>
   )

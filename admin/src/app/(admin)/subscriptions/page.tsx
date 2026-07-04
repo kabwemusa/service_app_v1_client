@@ -1,5 +1,5 @@
 import type { Metadata } from 'next'
-import { CreditCard } from 'lucide-react'
+import { IoCardOutline } from 'react-icons/io5'
 import { EmptyState } from '@/components/ui/EmptyState'
 
 export const metadata: Metadata = { title: 'Subscriptions' }
@@ -11,7 +11,7 @@ export default function SubscriptionsPage() {
       <EmptyState
         title="Provider subscriptions"
         description="FREE / PRO / ELITE plan status, renewal dates, grace-period tracking, and manual plan adjustments."
-        icon={CreditCard}
+        icon={IoCardOutline}
       />
     </div>
   )

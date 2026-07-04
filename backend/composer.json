@@ -8,6 +8,7 @@
     "require": {
         "php": "^8.3",
         "laravel/framework": "^13.0",
+        "laravel/reverb": "^1.10",
         "laravel/tinker": "^3.0",
         "predis/predis": "^3.4",
         "tymon/jwt-auth": "^2.3"
@@ -43,7 +44,7 @@
         ],
         "dev": [
             "Composer\\Config::disableProcessTimeout",
-            "npx concurrently -c \"#93c5fd,#c4b5fd,#fb7185,#fdba74\" \"php -d post_max_size=25M -d upload_max_filesize=25M -d memory_limit=256M -S 0.0.0.0:8000 -t public\" \"php artisan queue:listen --tries=1 --timeout=0\" \"php artisan pail --timeout=0\" \"npm run dev\" --names=server,queue,logs,vite --kill-others"
+            "npx concurrently -c \"#93c5fd,#c4b5fd,#fb7185,#fdba74,#34d399\" \"php -d post_max_size=25M -d upload_max_filesize=25M -d memory_limit=256M -S 0.0.0.0:8000 -t public\" \"php artisan queue:listen --tries=1 --timeout=0\" \"php artisan pail --timeout=0\" \"npm run dev\" \"php artisan reverb:start\" --names=server,queue,logs,vite,reverb --kill-others"
         ],
         "test": [
             "@php artisan config:clear --ansi",

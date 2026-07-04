@@ -5,7 +5,6 @@ import { useLocationStore } from '../store/locationStore';
 import { useSnackbar } from '../providers/SnackbarProvider';
 
 export const HOUR_OPTIONS    = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
-export const DURATION_OPTIONS = [1, 1.5, 2, 3, 4];
 
 // Zambia is CAT (Central Africa Time) = UTC+2. We derive "now in Zambia" so
 // past hours are greyed out correctly regardless of the device's local timezone.
@@ -57,7 +56,6 @@ export function useBookingFlow(serviceId: string) {
   const [days] = useState(() => next14Days());
   const [selectedDay,      setSelectedDay]      = useState<Date>(days[0]);
   const [startHour,        setStartHour]        = useState(9);
-  const [durationHrs,      setDurationHrs]      = useState(1);
   const [deliveryLocation, setDeliveryLocation] = useState<SelectedLocation | null>(null);
 
   useEffect(() => {
@@ -90,24 +88,26 @@ export function useBookingFlow(serviceId: string) {
     // Pick the first future hour on the selected day; default to 9 if all are valid.
     const firstValid = HOUR_OPTIONS.find((h) => !isHourPast(h, day)) ?? HOUR_OPTIONS[0];
     setStartHour(firstValid >= 9 && !isHourPast(9, day) ? 9 : firstValid);
-    setDurationHrs(1);
     setDeliveryLocation(activeAsSelected());
   }
 
-  async function submit(addonIds: number[] = [], notes?: string) {
+  // Customers never input hours — scheduled_end is derived server-side from the
+  // provider's estimate (or cap hours). Only the start time is chosen here.
+  async function submit(
+    addonIds: number[] = [],
+    notes?: string,
+    scopeBrief?: { question: string; answer: string }[],
+  ) {
     if (!deliveryLocation) {
       showError('Please set a delivery location.');
       return null;
     }
     const start = new Date(selectedDay);
     start.setHours(startHour, 0, 0, 0);
-    const end = new Date(start);
-    end.setMinutes(end.getMinutes() + Math.round(durationHrs * 60));
     try {
       return await createBooking({
         service_id:                serviceId,
         scheduled_start:           start.toISOString(),
-        scheduled_end:             end.toISOString(),
         delivery_lat:              deliveryLocation.lat,
         delivery_lng:              deliveryLocation.lng,
         delivery_location_label:   deliveryLocation.label,
@@ -115,22 +115,21 @@ export function useBookingFlow(serviceId: string) {
         delivery_location_source:  deliveryLocation.source,
         ...(addonIds.length ? { addon_ids: addonIds } : {}),
         ...(notes && notes.trim() ? { notes: notes.trim() } : {}),
+        ...(scopeBrief && scopeBrief.length ? { scope_brief: scopeBrief } : {}),
       });
     } catch {
       return null;
     }
   }
 
-  const endHour = startHour + durationHrs;
   const summaryLabel = `${selectedDay.toLocaleDateString('en', {
     weekday: 'short', day: 'numeric', month: 'short',
-  })}  ·  ${pad(startHour)}:00 – ${pad(Math.floor(endHour))}:${endHour % 1 ? '30' : '00'}`;
+  })}  ·  from ${pad(startHour)}:00`;
 
   return {
     days,
     selectedDay,     setSelectedDay,
     startHour,       setStartHour,
-    durationHrs,     setDurationHrs,
     deliveryLocation,
     setDeliveryLocation,
     handleLocationChange,

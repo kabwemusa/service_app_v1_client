@@ -57,17 +57,23 @@ const CAT_PALETTE = [
 // Cold-start provider appearing via the fairness floor (v3 §7.3).
 const RISING_STAR_JOB_THRESHOLD = 10;
 
-// §5.1/§6.1/§6.2 — short price label for compact lists (kept for back-compat).
+// Quote-first models carry no upfront price — the provider quotes after the brief.
+export function isQuoteFirstModel(pricingModel: PricingModel): boolean {
+  return pricingModel === 'PROVIDER_SCOPE' || pricingModel === 'QUOTE_DEPOSIT';
+}
+
+// Short price label for compact lists. HOURLY_CAPPED's base_price is the spend
+// cap, so lists show "up to" — the bounded worst case, never an open meter.
 export function priceLabel(pricingModel: PricingModel, basePrice: number | null): string {
-  if (pricingModel === 'QUOTE' || basePrice == null) return 'By quote';
-  if (pricingModel === 'HOURLY') return `ZMW ${basePrice.toFixed(0)}/hr`;
+  if (isQuoteFirstModel(pricingModel) || basePrice == null) return 'Quoted after brief';
+  if (pricingModel === 'HOURLY_CAPPED') return `up to ZMW ${basePrice.toFixed(0)}`;
   return `ZMW ${basePrice.toFixed(0)}`;
 }
 
-// §5 footer price — fixed / "from" (variable) / by quote.
+// §5 footer price — fixed / bounded (capped hourly) / quoted.
 export function footerPriceLabel(pricingModel: PricingModel, basePrice: number | null): string {
-  if (pricingModel === 'QUOTE' || basePrice == null) return 'By quote';
-  if (pricingModel === 'HOURLY') return `from ZMW ${basePrice.toFixed(0)}/hr`;
+  if (isQuoteFirstModel(pricingModel) || basePrice == null) return 'Quoted after brief';
+  if (pricingModel === 'HOURLY_CAPPED') return `up to ZMW ${basePrice.toFixed(0)}`;
   return `ZMW ${basePrice.toFixed(0)}`;
 }
 
@@ -153,7 +159,7 @@ export function RankedServiceCard({ data, saved, onPress, onBook, onToggleSave }
   const isVerified   = (provider?.trust_tier ?? 0) >= 2;
   const rating       = provider ? (provider.r_bayes ?? provider.r_raw) : null;
   const responseTime = formatResponseTime(provider?.response_time_p50_mins);
-  const isQuote      = data.pricing_model === 'QUOTE' || data.base_price == null;
+  const isQuote      = isQuoteFirstModel(data.pricing_model) || data.base_price == null;
 
   const placementLabel = isPromoted ? 'Promoted' : isRisingStar ? 'Rising star' : null;
 

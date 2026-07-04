@@ -53,8 +53,8 @@ class ProviderTierUpgradeTest extends TestCase
             ProviderVerification::create(['provider_id' => $user->id, 'verification_type' => $v, 'status' => 'VERIFIED', 'verified_at' => now()]);
         }
         $cat = Category::create(['name' => "Cat{$riskTier}", 'slug' => "cat-{$riskTier}-" . random_int(1, 9999), 'is_active' => true, 'risk_tier' => $riskTier]);
-        $svc = Service::create(['title' => 'Job', 'category_id' => $cat->id, 'status' => 'ACTIVE', 'base_price' => 100, 'pricing_model' => 'FIXED', 'provider_id' => $user->id]);
-        ProviderService::create(['provider_id' => $user->id, 'service_id' => $svc->id, 'price' => 100, 'pricing_model' => 'FIXED', 'status' => 'ACTIVE']);
+        $svc = Service::create(['title' => 'Job', 'category_id' => $cat->id, 'status' => 'ACTIVE', 'base_price' => 100, 'pricing_model' => 'OUTCOME_FIXED', 'provider_id' => $user->id]);
+        ProviderService::create(['provider_id' => $user->id, 'service_id' => $svc->id, 'price' => 100, 'pricing_model' => 'OUTCOME_FIXED', 'status' => 'ACTIVE']);
 
         return [$user, $svc];
     }

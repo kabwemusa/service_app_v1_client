@@ -81,6 +81,8 @@ export interface VerificationArtifact {
   url: string
   label: string
   doc_type?: string
+  // A single-copy government ID may be a PDF scan — render inline, not as <img>.
+  is_pdf?: boolean
 }
 
 // Read-only automated advice. The reviewer decides; the system advises (§4.3).

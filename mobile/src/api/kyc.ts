@@ -49,6 +49,18 @@ function buildForm(fields: Record<string, string | { uri: string; type: string; 
   return form;
 }
 
+/**
+ * Build a document file field from a picked URI. A government ID may be a photo
+ * OR a single PDF scan — infer the mime + filename from the extension so the
+ * backend (which allows jpg/png/webp/pdf) and the admin previewer treat it right.
+ */
+function docFile(uri: string, base: string): { uri: string; type: string; name: string } {
+  const isPdf = uri.toLowerCase().split('?')[0].endsWith('.pdf');
+  return isPdf
+    ? { uri, type: 'application/pdf', name: `${base}.pdf` }
+    : { uri, type: 'image/jpeg', name: `${base}.jpg` };
+}
+
 export const kycApi = {
   getStatus: () =>
     api.get<KycStatus>('/kyc/'),
@@ -62,13 +74,13 @@ export const kycApi = {
     return api.upload<SubmitDocumentResponse>('/kyc/tier1', form);
   },
 
-  /** Tier 2 — government ID (front + optional back) + selfie */
+  /** Tier 2 — government ID (front + optional back, photo or PDF) + selfie */
   submitDocument: (docType: DocType, documentUri: string, selfieUri: string, documentBackUri?: string | null) => {
     const form = buildForm({
       doc_type: docType,
-      document: { uri: documentUri, type: 'image/jpeg', name: 'document_front.jpg' },
-      selfie:   { uri: selfieUri,   type: 'image/jpeg', name: 'selfie.jpg' },
-      ...(documentBackUri ? { document_back: { uri: documentBackUri, type: 'image/jpeg', name: 'document_back.jpg' } } : {}),
+      document: docFile(documentUri, 'document_front'),
+      selfie:   { uri: selfieUri, type: 'image/jpeg', name: 'selfie.jpg' },
+      ...(documentBackUri ? { document_back: docFile(documentBackUri, 'document_back') } : {}),
     });
     return api.upload<SubmitDocumentResponse>('/kyc/document', form);
   },

@@ -34,6 +34,7 @@ class Booking extends Model
         'commission_split_zmw',
         'provider_split_zmw',
         'escrow_hold_ref',
+        'payout_ref',
         'legacy_payment_mode',
         'channel',
         'payment_status',
@@ -54,6 +55,14 @@ class Booking extends Model
         'delivery_location_source',
         'notes',
         'selected_addon_ids',
+        'scope_brief',
+        'provider_quote',
+        'actual_hours_logged',
+        'actual_charge_zmw',
+        'deposit_amount',
+        'balance_amount',
+        'balance_hold_ref',
+        'escrow_phase',
     ];
 
     protected function casts(): array
@@ -76,6 +85,12 @@ class Booking extends Model
             'provider_split_zmw'       => 'float',
             'instant_payout_requested' => 'boolean',
             'selected_addon_ids'       => 'array',
+            'scope_brief'              => 'array',
+            'provider_quote'           => 'array',
+            'actual_hours_logged'      => 'float',
+            'actual_charge_zmw'        => 'float',
+            'deposit_amount'           => 'float',
+            'balance_amount'           => 'float',
         ];
     }
 

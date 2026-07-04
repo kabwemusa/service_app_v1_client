@@ -11,7 +11,7 @@ return [
     'platform_fee_pct' => (float) env('PLATFORM_FEE_PCT', 0.05),
 
     // Minutes after booking creation before PENDING_PAYMENT is auto-cancelled
-    'ttl_mins'         => (int) env('PAYMENT_TTL_MINS', 60),
+    'ttl_mins'         => (int) env('PAYMENT_TTL_MINS', 30), // keep aligned with whatsapp.funding_window_minutes (customer copy promises 30 min)
 
     // Hours after DELIVERED before auto-completing (releasing funds) if no dispute
     'dispute_window_hours' => (int) env('DISPUTE_WINDOW_HOURS', 48),

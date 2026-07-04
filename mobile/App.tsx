@@ -37,6 +37,7 @@ import NotificationSettingsScreen from "./src/screens/app/NotificationSettingsSc
 import AllReviewsScreen from "./src/screens/provider/AllReviewsScreen";
 import CreateServiceScreen from "./src/screens/provider/CreateServiceScreen";
 import EarningsScreen from "./src/screens/provider/EarningsScreen";
+import AvailabilityScreen from "./src/screens/provider/AvailabilityScreen";
 import HubScreen from "./src/screens/provider/HubScreen";
 import IncomingRequestsScreen from "./src/screens/provider/IncomingRequestsScreen";
 import MyServicesScreen from "./src/screens/provider/MyServicesScreen";
@@ -166,6 +167,9 @@ function HubStackNavigator() {
         component={ProviderProfileEditScreen}
       />
       <HubStack.Screen name="ProviderSetup" component={ProviderSetupScreen} />
+      {/* Weekly hours + time off — writes provider_availability, the source the
+          WhatsApp/PWA date-pickers and dispatch eligibility read. */}
+      <HubStack.Screen name="Availability" component={AvailabilityScreen} />
       {/* Milestone 3 — "Add your service" opens inside the setup stack so it
           returns to the timeline rather than jumping to the Services tab. */}
       <HubStack.Screen name="CreateService" component={CreateServiceScreen} />

@@ -29,6 +29,10 @@ export type BookingStatus =
   | 'DECLINED'
   | 'EXPIRED'
   | 'NO_SHOW'
+  // Outcome-based pricing — quote-first models (PROVIDER_SCOPE / QUOTE_DEPOSIT)
+  | 'SCOPE_PENDING'   // brief captured, awaiting provider's scoped quote
+  | 'QUOTE_SENT'      // provider quoted, awaiting customer approval
+  | 'DEPOSIT_HELD'    // quote-deposit: deposit custodied, balance at completion
   // Shared states
   | 'IN_PROGRESS'
   | 'DELIVERED'
@@ -37,10 +41,26 @@ export type BookingStatus =
   | 'CANCELLED'
   // ESCROW-only states (dormant in DIRECT mode)
   | 'PENDING_PAYMENT'
+  | 'PAYMENT_FAILED'
   | 'AWAITING_KYC'
   | 'FUNDS_HELD'
   | 'DISBURSED'
   | 'CHARGEBACK_PENDING';
+
+/** Structured brief answer (quote-first models) — never free-text hours. */
+export interface ScopeBriefEntry {
+  question: string;
+  answer:   string;
+}
+
+/** Provider's scoped quote: price + duration + what's included. */
+export interface ProviderQuote {
+  price:          number;
+  duration_mins:  number | null;
+  inclusions:     string[];
+  message:        string | null;
+  quoted_at:      string;
+}
 
 export interface Commission {
   gross_amount:      number;
@@ -77,6 +97,16 @@ export interface Booking {
   agreed_amount:           number | null;
   amount:                  number | null;
   buyer_protection_fee:    number;
+  // ── Outcome-based pricing ──
+  scope_brief?:            ScopeBriefEntry[] | null;
+  provider_quote?:         ProviderQuote | null;
+  /** HOURLY_CAPPED: provider-logged actual time + final charge. */
+  actual_hours_logged?:    number | null;
+  actual_charge_zmw?:      number | null;
+  /** QUOTE_DEPOSIT two-phase escrow. */
+  deposit_amount?:         number | null;
+  balance_amount?:         number | null;
+  escrow_phase?:           'FULL' | 'DEPOSIT' | 'BALANCE' | null;
   payout_eligible_at:      string | null;
   /** Expiry deadline for REQUESTED state (DIRECT only). */
   expires_at:              string | null;
@@ -98,8 +128,13 @@ export interface Booking {
   service: {
     id:              string;
     title:           string;
-    pricing_model?:  'FIXED' | 'HOURLY' | 'QUOTE';
+    pricing_model?:  'OUTCOME_FIXED' | 'PROVIDER_SCOPE' | 'HOURLY_CAPPED' | 'QUOTE_DEPOSIT';
     base_price:      number;
+    hourly_rate?:    number | null;
+    minimum_hours?:  number | null;
+    cap_hours?:      number | null;
+    cap_amount?:     number | null;
+    deposit_percent?: number | null;
     category_name?:  string;
     category_icon?:  string | null;
   };
@@ -143,7 +178,8 @@ export interface PaginatedBookings {
 export interface CreateBookingParams {
   service_id:                string;
   scheduled_start:           string;
-  scheduled_end:             string;
+  /** Optional — derived server-side from the provider's estimate/cap. Never a customer duration input. */
+  scheduled_end?:            string;
   delivery_lat:              number;
   delivery_lng:              number;
   delivery_location_label:   string;
@@ -151,8 +187,10 @@ export interface CreateBookingParams {
   delivery_location_source:  'DEVICE' | 'SEARCH' | 'SAVED';
   /** Selected service add-on ids carried from the booking sheet (§5.3). */
   addon_ids?:                number[];
-  /** Optional free-text note (used by QUOTE requests). */
+  /** Optional free-text note. */
   notes?:                    string;
+  /** Structured brief answers (PROVIDER_SCOPE / QUOTE_DEPOSIT). */
+  scope_brief?:              ScopeBriefEntry[];
 }
 
 export interface OpenDisputeParams {
@@ -167,9 +205,9 @@ export type TrustHint = 'REPEAT_CLIENT' | 'TRUSTED' | 'NEW';
 export interface IncomingRequestEntry {
   booking_id:      string;
   payment_mode:    PaymentMode;
-  status:          'FUNDS_HELD' | 'IN_PROGRESS' | 'REQUESTED' | 'QUOTED' | 'ACCEPTED';
+  status:          'FUNDS_HELD' | 'DEPOSIT_HELD' | 'IN_PROGRESS' | 'REQUESTED' | 'QUOTED' | 'SCOPE_PENDING' | 'QUOTE_SENT' | 'ACCEPTED';
   service_title:   string | null;
-  pricing_model:   'FIXED' | 'HOURLY' | 'QUOTE' | null;
+  pricing_model:   'OUTCOME_FIXED' | 'PROVIDER_SCOPE' | 'HOURLY_CAPPED' | 'QUOTE_DEPOSIT' | null;
   scheduled_start: string | null;
   scheduled_end:   string | null;
   delivery_label:  string | null;
@@ -206,7 +244,7 @@ export interface BookAgainCard {
   service: {
     id:            string;
     title:         string;
-    pricing_model: 'FIXED' | 'HOURLY' | 'QUOTE';
+    pricing_model: 'OUTCOME_FIXED' | 'PROVIDER_SCOPE' | 'HOURLY_CAPPED' | 'QUOTE_DEPOSIT';
     base_price:    number | null;
     category_name: string;
   };
@@ -236,21 +274,32 @@ export const bookingsApi = {
   create: (params: CreateBookingParams) =>
     api.post<Booking>('/bookings', params),
 
-  // ESCROW: initiate MoMo pay-in
-  pay: (id: string) =>
-    api.post<Booking>(`/bookings/${id}/pay`, {}),
+  // ESCROW: initiate MoMo pay-in. `momoNumber` optionally sends the collection
+  // request to a different Mobile Money wallet than the account phone.
+  pay: (id: string, momoNumber?: string) =>
+    api.post<Booking>(`/bookings/${id}/pay`, momoNumber ? { momo_number: momoNumber } : {}),
 
   // DIRECT: provider accepts at listed price
   accept: (id: string) =>
     api.post<Booking>(`/bookings/${id}/accept`, {}),
 
-  // DIRECT: provider sends alternate-price quote
-  quote: (id: string, quotedAmount: number) =>
-    api.post<Booking>(`/bookings/${id}/quote`, { quoted_amount: quotedAmount }),
+  // Provider sends a quote. Scoped quote (PROVIDER_SCOPE / QUOTE_DEPOSIT):
+  // price + duration + inclusions against the customer's brief.
+  quote: (id: string, quotedAmount: number, extras?: { duration_mins?: number; inclusions?: string[]; message?: string }) =>
+    api.post<Booking>(`/bookings/${id}/quote`, { quoted_amount: quotedAmount, ...(extras ?? {}) }),
 
   // DIRECT: buyer accepts provider's quote
   acceptQuote: (id: string) =>
     api.post<Booking>(`/bookings/${id}/accept-quote`, {}),
+
+  // Outcome-based pricing: customer approves the scoped quote → escrow hold
+  // (deposit for QUOTE_DEPOSIT, full amount otherwise).
+  approveQuote: (id: string, momoNumber?: string) =>
+    api.post<Booking>(`/bookings/${id}/approve-quote`, momoNumber ? { momo_number: momoNumber } : {}),
+
+  // Customer declines the scoped quote — booking cancelled, nothing charged.
+  declineQuote: (id: string) =>
+    api.post<Booking>(`/bookings/${id}/decline-quote`, {}),
 
   // DIRECT: provider declines
   decline: (id: string) =>
@@ -263,8 +312,9 @@ export const bookingsApi = {
   start: (id: string) =>
     api.post<Booking>(`/bookings/${id}/start`, {}),
 
-  deliver: (id: string) =>
-    api.post<Booking>(`/bookings/${id}/deliver`, {}),
+  // HOURLY_CAPPED: the provider logs actual time here (0.5-hr steps).
+  deliver: (id: string, actualHours?: number) =>
+    api.post<Booking>(`/bookings/${id}/deliver`, actualHours != null ? { actual_hours: actualHours } : {}),
 
   complete: (id: string) =>
     api.post<Booking>(`/bookings/${id}/complete`, {}),

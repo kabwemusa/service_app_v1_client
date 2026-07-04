@@ -149,18 +149,16 @@ class ServiceService
         return DB::transaction(function () use ($provider, $data) {
             $pricingModel = $data['pricing_model'];
 
-            $service = Service::create([
+            $service = Service::create(array_merge([
                 'provider_id'            => $provider->id,
                 'category_id'            => $data['category_id'],
                 'title'                  => $data['title'],
                 'description'            => $data['description'] ?? null,
                 'pricing_model'          => $pricingModel,
-                // §5.1: base_price is the (per-job or per-hour) rate for FIXED/HOURLY; null for QUOTE
-                'base_price'             => $pricingModel === 'QUOTE' ? null : $data['base_price'],
                 'duration_estimate_mins' => $data['duration_estimate_mins'] ?? null,
                 'status'                 => $data['status'] ?? 'DRAFT',
                 'is_pinned'              => $data['is_pinned'] ?? false,
-            ]);
+            ], $this->pricingFields($pricingModel, $data)));
 
             // Service location defaults to the provider's base location when the
             // provider doesn't pin a specific spot (dedup — one place to set it),
@@ -211,12 +209,17 @@ class ServiceService
                 'is_pinned'              => $data['is_pinned']              ?? null,
             ], fn ($v) => $v !== null));
 
-            // base_price travels with pricing_model: QUOTE always nulls it out,
-            // FIXED/HOURLY take the supplied value (validated as required when switching in).
-            if ($pricingModel === 'QUOTE') {
-                $service->base_price = null;
-            } elseif (array_key_exists('base_price', $data)) {
-                $service->base_price = $data['base_price'];
+            // Pricing parameters travel with pricing_model — switching model clears
+            // the fields the new model doesn't use, and any edit to the pricing
+            // fields resolves the migration "review your cap" flag.
+            $touchedPricing = array_key_exists('pricing_model', $data)
+                || array_intersect(array_keys($data), ['base_price', 'hourly_rate', 'minimum_hours', 'cap_hours', 'deposit_percent', 'scope_prompts']);
+
+            if ($touchedPricing) {
+                foreach ($this->pricingFields($pricingModel, $data, $service) as $field => $value) {
+                    $service->{$field} = $value;
+                }
+                $service->needs_pricing_review = false;
             }
             $service->save();
 
@@ -280,6 +283,63 @@ class ServiceService
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
+
+    /**
+     * Resolve the pricing columns for a model, clearing the ones it doesn't
+     * use. base_price stays populated for every model as the ranking/browse
+     * "from" price: the outcome price (OUTCOME_FIXED), the spend cap
+     * (HOURLY_CAPPED — what the customer's hold will be), or null for the
+     * quote-first models where no upfront price exists.
+     */
+    private function pricingFields(string $model, array $data, ?Service $existing = null): array
+    {
+        $get = fn (string $key) => array_key_exists($key, $data) ? $data[$key] : $existing?->{$key};
+
+        return match ($model) {
+            'OUTCOME_FIXED' => [
+                'base_price'      => $get('base_price'),
+                'hourly_rate'     => null,
+                'minimum_hours'   => null,
+                'cap_hours'       => null,
+                'cap_amount'      => null,
+                'deposit_percent' => null,
+                'scope_prompts'   => null,
+            ],
+            'HOURLY_CAPPED' => (function () use ($get) {
+                $rate = $get('hourly_rate');
+                $cap  = $get('cap_hours');
+                $capAmount = ($rate !== null && $cap !== null) ? round((float) $rate * (float) $cap, 2) : null;
+                return [
+                    'base_price'      => $capAmount,
+                    'hourly_rate'     => $rate,
+                    'minimum_hours'   => $get('minimum_hours'),
+                    'cap_hours'       => $cap,
+                    'cap_amount'      => $capAmount,
+                    'deposit_percent' => null,
+                    'scope_prompts'   => null,
+                ];
+            })(),
+            'PROVIDER_SCOPE' => [
+                'base_price'      => null,
+                'hourly_rate'     => $get('hourly_rate'),
+                'minimum_hours'   => null,
+                'cap_hours'       => null,
+                'cap_amount'      => null,
+                'deposit_percent' => null,
+                'scope_prompts'   => $get('scope_prompts'),
+            ],
+            'QUOTE_DEPOSIT' => [
+                'base_price'      => null,
+                'hourly_rate'     => null,
+                'minimum_hours'   => null,
+                'cap_hours'       => null,
+                'cap_amount'      => null,
+                'deposit_percent' => $get('deposit_percent') ?? 30,
+                'scope_prompts'   => $get('scope_prompts'),
+            ],
+            default => [],
+        };
+    }
 
     private function setLocation(string $serviceId, float $lat, float $lng): void
     {

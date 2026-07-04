@@ -117,19 +117,30 @@ class KycService
             return $existing;
         }
 
+        // A single scanned copy (PDF) can't run automated liveness/face-match, so
+        // it goes straight to a human reviewer instead of the auto pipeline.
+        $isPdf = str_ends_with(strtolower($docPath), '.pdf');
+
         $doc = new IdentityDocument([
             'user_id'          => $user->id,
             'doc_type'         => $docType,
             'doc_storage_url'  => $docPath,
-            'status'           => DocStatus::SUBMITTED->value,
+            'status'           => $isPdf ? DocStatus::MANUAL_REVIEW->value : DocStatus::SUBMITTED->value,
             'submitted_at'     => now(),
-            'extracted_fields' => ['selfie_path' => $selfiePath],
+            // Persist the BACK too — without this the admin only ever saw the
+            // front (the back file was stored but never referenced).
+            'extracted_fields' => array_filter([
+                'selfie_path'   => $selfiePath,
+                'doc_back_path' => $docBackPath,
+            ]),
         ]);
-        $doc->pushEvent('Submitted by applicant', 'Applicant', null, DocStatus::SUBMITTED->value);
+        $doc->pushEvent('Submitted by applicant', 'Applicant', null, $doc->status);
         $doc->save();
 
-        // Dispatch async verification — runs the full §4.3 pipeline
-        \App\Jobs\VerifyIdentityDocumentJob::dispatch($doc->id, $user->id);
+        // Dispatch async verification (§4.3 pipeline) — image documents only.
+        if (! $isPdf) {
+            \App\Jobs\VerifyIdentityDocumentJob::dispatch($doc->id, $user->id);
+        }
 
         return $doc;
     }
@@ -239,16 +250,23 @@ class KycService
                     return;
                 }
 
-                // Step 5: Duplicate-account check
+                // Step 5: Duplicate-account check.
+                // (The status conditions MUST be grouped — an ungrouped orWhere
+                // made *any* approved document in the system flag every
+                // applicant as a duplicate.)
                 $existing = IdentityDocument::where('doc_number_hash', $hash)
                     ->where('user_id', '!=', $user->id)
-                    ->where('status', DocStatus::AUTO_APPROVED->value)
-                    ->orWhere('status', DocStatus::APPROVED->value)
+                    ->whereIn('status', [DocStatus::AUTO_APPROVED->value, DocStatus::APPROVED->value])
                     ->exists();
 
                 if ($existing) {
-                    $this->markStatus($doc, DocStatus::AUTO_REJECTED, 'Document already linked to another account.');
-                    $this->notifyUser($user, ErrorCode::DUPLICATE_IDENTITY->value);
+                    // Silent fraud flag: park it in manual review with an
+                    // internal note. Deliberately NO user notification — a
+                    // duplicate NRC is a fraud signal, and telling the
+                    // submitter tips them off. The admin Fraud module's
+                    // DUPLICATE_IDENTITY pattern aggregates the shared
+                    // doc_number_hash and surfaces it to trust & safety.
+                    $this->markStatus($doc, DocStatus::MANUAL_REVIEW, 'Possible duplicate identity — document number already on another account.');
                     return;
                 }
             }

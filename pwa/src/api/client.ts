@@ -25,6 +25,15 @@ export const tokens = {
   },
 };
 
+/** Resolve a backend storage path (e.g. "service_photos/x.jpg") to a URL.
+ *  Same-origin `/storage/…` — proxied to the backend in dev, served alongside
+ *  the app in prod. Absolute URLs pass through untouched. */
+export function storageUrl(path: string): string {
+  if (!path) return '';
+  if (/^https?:\/\//.test(path)) return path;
+  return `/storage/${path.replace(/^\/+/, '')}`;
+}
+
 interface RequestOptions {
   method?: string;
   body?: unknown;
@@ -100,4 +109,5 @@ export const api = {
   put: <T>(path: string, body?: unknown, auth = false) => raw<T>(path, { method: 'PUT', body, auth }),
   patch: <T>(path: string, body?: unknown, auth = false) => raw<T>(path, { method: 'PATCH', body, auth }),
   postForm: <T>(path: string, form: FormData, auth = true) => raw<T>(path, { method: 'POST', body: form, auth, form: true }),
+  delete: <T>(path: string, auth = false) => raw<T>(path, { method: 'DELETE', auth }),
 };

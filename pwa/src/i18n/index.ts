@@ -33,6 +33,8 @@ const en = {
     from: 'from',
     noResults: 'No services found.',
     book: 'Book',
+    promoted: 'Promoted',
+    fallbackNote: 'No providers cover your area yet — showing top-rated providers nationwide.',
   },
   onboarding: {
     welcomeTitle: 'Earn doing what you do',

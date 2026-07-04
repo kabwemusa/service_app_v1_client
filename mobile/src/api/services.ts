@@ -6,7 +6,9 @@ export interface ServicePhoto {
   display_order: number;
 }
 
-export type PricingModel = 'FIXED' | 'HOURLY' | 'QUOTE';
+// Outcome-based pricing — customers never input hours; every price parameter
+// below is provider-set.
+export type PricingModel = 'OUTCOME_FIXED' | 'PROVIDER_SCOPE' | 'HOURLY_CAPPED' | 'QUOTE_DEPOSIT';
 export type ServiceStatus = 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'HIDDEN';
 
 export interface ServiceAddon {
@@ -67,9 +69,19 @@ export interface Service {
   category:    { id: number; name: string; icon_url: string | null } | null;
   title:       string;
   description: string | null;
-  // §5.1/§5.5 — QUOTE listings carry no price; the client shows "By quote".
+  // Outcome-based pricing. base_price is the browse "from" price:
+  // outcome price (OUTCOME_FIXED) / spend cap (HOURLY_CAPPED) / null (quote-first).
   pricing_model:           PricingModel;
   base_price:              number | null;
+  hourly_rate:             number | null;
+  minimum_hours:           number | null;
+  cap_hours:               number | null;
+  cap_amount:              number | null;
+  deposit_percent:         number | null;
+  // Structured brief questions the customer answers (quote-first models).
+  scope_prompts:           string[];
+  // Set by the HOURLY→HOURLY_CAPPED migration until the provider confirms the cap.
+  needs_pricing_review:    boolean;
   // Platform payment mode a booking for this service would be created under (drives CTA copy).
   payment_mode:            'DIRECT' | 'ESCROW';
   duration_estimate_mins:  number | null;
@@ -97,6 +109,11 @@ export interface ServicePayload {
   description?:            string;
   pricing_model:           PricingModel;
   base_price?:             number | null;
+  hourly_rate?:            number | null;
+  minimum_hours?:          number | null;
+  cap_hours?:              number | null;
+  deposit_percent?:        number | null;
+  scope_prompts?:          string[] | null;
   duration_estimate_mins?: number | null;
   status?:                 ServiceStatus;
   is_pinned?:              boolean;

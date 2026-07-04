@@ -4,9 +4,9 @@ import { useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Shield, AlertOctagon, AlertTriangle, Lock, Eye, EyeOff, ExternalLink,
-  Calendar, Flag, Scale, FileText, MapPin, Clock, ShieldAlert, UserCog,
-} from 'lucide-react'
+  IoShieldOutline, IoAlertCircleOutline, IoWarningOutline, IoLockClosedOutline, IoEyeOutline, IoEyeOffOutline, IoOpenOutline,
+  IoCalendarOutline, IoFlagOutline, IoScaleOutline, IoDocumentTextOutline, IoLocationOutline, IoTimeOutline, IoShieldHalfOutline, IoConstructOutline,
+} from 'react-icons/io5'
 import { StatusPill } from '@/components/ui/StatusPill'
 import { AuditTrail } from '@/components/ui/AuditTrail'
 import { Can } from '@/lib/rbac/Can'
@@ -87,8 +87,8 @@ export function SafetyDetail({ kind, id, onChanged }: Props) {
       </div>
 
       {/* ── Confidentiality notice (always) ── */}
-      <div className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
-        <Lock className="mt-0.5 size-3.5 shrink-0 text-slate-400" aria-hidden="true" />
+      <div className="flex items-start gap-2 rounded-sm border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
+        <IoLockClosedOutline className="mt-0.5 size-3.5 shrink-0 text-slate-400" aria-hidden="true" />
         <p>
           Reporter identity is confidential and must never be shared with the reported party. Contact
           and identity are masked below; revealing them is recorded in the audit log. This module
@@ -98,7 +98,7 @@ export function SafetyDetail({ kind, id, onChanged }: Props) {
 
       {/* ── Resolved (read-only) banner ── */}
       {isResolved && (
-        <div className="rounded-lg border border-teal-200 bg-teal-50 p-3 text-sm dark:border-teal-900/50 dark:bg-teal-950/20">
+        <div className="rounded-sm border border-teal-200 bg-teal-50 p-3 text-sm dark:border-teal-900/50 dark:bg-teal-950/20">
           <p className="font-medium text-teal-700 dark:text-teal-400">
             Resolved{data.outcome && <> · {OUTCOME_LABEL[data.outcome]}</>}
             {data.reviewed_by_admin_name && <> by {data.reviewed_by_admin_name}</>}
@@ -114,11 +114,11 @@ export function SafetyDetail({ kind, id, onChanged }: Props) {
 
       {/* ── Emergency context ── */}
       {isEmergency && (
-        <Section title="Emergency context" icon={AlertOctagon}>
-          <div className="space-y-2 rounded-lg border border-red-200 bg-red-50/60 p-3 text-sm dark:border-red-900/50 dark:bg-red-950/20">
-            <Row icon={MapPin} label="Location context" value={data.location_label ?? 'Not shared'} />
+        <Section title="Emergency context" icon={IoAlertCircleOutline}>
+          <div className="space-y-2 rounded-sm border border-red-200 bg-red-50/60 p-3 text-sm dark:border-red-900/50 dark:bg-red-950/20">
+            <Row icon={IoLocationOutline} label="Location context" value={data.location_label ?? 'Not shared'} />
             <Row
-              icon={Clock}
+              icon={IoTimeOutline}
               label="Post-incident outreach due (§11.4)"
               value={data.outreach_due_at ? fmtDatetime(data.outreach_due_at) : 'Not set'}
             />
@@ -128,15 +128,15 @@ export function SafetyDetail({ kind, id, onChanged }: Props) {
 
       {/* ── Report content ── */}
       {!isEmergency && data.description && (
-        <Section title="Report content" icon={FileText}>
-          <p className="whitespace-pre-wrap rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
+        <Section title="Report content" icon={IoDocumentTextOutline}>
+          <p className="whitespace-pre-wrap rounded-sm border border-slate-200 bg-white p-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
             {data.description}
           </p>
         </Section>
       )}
 
       {/* ── Parties (PII masked + gated reveal) ── */}
-      <Section title="Parties" icon={Shield}>
+      <Section title="Parties" icon={IoShieldOutline}>
         <div className="space-y-3">
           {data.reporter && (
             <PartyCard party={data.reporter} revealed={revealed?.reporter ?? null} />
@@ -154,7 +154,7 @@ export function SafetyDetail({ kind, id, onChanged }: Props) {
                 onClick={() => setRevealed(null)}
                 className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
               >
-                <EyeOff className="size-3.5" /> Hide identities
+                <IoEyeOffOutline className="size-3.5" /> Hide identities
               </button>
             ) : (
               <RevealButton kind={kind} id={id} onRevealed={setRevealed} />
@@ -165,19 +165,19 @@ export function SafetyDetail({ kind, id, onChanged }: Props) {
 
       {/* ── Booking context ── */}
       {data.booking && (
-        <Section title="Booking context" icon={Calendar}>
-          <div className="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+        <Section title="Booking context" icon={IoCalendarOutline}>
+          <div className="space-y-2 rounded-sm border border-slate-200 p-3 dark:border-slate-700">
             <div className="flex items-center justify-between gap-2">
               <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
                 {data.booking.service_title}
               </p>
               <StatusPill label={data.booking.status} autoVariant />
             </div>
-            <Row icon={Clock} label="Scheduled" value={data.booking.scheduled_start ? fmtDatetime(data.booking.scheduled_start) : 'Not scheduled'} />
-            <Row icon={MapPin} label="Location" value={[data.booking.location_label, data.booking.location_region].filter(Boolean).join(', ') || 'Not set'} />
-            <Row icon={FileText} label="Amount" value={fmtZMW(data.booking.amount)} />
+            <Row icon={IoTimeOutline} label="Scheduled" value={data.booking.scheduled_start ? fmtDatetime(data.booking.scheduled_start) : 'Not scheduled'} />
+            <Row icon={IoLocationOutline} label="Location" value={[data.booking.location_label, data.booking.location_region].filter(Boolean).join(', ') || 'Not set'} />
+            <Row icon={IoDocumentTextOutline} label="Amount" value={fmtZMW(data.booking.amount)} />
             <Link href={`/bookings?booking=${data.booking.id}`} className="inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:underline dark:text-teal-400">
-              Open booking <ExternalLink className="size-3" />
+              Open booking <IoOpenOutline className="size-3" />
             </Link>
           </div>
         </Section>
@@ -185,13 +185,13 @@ export function SafetyDetail({ kind, id, onChanged }: Props) {
 
       {/* ── Actions ── */}
       {!isResolved && (
-        <Section title="Actions" icon={UserCog}>
+        <Section title="Actions" icon={IoConstructOutline}>
           <SafetyActions detail={data} onChanged={invalidate} />
         </Section>
       )}
 
       {/* ── Audit trail (incl. internal case notes) ── */}
-      <Section title="Case history & notes" icon={Scale}>
+      <Section title="Case history & notes" icon={IoScaleOutline}>
         <AuditTrail targetType={targetType} targetId={id} />
       </Section>
     </div>
@@ -204,7 +204,7 @@ function PartyCard({ party, revealed }: { party: Party; revealed: RevealedPartie
   return (
     <div
       className={cn(
-        'rounded-lg border p-3',
+        'rounded-sm border p-3',
         party.is_reporter
           ? 'border-amber-200 bg-amber-50/50 dark:border-amber-800/60 dark:bg-amber-900/10'
           : 'border-slate-200 dark:border-slate-700',
@@ -217,7 +217,7 @@ function PartyCard({ party, revealed }: { party: Party; revealed: RevealedPartie
           </span>
           {party.is_reporter && (
             <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-px text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
-              <Lock className="size-2.5" aria-hidden="true" /> confidential
+              <IoLockClosedOutline className="size-2.5" aria-hidden="true" /> confidential
             </span>
           )}
         </div>
@@ -242,7 +242,7 @@ function PartyCard({ party, revealed }: { party: Party; revealed: RevealedPartie
       {/* History / standing */}
       <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
         <span className={cn(party.history.reports_against > 0 && 'text-amber-600 dark:text-amber-400')}>
-          <Flag className="mr-0.5 inline size-3" aria-hidden="true" />
+          <IoFlagOutline className="mr-0.5 inline size-3" aria-hidden="true" />
           {party.history.reports_against} report{party.history.reports_against === 1 ? '' : 's'} against
         </span>
         <span>{party.history.reports_filed} filed</span>
@@ -255,7 +255,7 @@ function PartyCard({ party, revealed }: { party: Party; revealed: RevealedPartie
         href={`/users?user=${party.user_id}`}
         className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-teal-600 hover:underline dark:text-teal-400"
       >
-        Open in Users <ExternalLink className="size-3" />
+        Open in Users <IoOpenOutline className="size-3" />
       </Link>
     </div>
   )
@@ -282,7 +282,7 @@ function RevealButton({ kind, id, onRevealed }: { kind: SafetyKind; id: string; 
       disabled={loading}
       className="inline-flex items-center gap-1.5 text-xs font-medium text-teal-600 hover:text-teal-700 disabled:opacity-50 dark:text-teal-400"
     >
-      <Eye className="size-3.5" /> {loading ? 'Revealing…' : 'Reveal identities (logged)'}
+      <IoEyeOutline className="size-3.5" /> {loading ? 'Revealing…' : 'Reveal identities (logged)'}
     </button>
   )
 }
@@ -303,9 +303,9 @@ function ContactRow({ label, masked, revealed, has }: { label: string; masked: s
 
 function SeverityBadge({ severity }: { severity: SafetyDetailType['severity'] }) {
   const map = {
-    EMERGENCY: { icon: AlertOctagon, cls: 'bg-red-600 text-white' },
-    HIGH: { icon: AlertTriangle, cls: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300' },
-    STANDARD: { icon: ShieldAlert, cls: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300' },
+    EMERGENCY: { icon: IoAlertCircleOutline, cls: 'bg-red-600 text-white' },
+    HIGH: { icon: IoWarningOutline, cls: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300' },
+    STANDARD: { icon: IoShieldHalfOutline, cls: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300' },
   } as const
   const m = map[severity]
   return (
@@ -343,9 +343,9 @@ function DetailSkeleton() {
   return (
     <div className="space-y-4">
       <div className="h-6 w-2/3 animate-pulse rounded bg-slate-200 dark:bg-slate-700" />
-      <div className="h-16 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800" />
+      <div className="h-16 animate-pulse rounded-sm bg-slate-100 dark:bg-slate-800" />
       {Array.from({ length: 3 }).map((_, i) => (
-        <div key={i} className="h-24 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800" />
+        <div key={i} className="h-24 animate-pulse rounded-sm bg-slate-100 dark:bg-slate-800" />
       ))}
     </div>
   )

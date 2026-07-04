@@ -1,12 +1,12 @@
 ﻿import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
-import type { LucideIcon } from 'lucide-react'
+import type { IconType } from 'react-icons'
 
 interface MetricCardProps {
   title: string
   value: string | number
   subtitle?: string
-  icon?: LucideIcon
+  icon?: IconType
   // Positive change = teal; negative = red; neutral = grey
   trend?: { value: string; direction: 'up' | 'down' | 'neutral' }
   className?: string
@@ -25,7 +25,7 @@ export function MetricCard({
   return (
     <div
       className={cn(
-        'rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-800',
+        'rounded-sm border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-800',
         className,
       )}
     >
@@ -52,8 +52,8 @@ export function MetricCard({
           )}
         </div>
         {Icon && (
-          <div className="rounded-lg bg-slate-50 p-2 dark:bg-slate-700">
-            <Icon className="size-5 text-slate-400 dark:text-slate-300" strokeWidth={1.5} />
+          <div className="rounded-sm bg-slate-50 p-2 dark:bg-slate-700">
+            <Icon className="size-5 text-slate-400 dark:text-slate-300" />
           </div>
         )}
       </div>

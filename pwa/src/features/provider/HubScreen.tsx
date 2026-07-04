@@ -37,6 +37,13 @@ export function HubScreen() {
           </Card>
         )}
 
+        <Link to="/availability">
+          <Card style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}>
+            <span className="t-label">Availability & time off</span>
+            <span aria-hidden style={{ color: 'var(--text-secondary)' }}>›</span>
+          </Card>
+        </Link>
+
         <Link to="/verification">
           <Card style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}>
             <span className="t-label">Verification & tiers</span>

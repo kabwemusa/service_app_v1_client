@@ -8,7 +8,7 @@ import { z } from "zod";
 import { cn } from "@/lib/utils";
 import { api, ApiResponseError } from "@/lib/api/client";
 import { ADMIN_TOKEN_COOKIE } from "@/lib/auth/cookies";
-import { ShieldCheck } from "lucide-react";
+import { IoShieldCheckmarkOutline } from "react-icons/io5";
 
 const schema = z.object({
   // Accepts an email address or a username (e.g. "mkabwe").
@@ -77,8 +77,8 @@ export default function LoginPage() {
       <div className="w-full max-w-sm space-y-6">
         {/* Logo / wordmark */}
         <div className="flex flex-col items-center gap-2">
-          <div className="flex size-10 items-center justify-center rounded-lg bg-teal-600">
-            <ShieldCheck className="size-5 text-white" />
+          <div className="flex size-10 items-center justify-center rounded-sm bg-teal-600">
+            <IoShieldCheckmarkOutline className="size-5 text-white" />
           </div>
           <h1 className="text-base font-medium text-slate-900 dark:text-slate-100">
             SSM Admin
@@ -87,12 +87,12 @@ export default function LoginPage() {
 
         {/* Reason banners */}
         {reason === "idle" && (
-          <p className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-2.5 text-sm text-amber-700 text-center">
+          <p className="rounded-sm bg-amber-50 border border-amber-200 px-4 py-2.5 text-sm text-amber-700 text-center">
             You were signed out due to inactivity.
           </p>
         )}
         {reason === "expired" && (
-          <p className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-2.5 text-sm text-amber-700 text-center">
+          <p className="rounded-sm bg-amber-50 border border-amber-200 px-4 py-2.5 text-sm text-amber-700 text-center">
             Your session expired. Please sign in again.
           </p>
         )}
@@ -100,7 +100,7 @@ export default function LoginPage() {
         <form
           onSubmit={handleSubmit(onSubmit)}
           noValidate
-          className="space-y-4 rounded-lg border border-slate-200 bg-white p-6 dark:border-slate-700 dark:bg-slate-800"
+          className="space-y-4 rounded-sm border border-slate-200 bg-white p-6 dark:border-slate-700 dark:bg-slate-800"
         >
           <div className="space-y-1.5">
             <label
@@ -115,7 +115,7 @@ export default function LoginPage() {
               autoComplete="username"
               {...register("email")}
               className={cn(
-                "h-9 w-full rounded-lg border px-3 text-sm",
+                "h-9 w-full rounded-sm border px-3 text-sm",
                 "border-slate-200 bg-white dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100",
                 "focus:outline-none focus:ring-2 focus:ring-teal-500",
                 errors.email && "border-red-400"
@@ -139,7 +139,7 @@ export default function LoginPage() {
               autoComplete="current-password"
               {...register("password")}
               className={cn(
-                "h-9 w-full rounded-lg border px-3 text-sm",
+                "h-9 w-full rounded-sm border px-3 text-sm",
                 "border-slate-200 bg-white dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100",
                 "focus:outline-none focus:ring-2 focus:ring-teal-500",
                 errors.password && "border-red-400"
@@ -151,7 +151,7 @@ export default function LoginPage() {
           </div>
 
           {serverError && (
-            <p className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-600">
+            <p className="rounded-sm bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-600">
               {serverError}
             </p>
           )}
@@ -159,7 +159,7 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={isSubmitting}
-            className="w-full rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-60"
+            className="w-full rounded-sm bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-60"
           >
             {isSubmitting ? "Signing in..." : "Sign in"}
           </button>

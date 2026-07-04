@@ -2,9 +2,9 @@
 
 import { useMemo, useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { Star, AlertTriangle, ExternalLink, ShieldCheck } from 'lucide-react'
+import { IoStarOutline, IoWarningOutline, IoOpenOutline, IoShieldCheckmarkOutline } from 'react-icons/io5'
 import { DataTable } from '@/components/ui/DataTable'
 import { FilterBar } from '@/components/ui/FilterBar'
 import { DetailPanel } from '@/components/ui/DetailPanel'
@@ -20,6 +20,8 @@ import {
   type ReviewFlag,
 } from '@/lib/api/reviews'
 import { ReviewDetail } from '@/components/reviews/ReviewDetail'
+import { useAdminChannel } from '@/lib/realtime/useAdminChannel'
+import { useQueueBadgeStore } from '@/lib/realtime/queue-badge-store'
 
 type Tab = 'needs_review' | 'all'
 
@@ -81,6 +83,16 @@ export function ReviewsManager() {
     queryFn: () => reviewsApi.list(params),
   })
 
+  const queryClient = useQueryClient()
+  const bumpBadge = useQueueBadgeStore((s) => s.increment)
+
+  useAdminChannel('reviews', {
+    'review.flagged': () => {
+      queryClient.invalidateQueries({ queryKey: ['reviews'] })
+      bumpBadge('reviews')
+    },
+  })
+
   const switchTab = useCallback((t: Tab) => {
     setTab(t)
     setPage(1)
@@ -103,7 +115,7 @@ export function ReviewsManager() {
                     className="inline-flex items-center gap-0.5 rounded-full border border-teal-200 bg-teal-50 px-1.5 py-px text-[10px] font-medium text-teal-700 dark:border-teal-800 dark:bg-teal-900/20 dark:text-teal-400"
                     title="From a completed booking (§12)"
                   >
-                    <ShieldCheck className="size-2.5" aria-hidden="true" /> Verified booking
+                    <IoShieldCheckmarkOutline className="size-2.5" aria-hidden="true" /> Verified booking
                   </span>
                 )}
               </div>
@@ -158,7 +170,7 @@ export function ReviewsManager() {
           <button
             type="button"
             onClick={() => select(row.original.id)}
-            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
+            className="rounded-sm border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
             aria-label="Review this entry"
           >
             Review
@@ -180,7 +192,7 @@ export function ReviewsManager() {
     <div className="space-y-4">
       <div>
         <h1 className="flex items-center gap-2 text-lg font-medium text-slate-900 dark:text-slate-100">
-          <Star className="size-5 text-teal-600" />
+          <IoStarOutline className="size-5 text-teal-600" />
           Reviews
         </h1>
         <p className="text-sm text-slate-500 dark:text-slate-400">
@@ -287,7 +299,7 @@ export function Stars({ rating }: { rating: number }) {
   return (
     <span className="inline-flex items-center gap-0.5 whitespace-nowrap" aria-label={`${rating} out of 5 stars`}>
       {[1, 2, 3, 4, 5].map((i) => (
-        <Star
+        <IoStarOutline
           key={i}
           className={cn('size-3.5', i <= Math.round(rating) ? 'fill-amber-400 text-amber-400' : 'text-slate-300 dark:text-slate-600')}
           aria-hidden="true"
@@ -307,7 +319,7 @@ function UserLink({ id, name }: { id: string | null; name: string }) {
       onClick={(e) => e.stopPropagation()}
     >
       <span className="max-w-28 truncate">{name}</span>
-      <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
+      <IoOpenOutline className="size-3 shrink-0" aria-hidden="true" />
     </Link>
   )
 }
@@ -325,7 +337,7 @@ function FlagCells({ flags }: { flags: ReviewFlag[] }) {
           key={reason}
           className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-px text-[11px] font-medium text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400"
         >
-          <AlertTriangle className="size-2.5" aria-hidden="true" />
+          <IoWarningOutline className="size-2.5" aria-hidden="true" />
           {flagLabel(reason)}
         </span>
       ))}

@@ -51,6 +51,24 @@ class TemplateManager
             'body'     => 'Hi {{1}}! It\'s been a while. Need a hand with anything? Reply "Hi" to browse our services.',
             'params'   => ['customer_name'],
         ],
+        'verification_approved' => [
+            'name'     => 'verification_approved',
+            'category' => 'UTILITY',
+            'body'     => 'Good news! Your Sebenza verification was approved and you are now Tier {{1}}. You can accept bookings — open the app to go live.',
+            'params'   => ['tier'],
+        ],
+        'verification_update' => [
+            'name'     => 'verification_update',
+            'category' => 'UTILITY',
+            'body'     => 'Update on your Sebenza verification: {{1}} Open the app to review and resubmit.',
+            'params'   => ['reason'],
+        ],
+        'payout_released' => [
+            'name'     => 'payout_released',
+            'category' => 'UTILITY',
+            'body'     => 'You have been paid! K{{1}} for {{2}} was sent to your Mobile Money. Thank you for working with Sebenza.',
+            'params'   => ['amount', 'service_title'],
+        ],
     ];
 
     public function __construct(

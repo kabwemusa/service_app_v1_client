@@ -3,11 +3,13 @@
 namespace App\Services;
 
 use App\Enums\ErrorCode;
+use App\Events\SafetyReportResolved;
 use App\Exceptions\Api\ApiException;
 use App\Exceptions\Api\NotFoundException;
 use App\Models\AdminUser;
 use App\Models\EmergencyEvent;
 use App\Models\SafetyReport;
+use App\Models\User;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 
@@ -46,7 +48,11 @@ class AdminSafetyService
         'OTHER'           => 'Other',
     ];
 
-    public function __construct(private readonly AuditedMutationService $audit) {}
+    public function __construct(
+        private readonly AuditedMutationService $audit,
+        private readonly AdminUserService $users,
+        private readonly NotificationDispatcher $notifications,
+    ) {}
 
     // ── Queue (severity-first) ───────────────────────────────────────────────────
 
@@ -433,6 +439,47 @@ class AdminSafetyService
     }
 
     /**
+     * Suspend the reported user as a result of this report. The account
+     * mutation itself is NOT duplicated here — it calls straight into the
+     * Users module (single source of truth), then records the link against
+     * the safety report so both modules carry an audit entry for it.
+     */
+    public function restrictReportedUser(string $kind, string $id, AdminUser $actor, string $reason, ?int $suspendDurationDays = null): array
+    {
+        if ($kind !== 'report') {
+            throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Restricting the reported user is recorded against a safety report.');
+        }
+
+        /** @var SafetyReport $record */
+        $record = $this->find($kind, $id);
+        if (! $record->reported_id) {
+            throw new ApiException(ErrorCode::VALIDATION_ERROR, 'This report has no identified reported user to restrict.');
+        }
+        if ($record->account_restricted) {
+            throw new ApiException(ErrorCode::CONFLICT, 'The reported user has already been restricted from this report.');
+        }
+
+        $reportedUser = User::findOrFail($record->reported_id);
+
+        // Users.suspend() writes its own 'user.suspend' audit entry, invalidates
+        // the reported user's sessions immediately, and sends them the account
+        // notification — none of that is duplicated here.
+        $this->users->suspend($reportedUser, $actor, $reason, $suspendDurationDays);
+
+        $this->audit->perform(
+            actor: $actor,
+            action: 'safety.restrict_reported_user',
+            targetType: 'safety_report',
+            targetId: $id,
+            reason: $reason,
+            metadata: ['after' => ['account_restricted' => true, 'restricted_user_id' => $reportedUser->id]],
+            mutation: fn () => $record->forceFill(['account_restricted' => true])->save(),
+        );
+
+        return $this->detail($kind, $id, $actor);
+    }
+
+    /**
      * Record a decision to escalate to authorities. The platform does NOT contact
      * authorities itself — this only records that the admin decided to.
      */
@@ -521,6 +568,13 @@ class AdminSafetyService
                 }
             },
         );
+
+        // Reporter-only, generic notice — outcome, review notes and the
+        // reported party's identity are never included (§ confidentiality).
+        $reporterId = $kind === 'emergency' ? $record->triggered_by : $record->reporter_id;
+        if ($reporterId) {
+            $this->notifications->dispatch(new SafetyReportResolved($reporterId, $kind));
+        }
 
         return $this->detail($kind, $id, $actor);
     }

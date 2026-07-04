@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { catalogApi, type ServiceCard } from '../../api/catalog';
+import { catalogApi, priceLine, type ServiceCard } from '../../api/catalog';
 import { ScreenHeader } from '../../components/ui/ScreenHeader';
 import { Button, Card } from '../../components/ui/ui';
 import { useAuthStore } from '../../store/authStore';
@@ -26,7 +26,9 @@ export function ServiceDetailScreen() {
 
   if (!s) return <><ScreenHeader /><div style={{ padding: 'var(--space-md)' }}><div className="skeleton" style={{ height: 200 }} /></div></>;
 
-  const price = s.min_price ?? s.base_price;
+  const line = priceLine(s);
+  const isQuoteFirst = s.pricing_model === 'PROVIDER_SCOPE' || s.pricing_model === 'QUOTE_DEPOSIT';
+  const isCapped = s.pricing_model === 'HOURLY_CAPPED';
 
   return (
     <div style={{ paddingBottom: 96 }}>
@@ -38,7 +40,17 @@ export function ServiceDetailScreen() {
 
         <h2 className="t-h2" style={{ marginTop: 'var(--space-md)' }}>{s.title}</h2>
         {s.category && <p className="t-muted">{s.category.name}</p>}
-        {price != null && <p className="t-price" style={{ marginTop: 8 }}>{t('browse.from')} K{price}</p>}
+        {line && <p className="t-price" style={{ marginTop: 8 }}>{isQuoteFirst || isCapped ? line : `${t('browse.from')} ${line}`}</p>}
+        {isCapped && (
+          <p className="t-small t-muted" style={{ marginTop: 4 }}>
+            The maximum is held when you book — you only pay for actual time; the rest is refunded.
+          </p>
+        )}
+        {isQuoteFirst && (
+          <p className="t-small t-muted" style={{ marginTop: 4 }}>
+            Answer a few questions, get a fixed quote, and nothing is charged until you approve it.
+          </p>
+        )}
         {s.description && <Card style={{ marginTop: 'var(--space-md)' }}><p className="t-body">{s.description}</p></Card>}
       </div>
 

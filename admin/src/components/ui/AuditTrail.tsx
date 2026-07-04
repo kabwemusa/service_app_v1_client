@@ -9,7 +9,7 @@ import { FilterBar } from '@/components/ui/FilterBar'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { useState } from 'react'
 import type { AuditLogEntry, Paginated } from '@/lib/api/types'
-import { ClipboardList } from 'lucide-react'
+import { IoClipboardOutline } from 'react-icons/io5'
 
 interface AuditTrailProps {
   // When provided, filters to a single target (e.g. a specific user or booking)
@@ -41,23 +41,23 @@ export function AuditTrail({ targetType, targetId }: AuditTrailProps) {
       <FilterBar
         search={search}
         onSearchChange={(v) => { setSearch(v); setPage(1) }}
-        searchPlaceholder="Search by action or targetâ€¦"
+        searchPlaceholder="Search by action or target…"
       />
 
       {isLoading ? (
         <div className="space-y-2">
           {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="h-16 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-700" />
+            <div key={i} className="h-16 animate-pulse rounded-sm bg-slate-100 dark:bg-slate-700" />
           ))}
         </div>
       ) : !data?.data.length ? (
         <EmptyState
           title="No audit entries"
           description="State-changing actions will appear here."
-          icon={ClipboardList}
+          icon={IoClipboardOutline}
         />
       ) : (
-        <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-700 dark:border-slate-700">
+        <div className="divide-y divide-slate-100 rounded-sm border border-slate-200 bg-white dark:divide-slate-700 dark:border-slate-700 dark:bg-slate-800">
           {data.data.map((entry) => (
             <div key={entry.id} className="flex gap-3 px-4 py-3">
               <Avatar name={entry.actor_name} size="sm" className="mt-0.5 shrink-0" />
@@ -78,7 +78,7 @@ export function AuditTrail({ targetType, targetId }: AuditTrailProps) {
                   <span className="font-medium">Reason:</span> {entry.reason}
                 </p>
                 <p className="mt-0.5 text-xs text-slate-400">
-                  {fmtDatetime(entry.created_at)} Â· {entry.ip}
+                  {fmtDatetime(entry.created_at)} · {entry.ip}
                 </p>
               </div>
             </div>

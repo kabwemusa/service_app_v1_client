@@ -4,7 +4,6 @@ import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Alert,
   Linking,
   Platform,
   ScrollView,
@@ -17,8 +16,11 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { ApiError } from '../../api/errors';
 import { Booking, BookingStatus, bookingsApi } from '../../api/bookings';
 import { SafetyCategory, safetyReportsApi } from '../../api/safetyReports';
+import { PaymentConfirmDialog } from '../../components/booking/PaymentConfirmDialog';
+import { ConfirmDialog, ConfirmDialogConfig } from '../../components/ui/ConfirmDialog';
 import { CardSkeleton } from '../../components/ui/SkeletonBlock';
 import { useSnackbar } from '../../providers/SnackbarProvider';
+import { useAuthStore } from '../../store/authStore';
 import { useBookingStore } from '../../store/bookingStore';
 import { palette, radius as r, spacing, typography } from '../../theme';
 
@@ -38,8 +40,13 @@ const STATUS_META: Record<BookingStatus, { label: string; fg: string; bg: string
   NO_SHOW:            { label: 'No-show',                    fg: palette.danger,        bg: palette.dangerLight },
   DISPUTED:           { label: 'Disputed',                   fg: palette.danger,        bg: palette.dangerLight },
   PENDING_PAYMENT:    { label: 'Awaiting payment',           fg: palette.warning,       bg: palette.warningLight },
+  PAYMENT_FAILED:     { label: 'Payment failed',             fg: palette.danger,        bg: palette.dangerLight },
   AWAITING_KYC:       { label: 'Awaiting verification',      fg: palette.warning,       bg: palette.warningLight },
   FUNDS_HELD:         { label: 'Payment held',               fg: palette.primary,       bg: palette.primaryLight },
+  // Outcome-based pricing — quote-first models
+  SCOPE_PENDING:      { label: 'Awaiting quote',             fg: palette.warning,       bg: palette.warningLight },
+  QUOTE_SENT:         { label: 'Quote received',             fg: palette.warning,       bg: palette.warningLight },
+  DEPOSIT_HELD:       { label: 'Deposit held',               fg: palette.primary,       bg: palette.primaryLight },
   CHARGEBACK_PENDING: { label: 'Chargeback',                 fg: palette.danger,        bg: palette.dangerLight },
 };
 
@@ -68,8 +75,9 @@ type StepState = 'done' | 'current' | 'upcoming';
 function stepStates(status: BookingStatus): StepState[] {
   switch (status) {
     case 'ACCEPTED':     return ['current', 'upcoming', 'upcoming'];
-    // ESCROW: funds held is the "Confirmed" step (the escrow equivalent of ACCEPTED).
-    case 'FUNDS_HELD':   return ['current', 'upcoming', 'upcoming'];
+    // ESCROW: a held payment (full or deposit) is the "Confirmed" step.
+    case 'FUNDS_HELD':
+    case 'DEPOSIT_HELD': return ['current', 'upcoming', 'upcoming'];
     case 'IN_PROGRESS':  return ['done',    'current',  'upcoming'];
     case 'DELIVERED':    return ['done',    'done',     'current'];
     case 'COMPLETED':
@@ -104,7 +112,7 @@ function tierLabel(tier: number): string {
 }
 
 const TERMINAL: BookingStatus[]  = ['CANCELLED', 'DECLINED', 'EXPIRED', 'NO_SHOW', 'DISPUTED'];
-const CANCELLABLE: BookingStatus[] = ['REQUESTED', 'QUOTED', 'ACCEPTED'];
+const CANCELLABLE: BookingStatus[] = ['REQUESTED', 'QUOTED', 'SCOPE_PENDING', 'QUOTE_SENT', 'ACCEPTED'];
 const ACTIVE_DIRECT: BookingStatus[] = ['ACCEPTED', 'IN_PROGRESS', 'DELIVERED', 'COMPLETED'];
 
 // ── Main screen ───────────────────────────────────────────────────────────────
@@ -112,9 +120,10 @@ const ACTIVE_DIRECT: BookingStatus[] = ['ACCEPTED', 'IN_PROGRESS', 'DELIVERED', 
 export default function BookingDetailScreen({ navigation, route }: any) {
   const bookingId: string = route.params?.bookingId;
   const insets = useSafeAreaInsets();
-  const { showError } = useSnackbar();
+  const { showError, showSuccess, showSnackbar } = useSnackbar();
+  const accountPhone = useAuthStore((s) => s.user?.phone ?? null);
   const {
-    acceptQuote, complete, cancel, markPaid, review, pay,
+    acceptQuote, approveQuote, declineQuote, complete, cancel, markPaid, review, pay,
     submitting, error, clearError,
   } = useBookingStore();
 
@@ -122,6 +131,14 @@ export default function BookingDetailScreen({ navigation, route }: any) {
   const [loading, setLoading]   = useState(true);
   const [actionBusy, setActionBusy] = useState(false);
   const [copied, setCopied]     = useState(false);
+
+  // App-styled confirmation dialog (replaces Alert.alert)
+  const [dialog, setDialog] = useState<ConfirmDialogConfig | null>(null);
+
+  // "Pay & hold funds" — number-aware payment confirmation
+  const [payIntent, setPayIntent] = useState<{
+    title: string; amountLabel: string; helperText: string; confirmLabel: string;
+  } | null>(null);
 
   // Review
   const [reviewRating, setReviewRating]   = useState(0);
@@ -167,11 +184,23 @@ export default function BookingDetailScreen({ navigation, route }: any) {
     }
   }
 
-  function confirmAction(title: string, message: string, action: () => Promise<Booking>) {
-    Alert.alert(title, message, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Confirm', onPress: () => runAction(action) },
-    ]);
+  function confirmAction(
+    title: string,
+    message: string,
+    action: () => Promise<Booking>,
+    opts?: { destructive?: boolean; confirmLabel?: string; icon?: ConfirmDialogConfig['icon'] },
+  ) {
+    setDialog({
+      title,
+      message,
+      destructive:  opts?.destructive,
+      confirmLabel: opts?.confirmLabel,
+      icon:         opts?.icon,
+      onConfirm: () => {
+        setDialog(null);
+        runAction(action);
+      },
+    });
   }
 
   async function handleCopyMomo() {
@@ -183,26 +212,60 @@ export default function BookingDetailScreen({ navigation, route }: any) {
   }
 
   function handleEmergency() {
-    Alert.alert(
-      'Emergency',
-      'Only use this for genuine safety emergencies during the job.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Continue',
-          style: 'destructive',
-          onPress: () =>
-            Alert.alert(
-              'Call emergency services?',
-              'This will call Zambia Emergency Services (991).',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Call 991', style: 'destructive', onPress: () => Linking.openURL('tel:991') },
-              ],
-            ),
-        },
-      ],
-    );
+    setDialog({
+      title:        'Emergency',
+      message:      'Only use this for genuine safety emergencies during the job.',
+      confirmLabel: 'Continue',
+      destructive:  true,
+      onConfirm: () => {
+        setDialog({
+          title:        'Call emergency services?',
+          message:      'This will call Zambia Emergency Services (991).',
+          confirmLabel: 'Call 991',
+          destructive:  true,
+          icon:         'call-outline',
+          onConfirm: () => {
+            setDialog(null);
+            Linking.openURL('tel:991');
+          },
+        });
+      },
+    });
+  }
+
+  /** Opens the number-aware "Pay & hold funds" dialog for the current booking status. */
+  function openPayDialog() {
+    if (!booking) return;
+    const protectionFee = booking.buyer_protection_fee ?? 0;
+    const chargeAmount  = total + protectionFee;
+    const feeNote = !isDirect && protectionFee > 0
+      ? ` (includes ZMW ${protectionFee.toFixed(2)} buyer protection)`
+      : '';
+
+    setPayIntent({
+      title: booking.status === 'PENDING_PAYMENT'
+        ? 'Resend payment prompt'
+        : booking.status === 'QUOTED'
+          ? 'Accept & pay'
+          : 'Hold funds in escrow',
+      amountLabel: `ZMW ${chargeAmount.toFixed(2)}`,
+      helperText:  `Held securely in escrow until the job is marked complete${feeNote}.`,
+      confirmLabel: booking.status === 'PENDING_PAYMENT' ? 'Resend prompt' : 'Send payment request',
+    });
+  }
+
+  async function confirmPay(momoNumber?: string) {
+    if (!booking) return;
+    setActionBusy(true);
+    try {
+      const updated = await pay(booking.id, momoNumber);
+      setBooking(updated);
+      setPayIntent(null);
+    } catch (e) {
+      showError(e instanceof ApiError ? e.message : 'Payment could not be started.');
+    } finally {
+      setActionBusy(false);
+    }
   }
 
   async function submitReview() {
@@ -234,7 +297,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
       setShowSafety(false);
       setSafetyText('');
       setTosAck(false);
-      Alert.alert('Report submitted', 'Our moderation team will review this within 1 hour.');
+      showSuccess('Report submitted — our moderation team will review this within 1 hour.');
     } catch (e) {
       showError(e instanceof ApiError ? e.message : 'Failed to submit report.');
     } finally {
@@ -291,6 +354,14 @@ export default function BookingDetailScreen({ navigation, route }: any) {
   const isDelivered    = booking.status === 'DELIVERED';
   const isCompleted    = ['COMPLETED', 'DISBURSED'].includes(booking.status);
   const isInProgress   = booking.status === 'IN_PROGRESS';
+  // Outcome-based pricing flags
+  const isScopePending = booking.status === 'SCOPE_PENDING';
+  const isQuoteSent    = booking.status === 'QUOTE_SENT';
+  const isCapped       = booking.service.pricing_model === 'HOURLY_CAPPED';
+  const isDeposit      = booking.service.pricing_model === 'QUOTE_DEPOSIT';
+  const hourlyRefund   = isCapped && booking.actual_hours_logged != null
+    ? Math.max((booking.amount ?? 0) - (booking.actual_charge_zmw ?? 0), 0)
+    : 0;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
@@ -313,7 +384,9 @@ export default function BookingDetailScreen({ navigation, route }: any) {
           <Stepper steps={steps} />
         )}
 
-        <Divider />
+        {/* All booking sections live in one flat white card, separated by the
+            same horizontal dividers the screen has always used. */}
+        <View style={styles.sectionsCard}>
 
         {/* ── 1. Provider ──────────────────────────────────────────── */}
         <Text style={styles.sectionLabel}>Provider</Text>
@@ -401,7 +474,42 @@ export default function BookingDetailScreen({ navigation, route }: any) {
         {/* ── 2. Payment ────────────────────────────────────────────── */}
         <Text style={styles.sectionLabel}>Payment</Text>
 
-        {isQuoted ? (
+        {isScopePending ? (
+          <View style={styles.quoteNote}>
+            <Ionicons name="hourglass-outline" size={15} color={palette.warning} />
+            <Text style={styles.quoteNoteText}>
+              Waiting for {providerName}'s quote. You'll see the price, duration and what's
+              included before anything is charged.
+            </Text>
+          </View>
+        ) : isQuoteSent && booking.provider_quote ? (
+          <>
+            <LineItem label="Quoted price" value={booking.provider_quote.price} />
+            {booking.provider_quote.duration_mins != null && (
+              <View style={styles.iconLine}>
+                <Ionicons name="time-outline" size={15} color={palette.textSecondary} />
+                <Text style={styles.iconLineText}>
+                  Estimated {Math.round(booking.provider_quote.duration_mins / 60 * 10) / 10} hr
+                </Text>
+              </View>
+            )}
+            {booking.provider_quote.inclusions?.map((inc, i) => (
+              <View key={i} style={styles.iconLine}>
+                <Ionicons name="checkmark-circle-outline" size={15} color={palette.success} />
+                <Text style={styles.iconLineText}>{inc}</Text>
+              </View>
+            ))}
+            {!!booking.provider_quote.message && (
+              <Text style={styles.notesText}>{booking.provider_quote.message}</Text>
+            )}
+            {isDeposit && booking.deposit_amount != null && (
+              <>
+                <LineItem label={`Deposit now (${booking.service.deposit_percent ?? 30}%)`} value={booking.deposit_amount} />
+                <LineItem label="Balance on completion" value={booking.balance_amount ?? 0} />
+              </>
+            )}
+          </>
+        ) : isQuoted ? (
           <View style={styles.quoteNote}>
             <Ionicons name="pricetag-outline" size={15} color={palette.warning} />
             <Text style={styles.quoteNoteText}>
@@ -414,7 +522,36 @@ export default function BookingDetailScreen({ navigation, route }: any) {
           </View>
         ) : (
           <>
-            <LineItem label="Amount" value={total} />
+            {/* HOURLY_CAPPED: bounded-cost framing, then the settlement breakdown. */}
+            {isCapped && booking.service.hourly_rate != null && (
+              <View style={styles.iconLine}>
+                <Ionicons name="speedometer-outline" size={15} color={palette.textSecondary} />
+                <Text style={styles.iconLineText}>
+                  ZMW {booking.service.hourly_rate.toFixed(0)}/hr · {booking.service.minimum_hours ?? 1}-hr minimum
+                  · max ZMW {(booking.service.cap_amount ?? booking.amount ?? 0).toFixed(0)}
+                </Text>
+              </View>
+            )}
+            {isCapped && booking.actual_hours_logged != null ? (
+              <>
+                <LineItem label={`Time logged (${booking.actual_hours_logged} hr)`} value={booking.actual_charge_zmw ?? total} />
+                {hourlyRefund > 0 && (
+                  <LineItem label="Refunded to you (unused hold)" value={hourlyRefund} />
+                )}
+              </>
+            ) : (
+              <LineItem label={isCapped ? 'Held (maximum)' : 'Amount'} value={total} />
+            )}
+            {/* QUOTE_DEPOSIT after approval: deposit / balance split. */}
+            {isDeposit && booking.deposit_amount != null && (
+              <>
+                <LineItem label="Deposit held" value={booking.deposit_amount} />
+                <LineItem
+                  label={booking.escrow_phase === 'FULL' ? 'Balance collected' : 'Balance on completion'}
+                  value={booking.balance_amount ?? 0}
+                />
+              </>
+            )}
             {/* ESCROW-only buyer protection fee (mode-driven, §8.3). */}
             {!isDirect && (booking.buyer_protection_fee ?? 0) > 0 && (
               <LineItem label="Buyer protection (2%)" value={booking.buyer_protection_fee} />
@@ -428,7 +565,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
           <>
             <Text style={styles.paymentMode}>Secured by Sebenza Escrow</Text>
             <Text style={styles.paymentMode}>
-              Money-back guarantee — full refund if the job isn’t delivered (§11.1).
+              Money-back guarantee — full refund if the job isn’t delivered.
             </Text>
           </>
         )}
@@ -673,6 +810,8 @@ export default function BookingDetailScreen({ navigation, route }: any) {
             </View>
           </View>
         )}
+
+        </View>
       </ScrollView>
 
       {/* ── Sticky action bar ─────────────────────────────────────── */}
@@ -692,6 +831,24 @@ export default function BookingDetailScreen({ navigation, route }: any) {
             'Decline quote',
             'Decline this quote and cancel the request?',
             () => cancel(booking.id),
+            { destructive: true, confirmLabel: 'Decline' },
+          )
+        }
+        onApproveQuote={() =>
+          confirmAction(
+            booking.service.pricing_model === 'QUOTE_DEPOSIT' ? 'Approve quote & pay deposit' : 'Approve quote & pay',
+            booking.service.pricing_model === 'QUOTE_DEPOSIT'
+              ? `Pay ZMW ${(booking.deposit_amount ?? 0).toFixed(2)} now to confirm. The balance of ZMW ${(booking.balance_amount ?? 0).toFixed(2)} is collected when the job completes.`
+              : `Approve the quote of ZMW ${(booking.agreed_amount ?? 0).toFixed(2)}? A mobile-money prompt will be sent to hold the funds in escrow.`,
+            () => approveQuote(booking.id),
+          )
+        }
+        onDeclineScopedQuote={() =>
+          confirmAction(
+            'Decline quote',
+            "Decline this quote? The booking is cancelled and nothing is charged.",
+            () => declineQuote(booking.id),
+            { destructive: true, confirmLabel: 'Decline quote' },
           )
         }
         onCancel={() =>
@@ -701,6 +858,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
               ? 'Cancelling a confirmed booking may affect your account rating. Continue?'
               : 'Cancel this booking? The provider will be notified.',
             () => cancel(booking.id),
+            { destructive: true, confirmLabel: 'Cancel booking' },
           )
         }
         onComplete={() =>
@@ -720,13 +878,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
             },
           )
         }
-        onPay={() =>
-          confirmAction(
-            'Hold funds in escrow',
-            `We'll send a mobile-money prompt to your phone for ZMW ${(total + (booking.buyer_protection_fee ?? 0)).toFixed(2)} (incl. ${(booking.buyer_protection_fee ?? 0).toFixed(2)} buyer protection). Approve it to hold the funds securely until the job is done.`,
-            () => pay(booking.id),
-          )
-        }
+        onPay={openPayDialog}
         onEmergency={handleEmergency}
         onRaiseDispute={() => {
           setShowDispute(true);
@@ -747,6 +899,24 @@ export default function BookingDetailScreen({ navigation, route }: any) {
         hasReview={!!booking.has_review}
         isDirect={isDirect}
         customerPaid={customerPaid}
+      />
+
+      <ConfirmDialog
+        dialog={dialog}
+        busy={actionBusy}
+        onDismiss={() => !actionBusy && setDialog(null)}
+      />
+
+      <PaymentConfirmDialog
+        visible={!!payIntent}
+        onClose={() => !actionBusy && setPayIntent(null)}
+        accountPhone={accountPhone}
+        title={payIntent?.title ?? 'Hold funds in escrow'}
+        amountLabel={payIntent?.amountLabel ?? ''}
+        helperText={payIntent?.helperText}
+        confirmLabel={payIntent?.confirmLabel}
+        busy={actionBusy}
+        onConfirm={confirmPay}
       />
     </SafeAreaView>
   );
@@ -803,7 +973,7 @@ function Stepper({ steps }: { steps: StepState[] }) {
 
 function ActionBar({
   booking, busy, insetBottom,
-  onAcceptQuote, onDeclineQuote, onCancel,
+  onAcceptQuote, onDeclineQuote, onApproveQuote, onDeclineScopedQuote, onCancel,
   onComplete, onEmergency, onRaiseDispute,
   onSubmitReview, onBookAgain, onMarkPaid, onPay,
   reviewRating, hasReview,
@@ -814,6 +984,8 @@ function ActionBar({
   insetBottom: number;
   onAcceptQuote: () => void;
   onDeclineQuote: () => void;
+  onApproveQuote: () => void;
+  onDeclineScopedQuote: () => void;
   onCancel: () => void;
   onComplete: () => void;
   onEmergency: () => void;
@@ -829,9 +1001,80 @@ function ActionBar({
 }) {
   const { status } = booking;
   const agreedTotal = booking.agreed_amount ?? booking.amount ?? booking.service.base_price ?? 0;
+  const { showSnackbar } = useSnackbar();
   let content: React.ReactNode = null;
 
-  if (status === 'REQUESTED') {
+  if (status === 'SCOPE_PENDING') {
+    // Quote-first: brief sent, waiting on the provider's scoped quote — no money yet.
+    content = (
+      <>
+        <PassiveNote icon="hourglass-outline" text="Brief sent — waiting for the provider's quote. Nothing is charged until you approve it." />
+        <Button
+          mode="outlined" style={styles.cancelBtn} contentStyle={styles.barBtnContent}
+          textColor={palette.danger} disabled={busy}
+          onPress={onCancel}
+        >
+          Cancel request
+        </Button>
+      </>
+    );
+  } else if (status === 'QUOTE_SENT') {
+    // Scoped quote in — approving starts the escrow hold (deposit or full).
+    const isDepositModel = booking.service.pricing_model === 'QUOTE_DEPOSIT';
+    const holdLabel = isDepositModel
+      ? `Pay deposit · ZMW ${(booking.deposit_amount ?? 0).toFixed(0)}`
+      : `Accept quote · ZMW ${(booking.provider_quote?.price ?? agreedTotal).toFixed(0)}`;
+    content = (
+      <>
+        <Button
+          mode="contained" style={styles.primaryBtn} contentStyle={styles.barBtnContent} labelStyle={styles.btnLabel}
+          loading={busy} disabled={busy}
+          onPress={onApproveQuote}
+        >
+          {holdLabel}
+        </Button>
+        <Button
+          mode="text" textColor={palette.danger}
+          disabled={busy}
+          onPress={onDeclineScopedQuote}
+        >
+          Decline
+        </Button>
+      </>
+    );
+  } else if (status === 'DEPOSIT_HELD') {
+    content = (
+      <>
+        <PassiveNote
+          icon="lock-closed-outline"
+          text={`Deposit of ZMW ${(booking.deposit_amount ?? 0).toFixed(0)} held securely — the balance of ZMW ${(booking.balance_amount ?? 0).toFixed(0)} is collected when the job completes.`}
+        />
+        <Button
+          mode="outlined" style={styles.cancelBtn} contentStyle={styles.barBtnContent}
+          textColor={palette.danger} disabled={busy}
+          onPress={onCancel}
+        >
+          Cancel & refund deposit
+        </Button>
+      </>
+    );
+  } else if (status === 'PAYMENT_FAILED') {
+    content = (
+      <>
+        <PassiveNote icon="alert-circle-outline" text="The mobile-money payment didn't go through — you can try again." />
+        <Button
+          mode="contained" style={styles.primaryBtn} contentStyle={styles.barBtnContent} labelStyle={styles.btnLabel}
+          loading={busy} disabled={busy}
+          onPress={onPay}
+        >
+          Retry payment
+        </Button>
+        <Button mode="text" textColor={palette.danger} disabled={busy} onPress={onCancel}>
+          Cancel request
+        </Button>
+      </>
+    );
+  } else if (status === 'REQUESTED') {
     // ESCROW: the customer funds the request up front (funding is the commitment).
     // DIRECT: the provider must respond first; the customer just waits.
     content = isDirect ? (
@@ -953,7 +1196,7 @@ function ActionBar({
           textColor={palette.primary}
           disabled={busy}
           onPress={() =>
-            Alert.alert('Coming soon', 'In-app messaging will be available in a future update.')
+            showSnackbar({ message: 'In-app messaging will be available in a future update.', variant: 'info' })
           }
         >
           Message
@@ -1111,6 +1354,19 @@ const styles = StyleSheet.create({
   stepConnectorDone: { backgroundColor: palette.success },
 
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: palette.border, marginVertical: spacing.lg },
+
+  // All sections (Provider, Payment, Schedule, …) share one flat white card —
+  // v3.1 §2 design language: hairline border, 8px radius, no shadow. The
+  // existing <Divider /> between sections is unchanged, just now bounded by
+  // this card instead of sitting directly on the page background.
+  sectionsCard: {
+    backgroundColor: palette.surface,
+    borderRadius:    r.sm,
+    borderWidth:     StyleSheet.hairlineWidth,
+    borderColor:     palette.border,
+    padding:         spacing.lg,
+    marginTop:       spacing.md,
+  },
 
   sectionLabel: { ...typography.label, color: palette.textPrimary, marginBottom: spacing.sm },
 

@@ -11,7 +11,7 @@ interface CardProps {
 /**
  * Canonical content container (v3.1 §2 design language).
  *
- *   • flat white surface, hairline border, small radius (rounded-lg = 8px)
+ *   • flat white surface, hairline border, small radius (rounded-sm = 8px)
  *   • NO drop shadow / elevation / glow
  *   • sits on the page background with a consistent gap between cards
  *
@@ -22,7 +22,7 @@ export function Card({ children, className, padded = true }: CardProps) {
   return (
     <div
       className={cn(
-        'rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800',
+        'rounded-sm border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800',
         padded && 'p-4',
         className,
       )}

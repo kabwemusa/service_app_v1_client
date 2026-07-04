@@ -1,21 +1,21 @@
 ﻿'use client'
 
 import type { ReactNode } from 'react'
-import { CheckCircle2, XCircle, AlertTriangle, MinusCircle } from 'lucide-react'
+import { IoCheckmarkCircleOutline, IoCloseCircleOutline, IoWarningOutline, IoRemoveCircleOutline } from 'react-icons/io5'
 import { cn } from '@/lib/utils'
 import type { AutomatedChecks as Checks } from '@/lib/api/verification'
 
-// Read-only surfacing of the automated check engine's results (Â§4.3 pipeline,
-// Â§5.3 image pipeline). The reviewer decides; the system advises â€” so these are
+// Read-only surfacing of the automated check engine's results (§4.3 pipeline,
+// §5.3 image pipeline). The reviewer decides; the system advises — so these are
 // presented as advisory rows, never as gating controls.
 
 type Tone = 'pass' | 'fail' | 'warn' | 'none'
 
-const TONE_META: Record<Tone, { icon: typeof CheckCircle2; cls: string; word: string }> = {
-  pass: { icon: CheckCircle2, cls: 'text-teal-600 dark:text-teal-400', word: 'Pass' },
-  fail: { icon: XCircle, cls: 'text-red-600 dark:text-red-400', word: 'Fail' },
-  warn: { icon: AlertTriangle, cls: 'text-amber-600 dark:text-amber-400', word: 'Flagged' },
-  none: { icon: MinusCircle, cls: 'text-slate-400', word: 'N/A' },
+const TONE_META: Record<Tone, { icon: typeof IoCheckmarkCircleOutline; cls: string; word: string }> = {
+  pass: { icon: IoCheckmarkCircleOutline, cls: 'text-teal-600 dark:text-teal-400', word: 'Pass' },
+  fail: { icon: IoCloseCircleOutline, cls: 'text-red-600 dark:text-red-400', word: 'Fail' },
+  warn: { icon: IoWarningOutline, cls: 'text-amber-600 dark:text-amber-400', word: 'Flagged' },
+  none: { icon: IoRemoveCircleOutline, cls: 'text-slate-400', word: 'N/A' },
 }
 
 function CheckRow({ label, tone, detail }: { label: string; tone: Tone; detail?: ReactNode }) {
@@ -60,7 +60,7 @@ export function AutomatedChecks({ checks }: { checks: Checks }) {
           <>
             Confidence {checks.authenticity.score.toFixed(2)}
             {checks.authenticity.flags.length > 0 &&
-              ` Â· ${checks.authenticity.flags.join(', ')}`}
+              ` · ${checks.authenticity.flags.join(', ')}`}
           </>
         }
       />,
@@ -84,7 +84,7 @@ export function AutomatedChecks({ checks }: { checks: Checks }) {
         tone={checks.database_match.matched ? 'fail' : 'pass'}
         detail={
           checks.database_match.matched
-            ? `Match found${checks.database_match.source ? ` Â· ${checks.database_match.source}` : ''}`
+            ? `Match found${checks.database_match.source ? ` · ${checks.database_match.source}` : ''}`
             : 'No match'
         }
       />,
@@ -141,12 +141,12 @@ export function AutomatedChecks({ checks }: { checks: Checks }) {
         id="checks-heading"
         className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400"
       >
-        Automated checks Â· advisory
+        Automated checks · advisory
       </h3>
       {rows.length === 0 ? (
         <p className="py-2 text-xs text-slate-400">No automated results recorded.</p>
       ) : (
-        <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 px-3 dark:divide-slate-800 dark:border-slate-700">
+        <div className="divide-y divide-slate-100 rounded-sm border border-slate-200 bg-white px-3 dark:divide-slate-800 dark:border-slate-700 dark:bg-slate-800">
           {rows}
         </div>
       )}
