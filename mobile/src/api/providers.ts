@@ -7,6 +7,10 @@ export interface PublicService {
   pricing_model: 'OUTCOME_FIXED' | 'PROVIDER_SCOPE' | 'HOURLY_CAPPED' | 'QUOTE_DEPOSIT';
   base_price:    number | null;
   category:      { id: number; name: string };
+  // Delivery: IN_PERSON | REMOTE (online). location_label = "Online" when remote.
+  delivery_type:  'IN_PERSON' | 'REMOTE';
+  is_remote:      boolean;
+  location_label: string | null;
   /** Provider pinned this service via highlights (shown first). */
   is_pinned:     boolean;
 }

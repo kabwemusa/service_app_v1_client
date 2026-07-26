@@ -128,6 +128,7 @@ class ProviderOnboardingService
     public function submitIdentity(
         User         $user,
         UploadedFile $nrcFront,
+        string       $nrcNumber,
         UploadedFile $selfie,
         string       $momoNumber,
         string       $momoProvider = 'MTN',
@@ -139,9 +140,10 @@ class ProviderOnboardingService
         $profile->momo_number   = $momoNumber;
         $profile->save();
 
-        // Tier 1 base: selfie + legal name (BASIC), then the NRC document
-        // pipeline (→ IDENTIFIED, writes the provider_verifications the gate reads).
-        $this->kyc->submitTier1($user, $user->legal_name ?? $profile->display_name ?? '', $selfie);
+        // Tier 1 base: selfie + legal name + NRC number (BASIC), then the NRC
+        // document pipeline (→ IDENTIFIED, writes the provider_verifications the
+        // gate reads).
+        $this->kyc->submitTier1($user, $user->legal_name ?? $profile->display_name ?? '', $nrcNumber, $selfie);
         $this->kyc->submitDocument($user, $nrcFront, $selfie, \App\Enums\DocType::NRC->value);
 
         return $this->advance($profile->fresh(), 'identity');

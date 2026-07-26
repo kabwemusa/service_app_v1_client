@@ -34,15 +34,16 @@ export const onboardingApi = {
   avatar: (file: File) => { const f = new FormData(); f.append('photo', file); return api.postForm<OnboardingState>('/provider/onboarding/avatar', f); },
   offer: (category_id: number, service_id?: string) =>
     api.post<OnboardingState>('/provider/onboarding/offer', { category_id, service_id }, true),
-  identity: (nrcFront: File, selfie: File, momoNumber: string, momoProvider = 'MTN') => {
+  identity: (nrcFront: File, nrcNumber: string, selfie: File, momoNumber: string, momoProvider = 'MTN') => {
     const f = new FormData();
     f.append('nrc_front', nrcFront);
+    f.append('nrc_number', nrcNumber); // § CTR-1 — NRC number mandatory at Tier 1
     f.append('selfie', selfie);
     f.append('momo_number', momoNumber);
     f.append('momo_provider', momoProvider);
     return api.postForm<OnboardingState>('/provider/onboarding/identity', f);
   },
-  service: (body: { title: string; price?: number; pricing_model?: string; availability?: unknown[] }) =>
+  service: (body: { title: string; price?: number; pricing_model?: string; availability?: unknown[]; pricing_warning_shown?: boolean; pricing_warning_overridden?: boolean }) =>
     api.post<OnboardingState>('/provider/onboarding/service', body, true),
   payout: (body: { momo_number?: string; momo_provider?: string }) =>
     api.post<OnboardingState>('/provider/onboarding/payout', body, true),

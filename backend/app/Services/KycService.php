@@ -43,9 +43,23 @@ class KycService
      * Finalise Tier 1: provider submits legal name + selfie.
      * No document scan — just contact verification.
      */
-    public function submitTier1(User $user, string $legalName, UploadedFile $selfie): IdentityDocument
+    public function submitTier1(User $user, string $legalName, string $nrcNumber, UploadedFile $selfie): IdentityDocument
     {
         $profile = $this->requireProviderProfile($user);
+
+        // § CTR-1 — NRC is mandatory at Tier 1. Store its hash on the profile
+        // (unique) so the same NRC can't identify two accounts, and reject a
+        // duplicate up front. The raw number is never persisted — the NRC image,
+        // submitted separately to the document pipeline, is the source of truth
+        // a reviewer reads.
+        $nrcHash = $this->hashDocNumber($nrcNumber);
+
+        $clash = ProviderProfile::where('nrc_number', $nrcHash)
+            ->where('user_id', '!=', $user->id)
+            ->exists();
+        if ($clash) {
+            throw new ApiException(ErrorCode::DUPLICATE_IDENTITY, 'This NRC is already registered to another account.');
+        }
 
         // Store selfie
         $selfiePath = $selfie->store("kyc/{$user->id}/selfies", 'local');
@@ -60,8 +74,13 @@ class KycService
             'reviewed_at'      => now(),
         ]);
 
-        // Update user legal name + bump tier to 1
+        // Update user legal name + persist the NRC hash + bump tier to 1.
         $user->update(['legal_name' => $legalName]);
+        try {
+            $profile->update(['nrc_number' => $nrcHash]);
+        } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+            throw new ApiException(ErrorCode::DUPLICATE_IDENTITY, 'This NRC is already registered to another account.');
+        }
         $this->bumpTier($user, $profile, TrustTier::BASIC);
 
         return $doc;
@@ -400,11 +419,28 @@ class KycService
 
             // Bridge manual identity approvals into the eligibility gate too.
             if (in_array($doc->doc_type, [DocType::NRC->value, DocType::PASSPORT->value, DocType::DRIVERS_LICENSE->value], true)) {
-                $this->recordVerification($user->id, 'nrc', $reviewer->id, ['doc_id' => $doc->id]);
-                if ($this->momoCheckResult($user, null) === 'MATCH_OK') {
-                    $this->recordVerification($user->id, 'momo_name_match', $reviewer->id);
-                }
+                $this->bridgeIdentityApproval($user, $reviewer->id, $doc->id);
             }
+        }
+    }
+
+    /**
+     * Bridge an identity-document approval into the eligibility gate + tier
+     * ladder: write the VERIFIED 'nrc' row (and 'momo_name_match' when the wallet
+     * name matches) that RealTrustEngine::checkEligibility and the provider
+     * verification ladder read. Idempotent; the caller owns the doc-status update
+     * and the trust_tier bump.
+     *
+     * Exposed so admin approval surfaces OTHER than adminApprove() — notably the
+     * admin-panel AdminVerificationService — record the same rows. Without it a
+     * panel-approved provider bumps to Tier 1 yet still reads as "verify your
+     * identity" and stays non-dispatchable.
+     */
+    public function bridgeIdentityApproval(User $user, ?string $verifiedBy = null, ?string $docId = null): void
+    {
+        $this->recordVerification($user->id, 'nrc', $verifiedBy, $docId ? ['doc_id' => $docId] : null);
+        if ($this->momoCheckResult($user, null) === 'MATCH_OK') {
+            $this->recordVerification($user->id, 'momo_name_match', $verifiedBy);
         }
     }
 
@@ -469,7 +505,7 @@ class KycService
 
     private function hashDocNumber(string $rawNumber): string
     {
-        $pepper = config('app.kyc_hash_pepper', env(self::DOC_NUMBER_PEPPER_ENV, 'default-pepper'));
+        $pepper = config('app.kyc_hash_pepper', 'default-pepper');
         return hash('sha256', $rawNumber . $pepper);
     }
 

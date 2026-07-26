@@ -2,7 +2,7 @@
 
 import { create } from 'zustand'
 
-export type QueueModule = 'verification' | 'finance' | 'safety' | 'reviews' | 'services'
+export type QueueModule = 'verification' | 'finance' | 'safety' | 'reviews' | 'services' | 'promotions'
 
 interface QueueBadgeState {
   counts: Record<QueueModule, number>
@@ -14,7 +14,7 @@ interface QueueBadgeState {
 }
 
 export const useQueueBadgeStore = create<QueueBadgeState>((set) => ({
-  counts: { verification: 0, finance: 0, safety: 0, reviews: 0, services: 0 },
+  counts: { verification: 0, finance: 0, safety: 0, reviews: 0, services: 0, promotions: 0 },
   setCount: (module, count) =>
     set((s) => ({ counts: { ...s.counts, [module]: count } })),
   increment: (module) =>

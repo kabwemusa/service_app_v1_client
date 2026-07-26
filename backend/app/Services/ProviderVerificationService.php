@@ -7,6 +7,7 @@ use App\Contracts\TrustEngine;
 use App\Enums\DocStatus;
 use App\Enums\DocType;
 use App\Enums\ErrorCode;
+use App\Enums\TrustTier;
 use App\Exceptions\Api\ApiException;
 use App\Models\Booking;
 use App\Models\IdentityDocument;
@@ -55,7 +56,7 @@ class ProviderVerificationService
             ->pluck('verification_type')->all();
 
         $tiers = [
-            $this->baseTierRow($verified),
+            $this->baseTierRow($tier),
             $this->uploadTierRow($user, 2, 'portfolio', 'PORTFOLIO_ITEM', 'Public-venue jobs (salon, studio)', 'Add a portfolio of your work', $verified),
             $this->uploadTierRow($user, 3, 'police_clearance', 'POLICE_CLEARANCE', 'In-home jobs (work at a customer’s home)', 'Add a police clearance certificate', $verified),
             $this->tier4Row($user),
@@ -165,9 +166,16 @@ class ProviderVerificationService
 
     // ── Ladder rows ──────────────────────────────────────────────────────────
 
-    private function baseTierRow(array $verified): array
+    private function baseTierRow(int $tier): array
     {
-        $done = in_array('nrc', $verified, true) && in_array('momo_name_match', $verified, true);
+        // The ladder's "Identified" row is authoritative on trust_tier: any
+        // identity approval — auto pipeline OR admin panel — bumps it to
+        // TrustTier::IDENTIFIED. (Ladder tiers are a 1-based display numbering;
+        // "Identified" is enum value 2.) Don't gate the DONE state on the granular
+        // nrc/momo_name_match rows: momo match can legitimately be un-checkable
+        // (no wallet-name lookup), which must never make an already-identified
+        // provider re-verify their ID.
+        $done = $tier >= TrustTier::IDENTIFIED->value;
 
         return [
             'tier'        => 1,

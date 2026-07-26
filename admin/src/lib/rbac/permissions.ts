@@ -22,6 +22,7 @@ export const ALL_CAPABILITIES: Capability[] = [
   'read:subscriptions', 'write:subscriptions',
   'read:insights',
   'read:settings', 'write:settings',
+  'legal.manage',
   'manage:admins',
   'read:audit',
   'write:platform_params',
@@ -125,6 +126,7 @@ export const ROUTE_CAPABILITY: Record<string, Capability> = {
   '/insights': 'read:insights',
   '/settings': 'read:settings',
   '/settings/audit': 'read:audit',
+  '/legal': 'legal.manage',
   '/whatsapp': 'platform.ops',
 }
 

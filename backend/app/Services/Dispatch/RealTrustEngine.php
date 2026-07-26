@@ -47,6 +47,20 @@ class RealTrustEngine implements TrustEngine
             ->pluck('verification_type')
             ->all();
 
+        // The identity base (nrc / momo_name_match / selfie_match) is
+        // authoritatively established by KYC approval. A KYC-VERIFIED provider
+        // satisfies these even when the normalized provider_verifications bridge
+        // rows were never written (panel-approved or seeded providers) — otherwise
+        // an already-listed provider's own service falsely fails the booking gate.
+        // Higher-tier gates (portfolio, police_clearance) still need their own
+        // explicit verification and are never auto-granted here.
+        if ($profile->kyc_status === 'VERIFIED') {
+            $verified = array_values(array_unique(array_merge(
+                $verified,
+                ['nrc', 'momo_name_match', 'selfie_match'],
+            )));
+        }
+
         $missing = array_values(array_diff($required, $verified));
 
         return [
@@ -287,6 +301,14 @@ class RealTrustEngine implements TrustEngine
             3, 4    => ['identity' => 0.40, 'reliability' => 0.25, 'financial' => 0.20, 'ratings' => 0.15],
             default => ['identity' => 0.25, 'reliability' => 0.25, 'financial' => 0.25, 'ratings' => 0.25],
         };
+
+        // § CFG-2 — read the admin-editable override first (trust_weight_tier_N,
+        // keys 1..4), then the config default. Admin edits are validated to sum to 1.0.
+        $override = \App\Support\Settings::get("trust_weight_tier_{$tier}");
+        if (is_array($override)
+            && array_diff(['identity', 'reliability', 'financial', 'ratings'], array_keys($override)) === []) {
+            return $override;
+        }
 
         return config($key, $defaults);
     }

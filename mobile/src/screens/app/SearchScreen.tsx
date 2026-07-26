@@ -17,7 +17,14 @@ import {
 import { Text, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LocationPickerSheet } from '../../components/location/LocationPickerSheet';
-import { Suggestion, SuggestResult, searchApi } from '../../api/search';
+import {
+  MatchCandidate,
+  MatchResponse,
+  Suggestion,
+  SuggestResult,
+  matchApi,
+  searchApi,
+} from '../../api/search';
 import { useCategoryStore } from '../../store/categoryStore';
 import { useLocationStore } from '../../store/locationStore';
 import { useRecentSearchStore } from '../../store/recentSearchStore';
@@ -111,6 +118,10 @@ export default function SearchScreen({ navigation }: any) {
   const [loading,        setLoading]        = useState(false);
   const [pickerVisible,  setPickerVisible]  = useState(false);
   const [activeIndex,    setActiveIndex]    = useState(-1);  // keyboard nav
+  // Full-pipeline match result (submit only). clarify/empty render inline; a
+  // matched result navigates straight to the ranked results screen.
+  const [matchState,     setMatchState]     = useState<MatchResponse | null>(null);
+  const [matching,       setMatching]       = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef    = useRef<AbortController | null>(null);
 
@@ -164,12 +175,14 @@ export default function SearchScreen({ navigation }: any) {
 
   const handleQueryChange = (text: string) => {
     setQuery(text);
+    setMatchState(null); // editing dismisses the previous match panel
     runSuggest(text);
   };
 
   const handleClear = () => {
     setQuery('');
     setResult(null);
+    setMatchState(null);
     setActiveIndex(-1);
     inputRef.current?.focus();
   };
@@ -207,14 +220,55 @@ export default function SearchScreen({ navigation }: any) {
     [navigation, navigateToResults, result],
   );
 
-  const handleSubmit = () => {
+  // Submit runs the FULL pipeline (matchServices). A confident match navigates
+  // straight to the ranked real services; ambiguous → inline clarify; nothing →
+  // honest empty. The LLM layer only ever runs here, never during type-ahead.
+  const handleSubmit = useCallback(async () => {
     const q = query.trim();
     if (!q) return;
-    navigateToResults({
-      q,
-      resolvedCategoryId: result?.resolved_category?.id ?? null,
-    });
-  };
+
+    inputRef.current?.blur();
+    setMatching(true);
+    setMatchState(null);
+    try {
+      const m = await matchApi.match({
+        query: q,
+        lat: primaryLocation?.lat,
+        lng: primaryLocation?.lng,
+        region: primaryLocation?.region ?? undefined,
+      });
+      pushRecent(q);
+
+      if (m.status === 'matched' || m.status === 'matched_no_supply') {
+        // Real ranked services — hand the matched set to the results screen.
+        navigation.navigate(
+          'BrowseMain',
+          m.resolved_category ? { categoryId: m.resolved_category.id } : { q },
+        );
+        return;
+      }
+
+      // clarify | empty → render inline (asking beats guessing wrong).
+      setMatchState(m);
+    } catch {
+      // Matcher unavailable — fall back to a plain keyword browse.
+      navigateToResults({ q });
+    } finally {
+      setMatching(false);
+    }
+  }, [query, primaryLocation, navigation, pushRecent, navigateToResults]);
+
+  const handleCandidate = useCallback(
+    (c: MatchCandidate) => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      if (c.type === 'service') {
+        navigation.navigate('ServiceDetail', { serviceId: c.id });
+      } else if (c.category_id != null) {
+        navigateToResults({ categoryId: c.category_id });
+      }
+    },
+    [navigation, navigateToResults],
+  );
 
   const handleRecentPress = (q: string) => {
     setQuery(q);
@@ -285,7 +339,7 @@ export default function SearchScreen({ navigation }: any) {
               <Ionicons name="close-circle" size={16} color={palette.textDisabled} />
             </TouchableOpacity>
           )}
-          {loading && (
+          {(loading || matching) && (
             <View style={styles.loadingDot} />
           )}
         </View>
@@ -313,8 +367,61 @@ export default function SearchScreen({ navigation }: any) {
         </View>
       </TouchableRipple>
 
+      {/* ── Match panel (submit result: clarify / honest-empty) ─────── */}
+      {matchState && (
+        <View style={styles.matchCard}>
+          {matchState.status === 'clarify' ? (
+            <>
+              <Text style={styles.matchTitle}>Did you mean…</Text>
+              <View style={styles.matchChips}>
+                {matchState.candidates.map((c) => (
+                  <TouchableOpacity
+                    key={c.ref}
+                    style={styles.matchChip}
+                    onPress={() => handleCandidate(c)}
+                    accessibilityRole="button"
+                    accessibilityLabel={c.label}
+                  >
+                    <Text style={styles.matchChipTxt}>{c.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <TouchableOpacity onPress={() => navigateToResults({ q: query })}>
+                <Text style={styles.matchBrowse}>None of these — browse all</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              <Ionicons name="search-outline" size={32} color={palette.textDisabled} />
+              <Text style={styles.matchTitle}>We don't have "{matchState.query}" yet</Text>
+              {matchState.closest_categories.length > 0 && (
+                <>
+                  <Text style={styles.matchBody}>The closest we have:</Text>
+                  <View style={styles.matchChips}>
+                    {matchState.closest_categories.map((cc) => (
+                      <TouchableOpacity
+                        key={cc.id}
+                        style={styles.matchChip}
+                        onPress={() => navigateToResults({ categoryId: cc.id })}
+                        accessibilityRole="button"
+                        accessibilityLabel={cc.name}
+                      >
+                        <Text style={styles.matchChipTxt}>{cc.name}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </>
+              )}
+              <TouchableOpacity onPress={() => navigateToResults({ q: query })}>
+                <Text style={styles.matchBrowse}>Browse all services</Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
+      )}
+
       {/* ── Suggestions list (when query ≥ 1 char) ──────────────────── */}
-      {!showEmptyState && (
+      {!showEmptyState && !matchState && (
         <FlatList
           data={suggestions}
           keyExtractor={(item, i) => `${item.type}-${item.id}-${i}`}
@@ -556,6 +663,53 @@ const styles = StyleSheet.create({
   suggLabel:     { fontFamily: fontFamily.regular, fontSize: 15, color: palette.textPrimary },
   suggLabelBold: { fontFamily: fontFamily.medium },
   suggSub:       { fontFamily: fontFamily.regular, fontSize: 12, color: palette.textSecondary, marginTop: 1 },
+
+  // Match panel (clarify / honest-empty)
+  matchCard: {
+    alignItems:        'center',
+    paddingHorizontal: spacing.xl,
+    paddingTop:        spacing.xl,
+    gap:               spacing.sm,
+  },
+  matchTitle: {
+    fontFamily: fontFamily.medium,
+    fontSize:   16,
+    color:      palette.textPrimary,
+    textAlign:  'center',
+  },
+  matchBody: {
+    fontFamily: fontFamily.regular,
+    fontSize:   13,
+    color:      palette.textSecondary,
+    textAlign:  'center',
+  },
+  matchChips: {
+    flexDirection:  'row',
+    flexWrap:       'wrap',
+    gap:            spacing.xs,
+    justifyContent: 'center',
+    marginTop:      spacing.xs,
+  },
+  matchChip: {
+    borderRadius:      r.full,
+    borderWidth:       1,
+    borderColor:       palette.primary,
+    backgroundColor:   palette.primaryLight,
+    paddingHorizontal: spacing.md,
+    paddingVertical:   spacing.xs + 2,
+  },
+  matchChipTxt: {
+    fontFamily: fontFamily.medium,
+    fontSize:   14,
+    color:      palette.primary,
+  },
+  matchBrowse: {
+    fontFamily: fontFamily.regular,
+    fontSize:   13,
+    color:      palette.textSecondary,
+    marginTop:  spacing.sm,
+    textDecorationLine: 'underline',
+  },
 
   // No-match state
   noMatch: {

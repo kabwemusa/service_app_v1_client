@@ -52,6 +52,7 @@ export type Capability =
   | 'read:insights'
   | 'read:settings'
   | 'write:settings'
+  | 'legal.manage'
   | 'manage:admins'
   | 'read:audit'
   | 'write:platform_params'

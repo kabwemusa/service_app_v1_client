@@ -27,6 +27,7 @@ const en = {
   },
   browse: {
     title: 'Find a service',
+    subtitle: 'Vetted local pros, ready to book.',
     searchPlaceholder: 'Search services…',
     near: 'Near {{area}}',
     setLocation: 'Set location',
@@ -35,6 +36,8 @@ const en = {
     book: 'Book',
     promoted: 'Promoted',
     fallbackNote: 'No providers cover your area yet — showing top-rated providers nationwide.',
+    loadMore: 'Show more results',
+    loadingMore: 'Loading…',
   },
   onboarding: {
     welcomeTitle: 'Earn doing what you do',
@@ -52,6 +55,7 @@ const en = {
     identityTitle: 'Verify your identity',
     identitySub: 'A quick check keeps the platform trusted. Your ID is private and never shown to customers.',
     nrcFront: 'NRC (front)',
+    nrcNumber: 'NRC number',
     selfie: 'Selfie',
     momoNumber: 'Mobile Money number',
     serviceTitle: 'Your service',

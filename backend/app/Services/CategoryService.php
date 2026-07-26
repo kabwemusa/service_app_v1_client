@@ -24,6 +24,32 @@ class CategoryService
             ->get();
     }
 
+    /**
+     * Most-used active categories — the quick-tap "popular" chips shown before
+     * the user searches the full taxonomy. Ranked by live active-service count
+     * (falls back to display_order when there's no catalogue yet). Reads the ONE
+     * shared taxonomy; the limit comes from config, never a hardcoded number.
+     */
+    public function listPopular(?int $limit = null): Collection
+    {
+        $limit = $limit ?? (int) config('catalog.popular_category_limit', 8);
+
+        return Category::query()
+            ->where('categories.is_active', true)
+            ->leftJoin('services', function ($join) {
+                $join->on('services.category_id', '=', 'categories.id')
+                     ->where('services.status', '=', 'ACTIVE');
+            })
+            ->select('categories.*')
+            ->selectRaw('COUNT(services.id) AS active_service_count')
+            ->groupBy('categories.id')
+            ->orderByDesc('active_service_count')
+            ->orderBy('categories.display_order')
+            ->orderBy('categories.name')
+            ->limit($limit)
+            ->get();
+    }
+
     /** All categories (admin view), hierarchical — includes inactive, all children. */
     public function listAll(): Collection
     {

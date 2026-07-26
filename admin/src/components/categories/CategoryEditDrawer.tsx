@@ -5,6 +5,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { IoAddOutline, IoCloseOutline } from 'react-icons/io5'
+import { CategoryPicker } from '@/components/ui/CategoryPicker'
 import { DetailPanel } from '@/components/ui/DetailPanel'
 import { StatusPill } from '@/components/ui/StatusPill'
 import { useAuditedMutation } from '@/lib/audit/audited-mutation'
@@ -13,6 +14,7 @@ import { cn } from '@/lib/utils'
 import {
   categoriesApi,
   COMMISSION_BANDS,
+  PRICING_MODELS,
   bandLabel,
   displayRate,
   defaultRatesForBand,
@@ -29,6 +31,10 @@ const schema = z.object({
   display_order:   z.coerce.number().int().min(0).optional(),
   is_active:       z.boolean().optional(),
   commission_band: z.string().nullable().optional(),
+  // Category-driven pricing guidance
+  default_pricing_model:    z.string().nullable().optional(),
+  pricing_rationale:        z.string().max(400).nullable().optional(),
+  pricing_mismatch_warning: z.string().max(600).nullable().optional(),
 })
 
 type FormValues = z.infer<typeof schema>
@@ -49,7 +55,8 @@ interface Props {
 export function CategoryEditDrawer({
   open,
   category,
-  allCategories,
+  // allCategories retained in Props for call-site compatibility; the parent
+  // picker now loads the full taxonomy itself (searchable, scales past ~10).
   canSetBand,
   onClose,
   onSaved,
@@ -57,6 +64,7 @@ export function CategoryEditDrawer({
   const isCreate = category === null
   const [synonyms, setSynonyms]   = useState<string[]>([])
   const [synInput, setSynInput]   = useState('')
+  const [recommended, setRecommended] = useState<string[]>([])
   const [serverError, setServerError] = useState<string | null>(null)
 
   const {
@@ -76,6 +84,9 @@ export function CategoryEditDrawer({
       display_order:   0,
       is_active:       false,
       commission_band: null,
+      default_pricing_model:    null,
+      pricing_rationale:        '',
+      pricing_mismatch_warning: '',
     },
   })
 
@@ -85,6 +96,7 @@ export function CategoryEditDrawer({
     setServerError(null)
     setSynonyms(category?.synonyms ?? [])
     setSynInput('')
+    setRecommended(category?.recommended_pricing_models ?? [])
     reset({
       name:            category?.name ?? '',
       slug:            category?.slug ?? '',
@@ -93,8 +105,17 @@ export function CategoryEditDrawer({
       display_order:   category?.display_order ?? 0,
       is_active:       category?.is_active ?? false,
       commission_band: category?.commission_band ?? null,
+      default_pricing_model:    category?.default_pricing_model ?? null,
+      pricing_rationale:        category?.pricing_rationale ?? '',
+      pricing_mismatch_warning: category?.pricing_mismatch_warning ?? '',
     })
   }, [open, category, reset])
+
+  function toggleRecommended(value: string) {
+    setRecommended((prev) =>
+      prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value],
+    )
+  }
 
   const watchedBand = watch('commission_band')
   const watchedActive = watch('is_active')
@@ -131,6 +152,11 @@ export function CategoryEditDrawer({
         icon:             fields.icon || null,
         parent_id:        fields.parent_id ?? null,
         synonyms,
+        // Category-driven pricing guidance
+        default_pricing_model:      fields.default_pricing_model || null,
+        recommended_pricing_models: recommended,
+        pricing_rationale:          fields.pricing_rationale?.trim() || null,
+        pricing_mismatch_warning:   fields.pricing_mismatch_warning?.trim() || null,
         ...(commissionRates ? { commission_rates: commissionRates } : {}),
         reason,
       }
@@ -164,14 +190,15 @@ export function CategoryEditDrawer({
     saveMutation.trigger(values)
   }
 
-  // Parent options: exclude self and self's children (cycle prevention)
-  const excludeIds = new Set<number>(
-    category ? [category.id, ...category.children.map((c) => c.id)] : [],
-  )
-  const parentOptions = allCategories.filter((c) => !excludeIds.has(c.id))
-
   // ── Blocking banner: activation without band ───────────────────────────
   const activationBlocked = watchedActive && !watchedBand
+
+  // `recommended` lives outside react-hook-form, so isDirty misses it — track
+  // its change explicitly so the Save button enables when only chips change.
+  const recommendedChanged =
+    JSON.stringify([...recommended].sort()) !==
+    JSON.stringify([...(category?.recommended_pricing_models ?? [])].sort())
+  const canSave = isCreate || isDirty || recommendedChanged
 
   const drawerTitle = isCreate ? 'New category' : `Edit: ${category?.name}`
   const drawerSubtitle = isCreate ? undefined : `ID ${category?.id} · slug: ${category?.slug}`
@@ -195,10 +222,10 @@ export function CategoryEditDrawer({
           <button
             type="button"
             onClick={handleSubmit(onSubmit)}
-            disabled={saveMutation.isPending || (!isDirty && !isCreate)}
+            disabled={saveMutation.isPending || !canSave}
             className={cn(
               'rounded-sm px-4 py-2 text-sm font-medium transition-colors min-h-[44px]',
-              saveMutation.isPending || (!isDirty && !isCreate)
+              saveMutation.isPending || !canSave
                 ? 'cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-slate-700'
                 : 'bg-teal-600 text-white hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-500',
             )}
@@ -256,23 +283,15 @@ export function CategoryEditDrawer({
           />
         </Field>
 
-        {/* Parent */}
+        {/* Parent — searchable picker over the full taxonomy (scales past ~10). */}
         <Field label="Parent category" hint="Leave blank for a top-level category.">
-          <select
-            value={watch('parent_id') ?? ''}
-            onChange={(e) =>
-              setValue('parent_id', e.target.value ? Number(e.target.value) : null, { shouldDirty: true })
-            }
-            className={inputCls(false)}
-            aria-label="Parent category"
-          >
-            <option value="">— None (top-level) —</option>
-            {parentOptions.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+          <CategoryPicker
+            value={watch('parent_id') ?? null}
+            onChange={(id) => setValue('parent_id', id, { shouldDirty: true })}
+            excludeId={category?.id}
+            allowNone
+            noneLabel="— None (top-level) —"
+          />
         </Field>
 
         {/* Icon */}
@@ -333,6 +352,73 @@ export function CategoryEditDrawer({
             </div>
           )}
         </Field>
+
+        {/* ── Pricing guidance ─────────────────────────────────────────── */}
+        <div className="rounded-sm border border-slate-200 p-4 dark:border-slate-700">
+          <p className="mb-1 text-sm font-medium text-slate-800 dark:text-slate-200">Pricing guidance</p>
+          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+            Steers providers toward the model that pays fairly for this kind of work. Providers can still override it.
+          </p>
+
+          <div className="space-y-4">
+            <Field label="Default pricing model" hint="Pre-selected when a provider creates a service here. Leave blank to use the platform default.">
+              <select
+                {...register('default_pricing_model')}
+                className={inputCls(false)}
+                aria-label="Default pricing model"
+              >
+                <option value="">— Use platform default —</option>
+                {PRICING_MODELS.map((m) => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Recommended models" hint="Choosing anything outside this set shows the provider a mismatch nudge.">
+              <div className="flex flex-wrap gap-1.5">
+                {PRICING_MODELS.map((m) => {
+                  const on = recommended.includes(m.value)
+                  return (
+                    <button
+                      key={m.value}
+                      type="button"
+                      onClick={() => toggleRecommended(m.value)}
+                      aria-pressed={on}
+                      className={cn(
+                        'rounded-full border px-3 py-1.5 text-xs transition-colors min-h-[36px]',
+                        on
+                          ? 'border-teal-500 bg-teal-50 text-teal-700 dark:bg-teal-950/40 dark:text-teal-300'
+                          : 'border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700',
+                      )}
+                    >
+                      {m.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </Field>
+
+            <Field label="Rationale" error={errors.pricing_rationale?.message} hint="Short 'why this pays fairly' line shown to providers. Blank = the model's default line.">
+              <textarea
+                {...register('pricing_rationale')}
+                rows={2}
+                maxLength={400}
+                placeholder="e.g. You're paid for the result — being fast doesn't cost you money."
+                className={inputCls(!!errors.pricing_rationale)}
+              />
+            </Field>
+
+            <Field label="Mismatch warning" error={errors.pricing_mismatch_warning?.message} hint="Benefit-framed nudge when an ill-suited model is picked. Blank = platform default.">
+              <textarea
+                {...register('pricing_mismatch_warning')}
+                rows={3}
+                maxLength={600}
+                placeholder="e.g. Most designers charge per project. On hourly, your speed wouldn't be rewarded…"
+                className={inputCls(!!errors.pricing_mismatch_warning)}
+              />
+            </Field>
+          </div>
+        </div>
 
         {/* Display order */}
         <Field label="Display order" hint="Lower numbers appear first within siblings.">

@@ -409,7 +409,9 @@ class SearchService
         if ($hasLocation) {
             $point         = "ST_GeogFromText('POINT({$lng} {$lat})')";
             $providerPoint = "ST_GeogFromText('POINT(' || pp.base_location_lng || ' ' || pp.base_location_lat || ')')";
+            // Remote services have no distance — proximity stays neutral, never a signal.
             $distanceCol   = "CASE
+                WHEN s.delivery_type = 'REMOTE' THEN NULL
                 WHEN pp.base_location_lat IS NOT NULL AND pp.base_location_lng IS NOT NULL
                 THEN ST_Distance({$providerPoint}, {$point}) END AS distance_m,";
             $orderBy       = 'ORDER BY geo_tier ASC, distance_m ASC NULLS LAST';
@@ -421,14 +423,17 @@ class SearchService
         // geo_tier 0 = same ward (area), 1 = same city/town, 2 = same province,
         // 3 = national — all within the delivery province where relevant. When
         // the delivery region is unknown, every candidate falls to tier 3.
+        // REMOTE (delivered online) services bypass geo entirely: they sit at the
+        // tightest tier so they always survive geo-widening, wherever the customer is.
         // Casts are required: a bare `?` in `? IS NOT NULL` has no inferable
         // type (Postgres 42P18), so every region placeholder is ::text.
-        $geoTierCol = 'CASE
+        $geoTierCol = "CASE
+            WHEN s.delivery_type = 'REMOTE' THEN 0
             WHEN ?::text IS NOT NULL AND lower(s.region_province) = lower(?::text) AND lower(s.region_ward) = lower(?::text) THEN 0
             WHEN ?::text IS NOT NULL AND lower(s.region_province) = lower(?::text) AND lower(s.region_city) = lower(?::text) THEN 1
             WHEN ?::text IS NOT NULL AND lower(s.region_province) = lower(?::text) THEN 2
             ELSE 3
-          END AS geo_tier,';
+          END AS geo_tier,";
 
         // v3.2 §1.5 — a promo slot is auctioned per category × region, so it
         // only matches when the search carries a region; without that context
@@ -458,6 +463,7 @@ class SearchService
                 s.description,
                 s.base_price,
                 s.pricing_model,
+                s.delivery_type,
                 s.status,
                 ST_Y(s.service_location::geometry)  AS latitude,
                 ST_X(s.service_location::geometry)  AS longitude,
@@ -470,6 +476,7 @@ class SearchService
                 u.last_active_at,
                 pp.profile_completeness,
                 pp.display_name,
+                pp.avatar_url,
                 pp.trust_score,
                 pp.trust_tier,
                 pp.service_radius_km,

@@ -5,7 +5,6 @@ import * as ImagePicker from 'expo-image-picker';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Dimensions,
   KeyboardAvoidingView,
   Platform,
@@ -19,10 +18,14 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { storageUrl } from '../../api/client';
 import { Highlights, LanguageCode } from '../../api/providerProfile';
 import { EARNED_BADGE_META } from '../../components/discovery/VettingBadge';
+import { ConfirmDialog, ConfirmDialogConfig } from '../../components/ui/ConfirmDialog';
+import { LocationSearch } from '../../components/ui/LocationSearch';
 import { useSnackbar } from '../../providers/SnackbarProvider';
+import { useAuthStore } from '../../store/authStore';
 import { useProfileStore } from '../../store/profileStore';
 import { useServiceStore } from '../../store/serviceStore';
 import { ScreenHeader } from '../../components/ui/ScreenHeader';
+import { TabItem, Tabs } from '../../components/ui/Tabs';
 import { OnboardingProgress } from '../../components/provider/OnboardingProgress';
 import { palette, radius as r, spacing, typography } from '../../theme';
 
@@ -45,6 +48,18 @@ const EMPTY_HIGHLIGHTS: Highlights = { pinned_service_ids: [], featured_photo_ke
 // guide the provider to that length rather than let them save an empty shell.
 const BIO_MIN = 80;
 
+// Internal sections — the editor is ONE screen the menu deep-links into. The
+// `section` route param selects the active tab on entry (default: personal).
+type Section = 'personal' | 'about' | 'highlights' | 'portfolio';
+const SECTIONS: { key: Section; label: string }[] = [
+  { key: 'personal',   label: 'Personal' },
+  { key: 'about',      label: 'About' },
+  { key: 'highlights', label: 'Highlights' },
+  { key: 'portfolio',  label: 'Portfolio' },
+];
+// Same flat underline tablist the Services screen uses (components/ui/Tabs).
+const SECTION_TABS: TabItem[] = SECTIONS.map((s) => ({ key: s.key, label: s.label }));
+
 type FieldErrors = { displayName?: string; bio?: string; year?: string };
 
 function emptyToUndefined(value: string): string | undefined {
@@ -54,26 +69,40 @@ function emptyToUndefined(value: string): string | undefined {
 
 export default function ProviderProfileEditScreen({ navigation, route }: any) {
   const onboardingStep: number | undefined = route?.params?.onboardingStep;
+  // Onboarding keeps the original single long-form (name → highlights) with one
+  // Save; the sectioned/segmented experience is for returning providers who
+  // deep-link into one section from the Profile menu.
+  const onboarding = onboardingStep != null;
+
   const {
     profile, dashboard, error,
     fetchProfile, fetchDashboard, upsertProfile,
     uploadCoverPhoto, uploadPortfolioImage, deletePortfolioImage, clearError,
   } = useProfileStore();
   const { myServices, fetchMyServices } = useServiceStore();
+  const { user, updateAccount } = useAuthStore();
   const { showSuccess, showError, showSnackbar } = useSnackbar();
   const insets = useSafeAreaInsets();
+
+  const [section, setSection] = useState<Section>((route?.params?.section as Section) ?? 'personal');
 
   const [displayName, setDisplayName] = useState('');
   const [bio, setBio]                 = useState('');
   const [yearStarted, setYearStarted] = useState('');
   const [languages, setLanguages]     = useState<LanguageCode[]>([]);
   const [highlights, setHighlights]   = useState<Highlights>(EMPTY_HIGHLIGHTS);
+  // Personal — area (base location) + contact phone.
+  const [lat, setLat]                 = useState('');
+  const [lng, setLng]                 = useState('');
+  const [locationLabel, setLocationLabel] = useState('');
+  const [phone, setPhone]             = useState('');
 
   const [saving, setSaving]                   = useState(false);
   const [uploadingCover, setUploadingCover]   = useState(false);
   const [uploadingPhoto, setUploadingPhoto]   = useState(false);
   const [deletingPath, setDeletingPath]       = useState<string | null>(null);
   const [errors, setErrors]                   = useState<FieldErrors>({});
+  const [dialog, setDialog]                   = useState<ConfirmDialogConfig | null>(null);
 
   const scrollRef = useRef<ScrollView>(null);
   const clearErr = (field: keyof FieldErrors) =>
@@ -85,6 +114,13 @@ export default function ProviderProfileEditScreen({ navigation, route }: any) {
     fetchMyServices(true);
   }, []);
 
+  // Re-navigating to the (already-mounted) editor with a new section param must
+  // switch tabs — params change without a remount.
+  useEffect(() => {
+    const s = route?.params?.section as Section | undefined;
+    if (s) setSection(s);
+  }, [route?.params?.section]);
+
   // Hydrate once per profile load — `user_id` is stable, so this never clobbers in-progress edits.
   useEffect(() => {
     if (!profile) return;
@@ -93,7 +129,14 @@ export default function ProviderProfileEditScreen({ navigation, route }: any) {
     setYearStarted(profile.year_started ? String(profile.year_started) : '');
     setLanguages(profile.languages ?? []);
     setHighlights(profile.highlights ?? EMPTY_HIGHLIGHTS);
+    setLat(profile.base_location_lat != null ? String(profile.base_location_lat) : '');
+    setLng(profile.base_location_lng != null ? String(profile.base_location_lng) : '');
+    setLocationLabel(profile.base_location_label ?? '');
   }, [profile?.user_id]);
+
+  useEffect(() => {
+    setPhone((user as any)?.phone ?? '');
+  }, [user?.id]);
 
   useEffect(() => {
     if (error) {
@@ -153,7 +196,7 @@ export default function ProviderProfileEditScreen({ navigation, route }: any) {
     }
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
-      showError('Photo library access is required to add portfolio images.');
+      showError('Photo library access is required to add work photos.');
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -167,7 +210,7 @@ export default function ProviderProfileEditScreen({ navigation, route }: any) {
     setUploadingPhoto(true);
     try {
       await uploadPortfolioImage(result.assets[0].uri);
-      showSuccess('Portfolio image added.');
+      showSuccess('Work photo added.');
     } catch {
     } finally {
       setUploadingPhoto(false);
@@ -175,23 +218,23 @@ export default function ProviderProfileEditScreen({ navigation, route }: any) {
   };
 
   const confirmRemovePhoto = (path: string) => {
-    Alert.alert('Remove image', 'Delete this image from your portfolio? Featured spots referencing it will be cleared too.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          setDeletingPath(path);
-          try {
-            await deletePortfolioImage(path);
-            setHighlights((prev) => ({ ...prev, featured_photo_keys: prev.featured_photo_keys.filter((p) => p !== path) }));
-          } catch {
-          } finally {
-            setDeletingPath(null);
-          }
-        },
+    setDialog({
+      title: 'Remove image',
+      message: 'Delete this image from your work photos? Featured spots referencing it will be cleared too.',
+      destructive: true,
+      confirmLabel: 'Delete',
+      onConfirm: async () => {
+        setDialog(null);
+        setDeletingPath(path);
+        try {
+          await deletePortfolioImage(path);
+          setHighlights((prev) => ({ ...prev, featured_photo_keys: prev.featured_photo_keys.filter((p) => p !== path) }));
+        } catch {
+        } finally {
+          setDeletingPath(null);
+        }
       },
-    ]);
+    });
   };
 
   // ── Highlights — pinned services (reorder via chevrons, §5.4/§6.6) ──────
@@ -251,63 +294,409 @@ export default function ProviderProfileEditScreen({ navigation, route }: any) {
 
   // ── Validation ─────────────────────────────────────────────────────────────
   const currentYear = new Date().getFullYear();
-  // Block only on what's genuinely MISSING (empty required fields / bad year).
-  // A short-but-present bio is guided softly below, never trapping an existing
-  // provider who is just tweaking a highlight.
-  const validate = (): FieldErrors => {
-    const e: FieldErrors = {};
-    if (!displayName.trim()) {
-      e.displayName = 'Add the name customers will see on your profile.';
-    }
-    if (!bio.trim()) {
-      e.bio = 'Write a short bio so customers know what you do.';
-    }
-    if (yearStarted.trim()) {
-      const y = parseInt(yearStarted, 10);
-      if (Number.isNaN(y) || y < 1980 || y > currentYear) {
-        e.year = `Enter a year between 1980 and ${currentYear}.`;
-      }
-    }
-    return e;
+  const yearError = (): string | undefined => {
+    if (!yearStarted.trim()) return undefined;
+    const y = parseInt(yearStarted, 10);
+    if (Number.isNaN(y) || y < 1980 || y > currentYear) return `Enter a year between 1980 and ${currentYear}.`;
+    return undefined;
   };
 
   // Non-blocking nudge: bio present but under the strength threshold.
   const bioTrimmed = bio.trim().length;
   const bioWeak = bioTrimmed > 0 && bioTrimmed < BIO_MIN;
 
-  // ── Save ──────────────────────────────────────────────────────────────────
-  const handleSave = async () => {
-    const e = validate();
-    if (Object.keys(e).length > 0) {
-      // Guide the provider straight to what's missing rather than a vague toast.
-      setErrors(e);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      scrollRef.current?.scrollTo({ y: 0, animated: true });
-      showError('Please complete the highlighted fields to save your profile.');
+  const failValidation = (e: FieldErrors) => {
+    setErrors(e);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+    showError('Please complete the highlighted fields to save.');
+  };
+
+  // ── Section saves (partial upsert — PUT merges, so we persist only the
+  //    fields the active section owns) ──────────────────────────────────────
+  const savePhoneIfChanged = async () => {
+    const next = phone.trim();
+    if (next === ((user as any)?.phone ?? '')) return;
+    await updateAccount({ phone: next || null });
+  };
+
+  const savePersonal = async () => {
+    if (!displayName.trim()) {
+      failValidation({ displayName: 'Add the name customers will see on your profile.' });
       return;
     }
     setErrors({});
-    const yearNum = yearStarted.trim() ? parseInt(yearStarted, 10) : undefined;
-
+    const parsedLat = lat ? parseFloat(lat) : undefined;
+    const parsedLng = lng ? parseFloat(lng) : undefined;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSaving(true);
     try {
       await upsertProfile({
         display_name:      emptyToUndefined(displayName),
-        bio:               emptyToUndefined(bio),
-        year_started:      yearNum,
-        languages:         languages.length > 0 ? languages : undefined,
-        highlights,
+        base_location_lat: parsedLat != null && Number.isFinite(parsedLat) ? parsedLat : undefined,
+        base_location_lng: parsedLng != null && Number.isFinite(parsedLng) ? parsedLng : undefined,
       });
-      showSuccess('Profile & highlights saved.');
+      await savePhoneIfChanged();
+      showSuccess('Personal info saved.');
     } catch {
     } finally {
       setSaving(false);
     }
   };
 
+  const saveAbout = async () => {
+    const e: FieldErrors = {};
+    if (!bio.trim()) e.bio = 'Write a short bio so customers know what you do.';
+    const ye = yearError();
+    if (ye) e.year = ye;
+    if (Object.keys(e).length > 0) { failValidation(e); return; }
+    setErrors({});
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSaving(true);
+    try {
+      await upsertProfile({
+        bio:          emptyToUndefined(bio),
+        year_started: yearStarted.trim() ? parseInt(yearStarted, 10) : undefined,
+        languages:    languages.length > 0 ? languages : undefined,
+      });
+      showSuccess('About & languages saved.');
+    } catch {
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveHighlights = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSaving(true);
+    try {
+      await upsertProfile({ highlights });
+      showSuccess('Highlights saved.');
+    } catch {
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Onboarding — one Save persists the whole profile (original behavior).
+  const saveAll = async () => {
+    const e: FieldErrors = {};
+    if (!displayName.trim()) e.displayName = 'Add the name customers will see on your profile.';
+    if (!bio.trim()) e.bio = 'Write a short bio so customers know what you do.';
+    const ye = yearError();
+    if (ye) e.year = ye;
+    if (Object.keys(e).length > 0) { failValidation(e); return; }
+    setErrors({});
+    const parsedLat = lat ? parseFloat(lat) : undefined;
+    const parsedLng = lng ? parseFloat(lng) : undefined;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSaving(true);
+    try {
+      await upsertProfile({
+        display_name:      emptyToUndefined(displayName),
+        bio:               emptyToUndefined(bio),
+        year_started:      yearStarted.trim() ? parseInt(yearStarted, 10) : undefined,
+        languages:         languages.length > 0 ? languages : undefined,
+        highlights,
+        base_location_lat: parsedLat != null && Number.isFinite(parsedLat) ? parsedLat : undefined,
+        base_location_lng: parsedLng != null && Number.isFinite(parsedLng) ? parsedLng : undefined,
+      });
+      await savePhoneIfChanged();
+      showSuccess('Profile saved.');
+    } catch {
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ── Section renderers ──────────────────────────────────────────────────────
+  const renderPersonal = () => (
+    <>
+      <Text style={styles.sectionLabel}>Profile photo & name</Text>
+      <View style={styles.card}>
+        <View style={styles.avatarRow}>
+          <View style={styles.avatarWrap}>
+            {profile?.cover_image_url ? (
+              <Image source={{ uri: storageUrl(profile.cover_image_url) }} style={styles.avatar} contentFit="cover" transition={150} />
+            ) : (
+              <View style={styles.avatarPlaceholder}>
+                <Ionicons name="person" size={40} color={palette.textDisabled} />
+              </View>
+            )}
+            <TouchableOpacity style={styles.avatarEditBtn} onPress={handleUploadCover} disabled={uploadingCover}>
+              {uploadingCover ? <ActivityIndicator size={12} color="#fff" /> : <Ionicons name="camera" size={14} color="#fff" />}
+            </TouchableOpacity>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.avatarHint}>Profile photo</Text>
+            <Text style={styles.avatarSub}>Tap the camera icon to upload. Square crops work best.</Text>
+          </View>
+        </View>
+
+        <View>
+          <TextInput
+            mode="outlined"
+            label="Display name *"
+            placeholder="What customers see (can differ from your legal name)"
+            value={displayName}
+            onChangeText={(text) => { setDisplayName(text); clearErr('displayName'); }}
+            error={!!errors.displayName}
+            style={styles.input}
+            outlineStyle={styles.inputOutline}
+            left={<TextInput.Icon icon="account-outline" />}
+          />
+          {errors.displayName && <Text style={styles.fieldError}>{errors.displayName}</Text>}
+        </View>
+
+        <View>
+          <TextInput
+            mode="outlined"
+            label="Contact phone"
+            placeholder="e.g. 0977 123 456"
+            value={phone}
+            onChangeText={setPhone}
+            keyboardType="phone-pad"
+            style={styles.input}
+            outlineStyle={styles.inputOutline}
+            left={<TextInput.Icon icon="cellphone" />}
+          />
+          <Text style={styles.fieldHintMuted}>Used for account notices — never shown on your public profile.</Text>
+        </View>
+      </View>
+
+      <Text style={styles.sectionLabel}>Your area</Text>
+      <View style={styles.card}>
+        <LocationSearch
+          value={lat && lng ? { lat: parseFloat(lat), lng: parseFloat(lng), label: locationLabel, region: null, source: 'SEARCH' } : null}
+          onChange={(loc) => {
+            setLat(loc ? String(loc.lat) : '');
+            setLng(loc ? String(loc.lng) : '');
+            setLocationLabel(loc?.label ?? '');
+          }}
+        />
+        <Text style={styles.cardBody}>
+          We match you to nearby customers by area first, then widen out — only your area name is shown, never your exact location.
+        </Text>
+      </View>
+    </>
+  );
+
+  const renderAbout = () => (
+    <>
+      <Text style={styles.sectionLabel}>About you</Text>
+      <Text style={styles.sectionHelp}>Your bio is one of the first things customers read. Fields marked * are required.</Text>
+      <View style={styles.card}>
+        <View>
+          <TextInput
+            mode="outlined"
+            label="Bio *"
+            placeholder="Tell customers what you do and why they should book you..."
+            value={bio}
+            onChangeText={(text) => { setBio(text.slice(0, 500)); clearErr('bio'); }}
+            multiline
+            numberOfLines={4}
+            error={!!(errors.bio || bioErr)}
+            style={[styles.input, styles.bioInput]}
+            outlineStyle={styles.inputOutline}
+          />
+          <Text style={styles.charCount}>
+            {bioTrimmed < BIO_MIN ? `${bioTrimmed}/${BIO_MIN} for a strong bio` : `${bio.length}/500`}
+          </Text>
+          {(errors.bio || bioErr) ? (
+            <Text style={styles.fieldError}>{errors.bio ?? bioErr}</Text>
+          ) : bioWeak ? (
+            <Text style={styles.fieldHint}>
+              {BIO_MIN - bioTrimmed} more character{BIO_MIN - bioTrimmed === 1 ? '' : 's'} makes your profile stronger in search.
+            </Text>
+          ) : null}
+        </View>
+        <View>
+          <TextInput
+            mode="outlined"
+            label="Year you started"
+            placeholder="e.g. 2019"
+            value={yearStarted}
+            onChangeText={(text) => { setYearStarted(text.replace(/[^0-9]/g, '').slice(0, 4)); clearErr('year'); }}
+            keyboardType="number-pad"
+            error={!!errors.year}
+            style={styles.input}
+            outlineStyle={styles.inputOutline}
+            left={<TextInput.Icon icon="calendar-outline" />}
+          />
+          {errors.year && <Text style={styles.fieldError}>{errors.year}</Text>}
+        </View>
+      </View>
+
+      <Text style={styles.sectionLabel}>Languages spoken (up to 4)</Text>
+      <View style={[styles.card, styles.chipWrap]}>
+        {LANGUAGE_CODES.map((code) => {
+          const active = languages.includes(code);
+          return (
+            <TouchableRipple key={code} onPress={() => toggleLanguage(code)} borderless style={[styles.pickChip, active && styles.pickChipActive]}>
+              <Text style={[styles.pickChipText, active && styles.pickChipTextActive]}>{LANGUAGE_LABELS[code]}</Text>
+            </TouchableRipple>
+          );
+        })}
+      </View>
+    </>
+  );
+
+  const renderHighlights = () => (
+    <>
+      {/* Highlights — pinned services */}
+      <Text style={styles.sectionLabel}>Pinned services (up to 6)</Text>
+      <View style={styles.card}>
+        {highlights.pinned_service_ids.length > 0 && (
+          <View style={styles.pinnedList}>
+            {highlights.pinned_service_ids.map((id, index) => {
+              const svc = myServices.find((s) => s.id === id);
+              return (
+                <View key={id} style={styles.pinnedRow}>
+                  <Ionicons name="pricetag-outline" size={16} color={palette.primary} />
+                  <Text style={styles.pinnedText} numberOfLines={1}>{svc?.title ?? 'Service'}</Text>
+                  <View style={styles.reorderActions}>
+                    <TouchableRipple onPress={() => movePinnedService(index, -1)} disabled={index === 0} borderless style={styles.reorderBtn}>
+                      <Ionicons name="chevron-up" size={15} color={index === 0 ? palette.textDisabled : palette.textSecondary} />
+                    </TouchableRipple>
+                    <TouchableRipple
+                      onPress={() => movePinnedService(index, 1)}
+                      disabled={index === highlights.pinned_service_ids.length - 1}
+                      borderless style={styles.reorderBtn}
+                    >
+                      <Ionicons name="chevron-down" size={15} color={index === highlights.pinned_service_ids.length - 1 ? palette.textDisabled : palette.textSecondary} />
+                    </TouchableRipple>
+                    <TouchableRipple onPress={() => togglePinnedService(id)} borderless style={styles.reorderBtn}>
+                      <Ionicons name="close" size={15} color={palette.danger} />
+                    </TouchableRipple>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        )}
+        {activeServices.length === 0 ? (
+          <Text style={styles.cardBody}>List a service to be able to pin it to your profile.</Text>
+        ) : (
+          <View style={styles.chipWrap}>
+            {activeServices.map((svc) => {
+              const pinned = highlights.pinned_service_ids.includes(svc.id);
+              return (
+                <TouchableRipple key={svc.id} onPress={() => togglePinnedService(svc.id)} borderless style={[styles.pickChip, pinned && styles.pickChipActive]}>
+                  <Text style={[styles.pickChipText, pinned && styles.pickChipTextActive]} numberOfLines={1}>
+                    {pinned ? '✓ ' : ''}{svc.title}
+                  </Text>
+                </TouchableRipple>
+              );
+            })}
+          </View>
+        )}
+      </View>
+
+      {/* Highlights — featured photos */}
+      <Text style={styles.sectionLabel}>Featured photos (up to 6)</Text>
+      <View style={[styles.card, styles.photoGrid]}>
+        {portfolioImages.length === 0 ? (
+          <Text style={styles.cardBody}>Add work photos in the Portfolio tab to feature your best work first.</Text>
+        ) : (
+          portfolioImages.map((path) => {
+            const featured = highlights.featured_photo_keys.includes(path);
+            return (
+              <TouchableOpacity key={path} style={styles.photoCell} onPress={() => toggleFeaturedPhoto(path)} activeOpacity={0.85}>
+                <Image source={{ uri: storageUrl(path) }} style={styles.photoImage} contentFit="cover" transition={150} />
+                {featured && (
+                  <View style={styles.photoFeaturedBadge}>
+                    <Ionicons name="star" size={12} color="#fff" />
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          })
+        )}
+      </View>
+
+      {/* Highlights — featured badges */}
+      <Text style={styles.sectionLabel}>Featured badges (up to 6)</Text>
+      <View style={[styles.card, styles.chipWrap]}>
+        {earnedBadges.length === 0 ? (
+          <Text style={styles.cardBody}>You haven’t earned any badges yet — keep growing your business to unlock them.</Text>
+        ) : (
+          earnedBadges.map((key) => {
+            const meta = EARNED_BADGE_META[key];
+            if (!meta) return null;
+            const active = highlights.featured_badges.includes(key);
+            return (
+              <TouchableRipple
+                key={key}
+                onPress={() => toggleFeaturedBadge(key)}
+                borderless
+                style={[styles.badgePickChip, { borderColor: meta.color }, active && { backgroundColor: meta.color }]}
+              >
+                <View style={styles.badgePickInner}>
+                  <Ionicons name={meta.icon} size={13} color={active ? '#fff' : meta.color} />
+                  <Text style={[styles.badgePickText, { color: active ? '#fff' : meta.color }]}>{meta.label}</Text>
+                </View>
+              </TouchableRipple>
+            );
+          })
+        )}
+      </View>
+    </>
+  );
+
+  const renderPortfolio = () => (
+    <>
+      <View style={styles.sectionRowBetween}>
+        <Text style={styles.sectionLabel}>Work photos</Text>
+        <Text style={styles.sectionHint}>{portfolioImages.length}/12</Text>
+      </View>
+      <Text style={styles.sectionHelp}>Photos of jobs you’ve done — added and removed here take effect immediately.</Text>
+      <View style={[styles.card, styles.photoGrid]}>
+        {portfolioImages.map((path) => (
+          <View key={path} style={styles.photoCell}>
+            <Image source={{ uri: storageUrl(path) }} style={styles.photoImage} contentFit="cover" transition={150} />
+            <TouchableOpacity style={styles.photoDeleteBtn} onPress={() => confirmRemovePhoto(path)} disabled={deletingPath === path}>
+              <Ionicons name={deletingPath === path ? 'ellipsis-horizontal' : 'trash'} size={13} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        ))}
+        {portfolioImages.length < 12 && (
+          <TouchableOpacity style={styles.photoAddTile} onPress={handleAddPhoto} disabled={uploadingPhoto}>
+            <Ionicons name={uploadingPhoto ? 'cloud-upload-outline' : 'camera-outline'} size={24} color={palette.textDisabled} />
+            <Text style={styles.photoAddText}>Add</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* Certifications — coming soon (no verification pipeline yet) */}
+      <Text style={styles.sectionLabel}>Certifications</Text>
+      <View style={[styles.card, styles.comingSoonCard]}>
+        <Ionicons name="ribbon-outline" size={22} color={palette.textDisabled} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.cardTitle}>Coming soon</Text>
+          <Text style={styles.cardBody}>
+            Adding certifications that trigger verification is on its way. We’ll notify you when it’s ready.
+          </Text>
+        </View>
+      </View>
+    </>
+  );
+
+  // The Save button belongs to text-bearing sections; Portfolio saves immediately.
+  const saveHandler = section === 'personal' ? savePersonal : section === 'about' ? saveAbout : section === 'highlights' ? saveHighlights : null;
+
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
+      <ScreenHeader
+        title="Edit profile"
+        subtitle="Your public profile & highlights"
+        back
+      />
+
+      {/* Section tabs — same flat underline tablist as the Services screen. */}
+      {!onboarding && (
+        <Tabs items={SECTION_TABS} activeKey={section} onChange={(k) => setSection(k as Section)} />
+      )}
+
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <ScrollView
           ref={scrollRef}
@@ -315,283 +704,40 @@ export default function ProviderProfileEditScreen({ navigation, route }: any) {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <ScreenHeader
-            title="Profile & highlights"
-            subtitle="Configure your public profile and what shows first"
-            back
-          />
+          {onboarding && <OnboardingProgress step={onboardingStep!} />}
 
-          {onboardingStep != null && <OnboardingProgress step={onboardingStep} />}
+          {onboarding ? (
+            // Single long-form for onboarding — keeps the original "fill it all in
+            // once" flow the setup timeline expects.
+            <>
+              {renderPersonal()}
+              {renderAbout()}
+              {renderHighlights()}
+              {renderPortfolio()}
+              <Button mode="contained" onPress={saveAll} loading={saving} disabled={saving} style={styles.cta} contentStyle={styles.ctaContent}>
+                Save changes
+              </Button>
+            </>
+          ) : (
+            <>
+              {/* Deep-linked section is active on entry; the pinned tabs above
+                  let the provider switch between sections once here. */}
+              {section === 'personal'   && renderPersonal()}
+              {section === 'about'      && renderAbout()}
+              {section === 'highlights' && renderHighlights()}
+              {section === 'portfolio'  && renderPortfolio()}
 
-          {/* Public profile */}
-          <Text style={styles.sectionLabel}>Public Profile</Text>
-          <Text style={styles.sectionHelp}>
-            Your photo, name and bio are the first things customers see. Fields marked * are required.
-          </Text>
-          <View style={styles.card}>
-            {/* Profile photo */}
-            <View style={styles.avatarRow}>
-              <View style={styles.avatarWrap}>
-                {profile?.cover_image_url ? (
-                  <Image
-                    source={{ uri: storageUrl(profile.cover_image_url) }}
-                    style={styles.avatar}
-                    contentFit="cover"
-                    transition={150}
-                  />
-                ) : (
-                  <View style={styles.avatarPlaceholder}>
-                    <Ionicons name="person" size={40} color={palette.textDisabled} />
-                  </View>
-                )}
-                <TouchableOpacity
-                  style={styles.avatarEditBtn}
-                  onPress={handleUploadCover}
-                  disabled={uploadingCover}
-                >
-                  {uploadingCover
-                    ? <ActivityIndicator size={12} color="#fff" />
-                    : <Ionicons name="camera" size={14} color="#fff" />
-                  }
-                </TouchableOpacity>
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.avatarHint}>Profile photo</Text>
-                <Text style={styles.avatarSub}>
-                  Tap the camera icon to upload. Square crops work best.
-                </Text>
-              </View>
-            </View>
-
-            <View>
-              <TextInput
-                mode="outlined"
-                label="Display name *"
-                placeholder="What customers see (can differ from your legal name)"
-                value={displayName}
-                onChangeText={(text) => { setDisplayName(text); clearErr('displayName'); }}
-                error={!!errors.displayName}
-                style={styles.input}
-                outlineStyle={styles.inputOutline}
-                left={<TextInput.Icon icon="account-outline" />}
-              />
-              {errors.displayName && <Text style={styles.fieldError}>{errors.displayName}</Text>}
-            </View>
-            <View>
-              <TextInput
-                mode="outlined"
-                label="Bio *"
-                placeholder="Tell customers what you do and why they should book you..."
-                value={bio}
-                onChangeText={(text) => { setBio(text.slice(0, 500)); clearErr('bio'); }}
-                multiline
-                numberOfLines={4}
-                error={!!(errors.bio || bioErr)}
-                style={[styles.input, styles.bioInput]}
-                outlineStyle={styles.inputOutline}
-              />
-              <Text style={styles.charCount}>
-                {bioTrimmed < BIO_MIN ? `${bioTrimmed}/${BIO_MIN} for a strong bio` : `${bio.length}/500`}
-              </Text>
-              {(errors.bio || bioErr) ? (
-                <Text style={styles.fieldError}>{errors.bio ?? bioErr}</Text>
-              ) : bioWeak ? (
-                <Text style={styles.fieldHint}>
-                  {BIO_MIN - bioTrimmed} more character{BIO_MIN - bioTrimmed === 1 ? '' : 's'} makes your profile stronger in search.
-                </Text>
-              ) : null}
-            </View>
-            <View>
-              <TextInput
-                mode="outlined"
-                label="Year you started"
-                placeholder="e.g. 2019"
-                value={yearStarted}
-                onChangeText={(text) => { setYearStarted(text.replace(/[^0-9]/g, '').slice(0, 4)); clearErr('year'); }}
-                keyboardType="number-pad"
-                error={!!errors.year}
-                style={styles.input}
-                outlineStyle={styles.inputOutline}
-                left={<TextInput.Icon icon="calendar-outline" />}
-              />
-              {errors.year && <Text style={styles.fieldError}>{errors.year}</Text>}
-            </View>
-          </View>
-
-          {/* Languages */}
-          <Text style={styles.sectionLabel}>Languages spoken (up to 4)</Text>
-          <View style={[styles.card, styles.chipWrap]}>
-            {LANGUAGE_CODES.map((code) => {
-              const active = languages.includes(code);
-              return (
-                <TouchableRipple
-                  key={code}
-                  onPress={() => toggleLanguage(code)}
-                  borderless
-                  style={[styles.pickChip, active && styles.pickChipActive]}
-                >
-                  <Text style={[styles.pickChipText, active && styles.pickChipTextActive]}>
-                    {LANGUAGE_LABELS[code]}
-                  </Text>
-                </TouchableRipple>
-              );
-            })}
-          </View>
-
-
-          {/* Portfolio manager (§5.3 — max 12 images / 5MB each) */}
-          <View style={styles.sectionRowBetween}>
-            <Text style={styles.sectionLabel}>Portfolio</Text>
-            <Text style={styles.sectionHint}>{portfolioImages.length}/12</Text>
-          </View>
-          <View style={[styles.card, styles.photoGrid]}>
-            {portfolioImages.map((path) => (
-              <View key={path} style={styles.photoCell}>
-                <Image source={{ uri: storageUrl(path) }} style={styles.photoImage} contentFit="cover" transition={150} />
-                <TouchableOpacity
-                  style={styles.photoDeleteBtn}
-                  onPress={() => confirmRemovePhoto(path)}
-                  disabled={deletingPath === path}
-                >
-                  <Ionicons name={deletingPath === path ? 'ellipsis-horizontal' : 'trash'} size={13} color="#fff" />
-                </TouchableOpacity>
-              </View>
-            ))}
-            {portfolioImages.length < 12 && (
-              <TouchableOpacity style={styles.photoAddTile} onPress={handleAddPhoto} disabled={uploadingPhoto}>
-                <Ionicons name={uploadingPhoto ? 'cloud-upload-outline' : 'camera-outline'} size={24} color={palette.textDisabled} />
-                <Text style={styles.photoAddText}>Add</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {/* Certifications — coming soon (no verification pipeline yet) */}
-          <Text style={styles.sectionLabel}>Certifications</Text>
-          <View style={[styles.card, styles.comingSoonCard]}>
-            <Ionicons name="ribbon-outline" size={22} color={palette.textDisabled} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.cardTitle}>Coming soon</Text>
-              <Text style={styles.cardBody}>
-                Adding certifications that trigger verification is on its way. We’ll notify you when it’s ready.
-              </Text>
-            </View>
-          </View>
-
-          {/* Highlights — pinned services */}
-          <Text style={styles.sectionLabel}>Highlights — pinned services (up to 6)</Text>
-          <View style={styles.card}>
-            {highlights.pinned_service_ids.length > 0 && (
-              <View style={styles.pinnedList}>
-                {highlights.pinned_service_ids.map((id, index) => {
-                  const svc = myServices.find((s) => s.id === id);
-                  return (
-                    <View key={id} style={styles.pinnedRow}>
-                      <Ionicons name="pricetag-outline" size={16} color={palette.primary} />
-                      <Text style={styles.pinnedText} numberOfLines={1}>{svc?.title ?? 'Service'}</Text>
-                      <View style={styles.reorderActions}>
-                        <TouchableRipple onPress={() => movePinnedService(index, -1)} disabled={index === 0} borderless style={styles.reorderBtn}>
-                          <Ionicons name="chevron-up" size={15} color={index === 0 ? palette.textDisabled : palette.textSecondary} />
-                        </TouchableRipple>
-                        <TouchableRipple
-                          onPress={() => movePinnedService(index, 1)}
-                          disabled={index === highlights.pinned_service_ids.length - 1}
-                          borderless style={styles.reorderBtn}
-                        >
-                          <Ionicons name="chevron-down" size={15} color={index === highlights.pinned_service_ids.length - 1 ? palette.textDisabled : palette.textSecondary} />
-                        </TouchableRipple>
-                        <TouchableRipple onPress={() => togglePinnedService(id)} borderless style={styles.reorderBtn}>
-                          <Ionicons name="close" size={15} color={palette.danger} />
-                        </TouchableRipple>
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-            )}
-            {activeServices.length === 0 ? (
-              <Text style={styles.cardBody}>List a service to be able to pin it to your profile.</Text>
-            ) : (
-              <View style={styles.chipWrap}>
-                {activeServices.map((svc) => {
-                  const pinned = highlights.pinned_service_ids.includes(svc.id);
-                  return (
-                    <TouchableRipple
-                      key={svc.id}
-                      onPress={() => togglePinnedService(svc.id)}
-                      borderless
-                      style={[styles.pickChip, pinned && styles.pickChipActive]}
-                    >
-                      <Text style={[styles.pickChipText, pinned && styles.pickChipTextActive]} numberOfLines={1}>
-                        {pinned ? '✓ ' : ''}{svc.title}
-                      </Text>
-                    </TouchableRipple>
-                  );
-                })}
-              </View>
-            )}
-          </View>
-
-          {/* Highlights — featured photos */}
-          <Text style={styles.sectionLabel}>Highlights — featured photos (up to 6)</Text>
-          <View style={[styles.card, styles.photoGrid]}>
-            {portfolioImages.length === 0 ? (
-              <Text style={styles.cardBody}>Add portfolio images above to feature your best work first.</Text>
-            ) : (
-              portfolioImages.map((path) => {
-                const featured = highlights.featured_photo_keys.includes(path);
-                return (
-                  <TouchableOpacity key={path} style={styles.photoCell} onPress={() => toggleFeaturedPhoto(path)} activeOpacity={0.85}>
-                    <Image source={{ uri: storageUrl(path) }} style={styles.photoImage} contentFit="cover" transition={150} />
-                    {featured && (
-                      <View style={styles.photoFeaturedBadge}>
-                        <Ionicons name="star" size={12} color="#fff" />
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                );
-              })
-            )}
-          </View>
-
-          {/* Highlights — featured badges */}
-          <Text style={styles.sectionLabel}>Highlights — featured badges (up to 6)</Text>
-          <View style={[styles.card, styles.chipWrap]}>
-            {earnedBadges.length === 0 ? (
-              <Text style={styles.cardBody}>You haven’t earned any badges yet — keep growing your business to unlock them.</Text>
-            ) : (
-              earnedBadges.map((key) => {
-                const meta = EARNED_BADGE_META[key];
-                if (!meta) return null;
-                const active = highlights.featured_badges.includes(key);
-                return (
-                  <TouchableRipple
-                    key={key}
-                    onPress={() => toggleFeaturedBadge(key)}
-                    borderless
-                    style={[styles.badgePickChip, { borderColor: meta.color }, active && { backgroundColor: meta.color }]}
-                  >
-                    <View style={styles.badgePickInner}>
-                      <Ionicons name={meta.icon} size={13} color={active ? '#fff' : meta.color} />
-                      <Text style={[styles.badgePickText, { color: active ? '#fff' : meta.color }]}>{meta.label}</Text>
-                    </View>
-                  </TouchableRipple>
-                );
-              })
-            )}
-          </View>
-
-          <Button
-            mode="contained"
-            onPress={handleSave}
-            loading={saving}
-            disabled={saving}
-            style={styles.cta}
-            contentStyle={styles.ctaContent}
-          >
-            Save changes
-          </Button>
+              {saveHandler && (
+                <Button mode="contained" onPress={saveHandler} loading={saving} disabled={saving} style={styles.cta} contentStyle={styles.ctaContent}>
+                  Save changes
+                </Button>
+              )}
+            </>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <ConfirmDialog dialog={dialog} onDismiss={() => setDialog(null)} />
     </SafeAreaView>
   );
 }
@@ -654,6 +800,7 @@ const styles = StyleSheet.create({
   charCount: { ...typography.bodySmall, color: palette.textDisabled, fontSize: 11, textAlign: 'right', marginTop: 2 },
   fieldError: { ...typography.bodySmall, color: palette.danger, fontSize: 12, marginTop: 2 },
   fieldHint:  { ...typography.bodySmall, color: palette.warning, fontSize: 12, marginTop: 2 },
+  fieldHintMuted: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12, marginTop: 4 },
 
   // Pick chips (languages, pinned services)
   chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
@@ -665,17 +812,6 @@ const styles = StyleSheet.create({
   pickChipActive: { backgroundColor: palette.primary, borderColor: palette.primary },
   pickChipText: { ...typography.bodySmall, color: palette.textSecondary },
   pickChipTextActive: { color: '#FFFFFF', fontFamily: 'DMSans_600SemiBold' },
-
-  // Radius stepper
-  radiusRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  stepBtn: {
-    width: 40, height: 40, borderRadius: r.full,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: palette.primaryLight,
-  },
-  radiusValueWrap: { alignItems: 'center' },
-  radiusValue: { ...typography.heading3, color: palette.textPrimary },
-  radiusHint:  { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12 },
 
   // Portfolio / featured photo grid
   photoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: PHOTO_GAP },

@@ -3,12 +3,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, FlatList, StyleSheet, View } from 'react-native';
+import { FlatList, StyleSheet, View } from 'react-native';
 import { Text, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { storageUrl } from '../../api/client';
 import { Service, ServiceStatus, servicesApi } from '../../api/services';
 import { priceLabel } from '../../components/discovery/RankedServiceCard';
+import { ConfirmDialog, ConfirmDialogConfig } from '../../components/ui/ConfirmDialog';
 import { ScreenHeader } from '../../components/ui/ScreenHeader';
 import { CardSkeleton } from '../../components/ui/SkeletonBlock';
 import { TabItem, Tabs } from '../../components/ui/Tabs';
@@ -79,6 +80,7 @@ export default function MyServicesScreen({ navigation }: any) {
   const tabBarHeight = useBottomTabBarHeight();
 
   const [tab, setTab] = useState<TabKey>('ACTIVE');
+  const [dialog, setDialog] = useState<ConfirmDialogConfig | null>(null);
 
   useEffect(() => { fetchMyServices(true); }, []);
 
@@ -107,20 +109,20 @@ export default function MyServicesScreen({ navigation }: any) {
     navigation.navigate('CreateService', { service });
 
   const handleDelete = (service: Service) => {
-    Alert.alert('Delete service', `Remove "${service.title}" from your listings?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-          try {
-            await deleteService(service.id);
-            showSuccess('Service deleted.');
-          } catch {}
-        },
+    setDialog({
+      title: 'Delete service',
+      message: `Remove "${service.title}" from your listings?`,
+      destructive: true,
+      confirmLabel: 'Delete',
+      onConfirm: async () => {
+        setDialog(null);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        try {
+          await deleteService(service.id);
+          showSuccess('Service deleted.');
+        } catch {}
       },
-    ]);
+    });
   };
 
   // Pause / activate — optimistic with rollback on failure (§ list spec).
@@ -240,6 +242,8 @@ export default function MyServicesScreen({ navigation }: any) {
           )}
         />
       )}
+
+      <ConfirmDialog dialog={dialog} onDismiss={() => setDialog(null)} />
     </SafeAreaView>
   );
 }

@@ -100,14 +100,18 @@ class PhoneOtpAuthTest extends TestCase
 
     public function test_whatsapp_created_account_is_reused_by_pwa_otp(): void
     {
-        // Simulate a WhatsApp-first account stored without the leading +.
-        $wa = User::create(['phone' => '260971234567', 'role' => 'CUSTOMER', 'account_state' => 'ACTIVE']);
+        // A WhatsApp-first account. Numbers are stored canonically (E.164) — new
+        // WhatsApp rows are normalized on creation, and legacy loosely-stored rows
+        // are canonicalized by the one-time phone backfill migration (§ SEC-8), so
+        // identity matching is strict equality, not a trailing-digits LIKE.
+        $wa = User::create(['phone' => '+260971234567', 'role' => 'CUSTOMER', 'account_state' => 'ACTIVE']);
 
-        $this->postJson('/api/auth/otp/request', ['phone' => '+260971234567'])->assertOk();
+        // A PWA sign-in for the SAME number in local format resolves to the same
+        // account (normalization collapses the format before the strict match).
+        $this->postJson('/api/auth/otp/request', ['phone' => '0971234567'])->assertOk();
 
-        // No duplicate; the existing row is canonicalized to E.164.
         $this->assertSame(1, User::where('phone', 'LIKE', '%971234567')->count());
-        $this->assertSame('+260971234567', $wa->fresh()->phone);
+        $this->assertSame($wa->id, User::where('phone', '+260971234567')->first()->id);
     }
 
     // ── Rate limiting ────────────────────────────────────────────────────────
@@ -118,5 +122,35 @@ class PhoneOtpAuthTest extends TestCase
         $this->postJson('/api/auth/otp/request', ['phone' => '0971234567'])
             ->assertStatus(429)
             ->assertJsonPath('code', 'RATE_LIMITED');
+    }
+
+    // ── OTP brute-force lockout (§ SEC-2) ────────────────────────────────────
+
+    public function test_otp_is_burned_after_too_many_wrong_guesses(): void
+    {
+        // Isolate the per-code, IP-independent lockout (§ SEC-2) from the per-IP
+        // route throttle (which is a separate, coarser protection). An attacker
+        // rotating IPs bypasses the throttle but must still hit the per-code burn.
+        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+
+        $this->postJson('/api/auth/otp/request', ['phone' => '0971234567'])->assertOk();
+        $otp = $this->sms->lastOtp('+260971234567');
+
+        // Five wrong guesses are each rejected as invalid…
+        for ($i = 0; $i < 5; $i++) {
+            $this->postJson('/api/auth/otp/verify', ['phone' => '0971234567', 'otp' => '000000'])
+                ->assertStatus(422)
+                ->assertJsonPath('code', 'OTP_INVALID');
+        }
+
+        // …the sixth attempt is rate-limited and burns the code.
+        $this->postJson('/api/auth/otp/verify', ['phone' => '0971234567', 'otp' => '000000'])
+            ->assertStatus(429)
+            ->assertJsonPath('code', 'RATE_LIMITED');
+
+        // Even the CORRECT code no longer works — a fresh request is required.
+        $this->postJson('/api/auth/otp/verify', ['phone' => '0971234567', 'otp' => $otp])
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'OTP_EXPIRED');
     }
 }

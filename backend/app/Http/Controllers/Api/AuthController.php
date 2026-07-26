@@ -12,6 +12,7 @@ use App\Services\AuthService;
 use App\Support\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 
 class AuthController extends Controller
 {
@@ -152,16 +153,46 @@ class AuthController extends Controller
 
         $user->save();
 
-        return ApiResponse::success([
+        return ApiResponse::success($this->accountPayload($user), 'Account updated.');
+    }
+
+    /**
+     * POST /api/me/avatar — customer profile photo. Public storage; never the
+     * KYC selfie (same convention as the provider avatar).
+     */
+    public function uploadAvatar(Request $request): JsonResponse
+    {
+        $request->validate([
+            'photo' => ['required', 'image', 'mimes:jpeg,jpg,png,webp', 'max:5120'],
+        ]);
+
+        $user = $request->user();
+
+        if (! empty($user->avatar_url)) {
+            Storage::disk('public')->delete($user->avatar_url);
+        }
+
+        $user->avatar_url = $request->file('photo')->store('avatars', 'public');
+        $user->save();
+
+        return ApiResponse::success($this->accountPayload($user), 'Profile photo updated.', 201);
+    }
+
+    /** Shared account payload — keeps the client's cached user in sync after any edit. */
+    private function accountPayload(User $user): array
+    {
+        return [
             'id'              => $user->id,
             'email'           => $user->email,
             'phone'           => $user->phone,
+            'legal_name'      => $user->legal_name,
+            'avatar_url'      => $user->avatar_url,
             'role'            => $user->role,
             'is_verified'     => $user->is_verified,
             'completion_rate' => $user->completion_rate,
             'r_raw'           => $user->r_raw,
             'v_reviews'       => $user->v_reviews,
-        ], 'Account updated.');
+        ];
     }
 
     /**

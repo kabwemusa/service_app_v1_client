@@ -561,6 +561,7 @@ export default function BrowseScreen({ navigation, route }: any) {
         basePrice={bookingFor?.base_price ?? 0}
         pricingModel={bookingFor?.pricing_model}
         paymentMode={bookingFor?.payment_mode}
+        isRemote={bookingFor?.is_remote ?? false}
         categoryId={bookingFor?.category?.id}
         categoryIcon={bookingFor?.category?.icon}
         providerName={bookingFor?.provider?.display_name}

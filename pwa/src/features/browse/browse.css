@@ -1,0 +1,135 @@
+/* Browse — modern, calm, mobile-first. Echoes the app's Home/welcome look:
+   white surfaces, hairline borders, a prominent pill search, soft sticky chips. */
+
+.bz {
+  padding-bottom: var(--space-xl);
+}
+
+/* Sticky header + search so the search field stays reachable while scrolling. */
+.bz-head {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: color-mix(in srgb, var(--background) 88%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  padding: calc(var(--space-md) + env(safe-area-inset-top)) var(--space-md) var(--space-sm);
+}
+
+.bz-head-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+.bz-title { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; color: var(--text-primary); }
+.bz-sub { margin-top: 2px; font-size: 13px; color: var(--text-secondary); }
+
+.bz-loc {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.bz-loc:hover { border-color: var(--primary); color: var(--primary); }
+.bz-loc svg { color: var(--primary); }
+
+.bz-icon-btn {
+  flex-shrink: 0;
+  width: 44px; height: 44px;
+  display: grid; place-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  font-size: 18px;
+  cursor: pointer;
+}
+
+/* Pill search — brand-outlined, icon inside, big tap target (mirrors app Home). */
+.bz-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: var(--space-md);
+  padding: 0 var(--space-md);
+  height: 52px;
+  border-radius: var(--radius-full);
+  border: 1.5px solid var(--primary);
+  background: var(--surface);
+}
+.bz-search svg { color: var(--primary); flex-shrink: 0; }
+.bz-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 16px;
+  outline: none;
+}
+.bz-search input::placeholder { color: var(--text-secondary); }
+
+/* Category rail. */
+.bz-chips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: var(--space-md) var(--space-md) 2px;
+  scrollbar-width: none;
+}
+.bz-chips::-webkit-scrollbar { display: none; }
+.bz-chip {
+  white-space: nowrap;
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: var(--radius-full);
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.bz-chip:hover { border-color: var(--primary); }
+.bz-chip.is-active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.bz-meta { padding: 0 var(--space-md) var(--space-sm); font-size: 13px; color: var(--text-secondary); }
+
+.bz-grid { padding: 0 var(--space-md); }
+
+.bz-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: var(--space-xl) var(--space-md);
+  color: var(--text-secondary);
+}
+.bz-empty-emoji { font-size: 32px; display: block; margin-bottom: 8px; }
+
+.bz-more-wrap { padding: var(--space-lg) var(--space-md); display: flex; justify-content: center; }
+.bz-more {
+  min-height: 48px;
+  padding: 0 var(--space-lg);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.bz-more:hover { border-color: var(--primary); color: var(--primary); }
+.bz-more:disabled { opacity: .6; cursor: default; }

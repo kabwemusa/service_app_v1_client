@@ -28,6 +28,9 @@ export default function OtpScreen() {
   const { verifyOtp, resendOtp, loading, error, clearError, pendingIdentifier } = useAuthStore();
   const { showError } = useSnackbar();
 
+  // Verification channel follows the identifier the account was registered with.
+  const isEmail = !!pendingIdentifier?.includes('@');
+
   useEffect(() => {
     const timer = setInterval(() => {
       setCountdown((current) => (current > 0 ? current - 1 : 0));
@@ -95,15 +98,15 @@ export default function OtpScreen() {
               end={{ x: 1, y: 1 }}
               style={styles.iconBadge}
             >
-              <Ionicons name="mail-outline" size={34} color={palette.primary} />
+              <Ionicons name={isEmail ? 'mail-outline' : 'chatbubble-ellipses-outline'} size={34} color={palette.primary} />
             </LinearGradient>
-            <Text style={styles.heading}>Verify your email</Text>
+            <Text style={styles.heading}>{isEmail ? 'Verify your email' : 'Verify your phone'}</Text>
             <Text style={styles.subheading}>
               Enter the 6-digit code sent to
               {pendingIdentifier ? (
                 <Text style={styles.emailHighlight}>{`\n${pendingIdentifier}`}</Text>
               ) : (
-                ' your university inbox'
+                isEmail ? ' your email inbox' : ' your phone by SMS'
               )}
             </Text>
           </View>

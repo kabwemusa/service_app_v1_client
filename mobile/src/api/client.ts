@@ -53,6 +53,12 @@ export function storageUrl(path: string): string {
   return BASE_URL.replace(/\/api$/, "") + "/storage/" + path;
 }
 
+/** The backend origin (scheme://host:port, no /api). The realtime client reuses
+ *  this host so the Reverb WebSocket reaches the same machine as the API. */
+export function apiOrigin(): string {
+  return BASE_URL.replace(/\/api$/, "");
+}
+
 // These endpoints manage their own 401 responses — never trigger the refresh dance on them.
 const PUBLIC_ENDPOINTS = [
   "/auth/login",

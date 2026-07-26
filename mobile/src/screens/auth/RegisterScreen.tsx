@@ -77,7 +77,7 @@ export default function RegisterScreen({ navigation }: any) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     register({
       ...(usePhone
-        ? { phone: phone.trim() }
+        ? { phone: phone.trim().replace(/[\s()-]/g, '') } // strip spaces/dashes → E.164
         : { email: email.trim().toLowerCase() }),
       password,
       role,

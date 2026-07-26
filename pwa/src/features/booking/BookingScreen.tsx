@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { servicesApi, type Service } from '../../api/services';
+import { bookingsApi } from '../../api/bookings';
 import { ScreenHeader } from '../../components/ui/ScreenHeader';
 import { api, storageUrl } from '../../api/client';
 import { useLocationStore } from '../../store/locationStore';
@@ -16,6 +17,10 @@ import './booking.css';
 // record the backend returns is the source of truth for the final charge).
 
 const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString();
+
+// Platform WhatsApp channel for free-form conversation (never the counterparty's
+// number — anti-circumvention). Digits only; empty hides the button.
+const WHATSAPP_NUMBER = (import.meta.env.VITE_WHATSAPP_NUMBER ?? '').replace(/[^0-9]/g, '');
 
 export function BookingScreen() {
   const { serviceId = '' } = useParams();
@@ -36,6 +41,26 @@ export function BookingScreen() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<'FUNDED' | 'BRIEF_SENT' | 'REQUESTED' | null>(null);
+  const [bookingId, setBookingId] = useState<string | null>(null);
+  const [agreementBusy, setAgreementBusy] = useState(false);
+  const [agreementErr, setAgreementErr] = useState<string | null>(null);
+
+  // Open the Booking Agreement PDF via a short-lived signed link. On the async
+  // (PawaPay) path the document may still be generating when this screen shows —
+  // surface a gentle "ready shortly" message rather than an error.
+  async function openAgreement() {
+    if (!bookingId || agreementBusy) return;
+    setAgreementBusy(true);
+    setAgreementErr(null);
+    try {
+      const { url } = await bookingsApi.agreementLink(bookingId);
+      window.open(url, '_blank', 'noopener');
+    } catch {
+      setAgreementErr('Your agreement is being prepared — it will be ready in a moment. You can also find it under My Bookings.');
+    } finally {
+      setAgreementBusy(false);
+    }
+  }
 
   useEffect(() => { hydrate(); }, [hydrate]);
   useEffect(() => { if (location?.label && !address) setAddress(location.label); }, [location, address]);
@@ -132,6 +157,7 @@ export function BookingScreen() {
         ...(scopeBrief ? { scope_brief: scopeBrief } : {}),
       }, true);
 
+      setBookingId(booking.id);
       if (isQuote) { setDone('BRIEF_SENT'); }
       else if (isDirect) { setDone('REQUESTED'); }
       else { await api.post(`/bookings/${booking.id}/pay`, {}, true).catch(() => {}); setDone('FUNDED'); }
@@ -144,8 +170,7 @@ export function BookingScreen() {
 
   const ctaLabel = isQuote ? 'Send brief · get quote'
     : isDirect ? 'Request booking'
-    : isCapped ? `Confirm · hold K${total.toFixed(0)}`
-    : `Confirm booking · K${total.toFixed(0)}`;
+    : `Pay K${total.toFixed(0)}`;
 
   if (!svc) return <><ScreenHeader title="Book" /><div className="bk" style={{ padding: 'var(--space-md)' }}><div className="skeleton" style={{ height: 260 }} /></div></>;
 
@@ -166,8 +191,41 @@ export function BookingScreen() {
                 ? "The provider is reviewing your brief. We'll notify you when their quote is in — you approve it before any money moves."
                 : done === 'REQUESTED'
                 ? "The provider will confirm your request shortly. You'll pay them directly after the job — both of you mark it complete."
-                : 'Check your phone and approve the Mobile Money prompt to hold the funds in escrow. Track it under My Bookings.'}
+                : 'Check your phone and approve the Mobile Money prompt to pay. Your money is held safely until you confirm the job is done — track it under My Bookings.'}
             </p>
+
+            {/* Booking Agreement (both parties get the same document) + WhatsApp */}
+            {done === 'FUNDED' && bookingId && (
+              <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {agreementErr && <p className="t-small t-muted">{agreementErr}</p>}
+                <button
+                  type="button"
+                  onClick={openAgreement}
+                  disabled={agreementBusy}
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                    padding: '10px 14px', borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--primary)', background: 'var(--primary)', color: '#fff',
+                    fontWeight: 600, cursor: agreementBusy ? 'default' : 'pointer',
+                  }}
+                >
+                  {agreementBusy ? 'Preparing…' : '⬇  Download Booking Agreement'}
+                </button>
+                {WHATSAPP_NUMBER && (
+                  <a
+                    href={`https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(`Hi, I have a question about my booking (ref ${bookingId.slice(0, 8).toUpperCase()}).`)}`}
+                    target="_blank" rel="noreferrer"
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                      padding: '10px 14px', borderRadius: 'var(--radius-sm)',
+                      border: '1px solid var(--border)', color: 'var(--text)', textDecoration: 'none', fontWeight: 600,
+                    }}
+                  >
+                    💬  Message on WhatsApp
+                  </a>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -239,10 +297,10 @@ export function BookingScreen() {
         {isCapped && (
           <div className="bk-cap">
             <div className="bk-cap-headline">
-              K{(svc.hourly_rate ?? 0).toFixed(0)}/hr · {svc.minimum_hours ?? 1}-hr minimum · max K{svcCost.toFixed(0)}
+              K{(svc.hourly_rate ?? 0).toFixed(0)}/hr · you only pay for the time worked
             </div>
             <div className="bk-cap-note">
-              We hold K{svcCost.toFixed(0)} (the maximum). You'll only be charged for the actual time worked — any unused amount is refunded automatically.
+              The most you'd pay is K{svcCost.toFixed(0)}. You're charged only for the time actually worked.
             </div>
           </div>
         )}
@@ -321,7 +379,7 @@ export function BookingScreen() {
           ) : (
             <>
               <div className="bk-fee-row">
-                <span className="bk-fee-lbl">{isCapped ? 'Held (maximum)' : 'Service'}</span>
+                <span className="bk-fee-lbl">{isCapped ? 'Cost (up to)' : 'Service'}</span>
                 <span className="bk-fee-amt">K{svcCost.toFixed(0)}</span>
               </div>
               {(svc.addons ?? []).filter((a) => selectedAddons.has(a.id)).map((a) => (
@@ -350,10 +408,10 @@ export function BookingScreen() {
               {isDirect
                 ? `You'll pay ${svc.provider?.display_name ?? 'the provider'} directly after the job · they'll confirm your request.`
                 : isCapped
-                ? 'The maximum is held in escrow — you pay only for actual time, the rest is refunded when you confirm completion.'
+                ? "You pay only for the time worked. Your payment is held safely until you confirm the job's done."
                 : isQuote
-                ? 'Escrow protection applies once you approve the quote — funds are released only when you confirm the job is complete.'
-                : 'Held securely in escrow — released to the provider only when you confirm the job is complete.'}
+                ? "Once you approve the quote, your payment is held safely and released only when you confirm the job's done."
+                : "Your payment is held safely by our licensed partner — released to the provider only when you confirm the job's done."}
             </span>
           </div>
 

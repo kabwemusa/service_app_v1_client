@@ -12,6 +12,9 @@ const VerificationScreen = lazy(() => import('./features/provider/VerificationSc
 const AvailabilityScreen = lazy(() => import('./features/provider/AvailabilityScreen').then((m) => ({ default: m.AvailabilityScreen })));
 const AddPoliceClearanceScreen = lazy(() => import('./features/provider/AddPoliceClearanceScreen').then((m) => ({ default: m.AddPoliceClearanceScreen })));
 const AddPortfolioScreen = lazy(() => import('./features/provider/AddPortfolioScreen').then((m) => ({ default: m.AddPortfolioScreen })));
+const LegalScreen = lazy(() => import('./features/legal/LegalScreen').then((m) => ({ default: m.LegalScreen })));
+const LegalDocumentScreen = lazy(() => import('./features/legal/LegalDocumentScreen').then((m) => ({ default: m.LegalDocumentScreen })));
+const PrivacyConsentScreen = lazy(() => import('./features/legal/PrivacyConsentScreen').then((m) => ({ default: m.PrivacyConsentScreen })));
 
 export function AppRoutes() {
   return (
@@ -31,6 +34,11 @@ export function AppRoutes() {
       <Route path="/verification" element={<VerificationScreen />} />
       <Route path="/verification/clearance" element={<AddPoliceClearanceScreen />} />
       <Route path="/verification/portfolio" element={<AddPortfolioScreen />} />
+
+      {/* Legal layer — public, readable any time; privacy/consent self-service */}
+      <Route path="/legal" element={<LegalScreen />} />
+      <Route path="/legal/:type" element={<LegalDocumentScreen />} />
+      <Route path="/privacy" element={<PrivacyConsentScreen />} />
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

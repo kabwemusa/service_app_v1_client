@@ -1,6 +1,6 @@
 import { AppState, AppStateStatus } from 'react-native';
 import { create } from 'zustand';
-import { categoriesApi, Category } from '../api/categories';
+import { categoriesApi, Category, PricingModelMeta } from '../api/categories';
 import { ApiError } from '../api/errors';
 
 function toApiError(e: unknown): ApiError {
@@ -10,6 +10,9 @@ function toApiError(e: unknown): ApiError {
 
 interface CategoryState {
   categories:      Category[];
+  // User-facing pricing-model labels (the ONE source; fetched with categories).
+  pricingModels:   PricingModelMeta[];
+  pricingDefault:  string;
   loading:         boolean;
   error:           ApiError | null;
   lastFetchedAt:   number | null;
@@ -30,10 +33,12 @@ export const useCategoryStore = create<CategoryState>((set, get) => {
   });
 
   return {
-    categories:    [],
-    loading:       false,
-    error:         null,
-    lastFetchedAt: null,
+    categories:     [],
+    pricingModels:  [],
+    pricingDefault: 'OUTCOME_FIXED',
+    loading:        false,
+    error:          null,
+    lastFetchedAt:  null,
 
     clearError: () => set({ error: null }),
 
@@ -45,8 +50,17 @@ export const useCategoryStore = create<CategoryState>((set, get) => {
 
       set({ loading: true, error: null });
       try {
-        const data = await categoriesApi.list();
-        set({ categories: data, lastFetchedAt: Date.now() });
+        // Taxonomy + the user-facing pricing-model labels travel together so the
+        // service editor always has both from one source.
+        const [data, pricing] = await Promise.all([
+          categoriesApi.list(),
+          categoriesApi.pricingModels().catch(() => null),
+        ]);
+        set({
+          categories: data,
+          ...(pricing ? { pricingModels: pricing.models, pricingDefault: pricing.default_model } : {}),
+          lastFetchedAt: Date.now(),
+        });
       } catch (e) {
         set({ error: toApiError(e) });
       } finally {

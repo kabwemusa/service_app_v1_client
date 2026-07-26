@@ -112,6 +112,7 @@ class ServiceController extends Controller
     public function store(StoreServiceRequest $request): JsonResponse
     {
         $created = $this->service->create($request->user(), $request->validated());
+        $this->logPricingChoice($request, $created, 'create');
         return ApiResponse::success(new ServiceResource($created), 'Service created.', 201);
     }
 
@@ -119,7 +120,38 @@ class ServiceController extends Controller
     public function update(UpdateServiceRequest $request, string $service): JsonResponse
     {
         $updated = $this->service->update($request->user(), $service, $request->validated());
+        $this->logPricingChoice($request, $updated, 'update');
         return ApiResponse::success(new ServiceResource($updated), 'Service updated.');
+    }
+
+    /**
+     * Record the provider's pricing-model choice and whether the category
+     * mismatch nudge was shown/overridden — telemetry for tuning the defaults.
+     * Only logs when the model was actually part of the request.
+     */
+    private function logPricingChoice(Request $request, \App\Models\Service $service, string $op): void
+    {
+        if (! $request->has('pricing_model')) {
+            return;
+        }
+
+        $category = \App\Models\Category::find($service->category_id);
+
+        \Illuminate\Support\Facades\Log::info('service.pricing_choice', [
+            'op'                 => $op,
+            'service_id'         => $service->id,
+            'provider_id'        => $request->user()?->getKey(),
+            'category_id'        => $service->category_id,
+            'category_slug'      => $category?->slug,
+            'chosen_model'       => $service->pricing_model,
+            'category_default'   => $category?->defaultPricingModel(),
+            'recommended'        => $category?->recommendedPricingModels(),
+            'is_mismatch'        => $category
+                ? ! in_array($service->pricing_model, $category->recommendedPricingModels(), true)
+                : null,
+            'warning_shown'      => $request->boolean('pricing_warning_shown'),
+            'warning_overridden' => $request->boolean('pricing_warning_overridden'),
+        ]);
     }
 
     /** DELETE /provider/services/{service} */

@@ -21,6 +21,8 @@ class UpdateServiceRequest extends FormRequest
             'category_id'             => ['sometimes', 'integer', 'exists:categories,id'],
             'title'                   => ['sometimes', 'string', 'max:80'],
             'description'             => ['sometimes', 'nullable', 'string', 'max:1000'],
+            // How the service is delivered. REMOTE = online (nationwide, no geo).
+            'delivery_type'           => ['sometimes', 'string', Rule::in(array_keys(config('catalog.delivery_types')))],
             // Outcome-based pricing: when switching pricing_model, its parameters travel with it.
             'pricing_model'           => ['sometimes', 'string', 'in:OUTCOME_FIXED,PROVIDER_SCOPE,HOURLY_CAPPED,QUOTE_DEPOSIT'],
             // A DRAFT/PAUSED listing may carry no price; required only when publishing ACTIVE.
@@ -49,6 +51,9 @@ class UpdateServiceRequest extends FormRequest
             'duration_estimate_mins'  => ['sometimes', 'nullable', 'integer', 'min:1', 'max:1440'],
             'status'                  => ['sometimes', 'string', 'in:DRAFT,ACTIVE,PAUSED,HIDDEN'],
             'is_pinned'               => ['sometimes', 'boolean'],
+            // Selection-guidance telemetry (not persisted) — see StoreServiceRequest.
+            'pricing_warning_shown'      => ['sometimes', 'boolean'],
+            'pricing_warning_overridden' => ['sometimes', 'boolean'],
             'latitude'                => ['sometimes', 'numeric', 'between:-90,90'],
             'longitude'               => ['sometimes', 'numeric', 'between:-180,180'],
 

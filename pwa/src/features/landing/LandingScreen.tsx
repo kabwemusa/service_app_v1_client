@@ -1,9 +1,15 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { motion } from 'motion/react';
 import { catalogApi, type Category } from '../../api/catalog';
 import { landingApi, type LandingSummary } from '../../api/landing';
 import { searchApi, type SearchResult } from '../../api/search';
 import { ServiceCard } from '../../components/discovery/ServiceCard';
+import { Reveal, fadeUpItem, staggerContainer } from '../../components/ui/Motion';
+
+// Client-routing <Link> that can also run Motion variants (used as a grid item
+// so the card stays the grid cell — no extra wrapper that would break layout).
+const MotionLink = motion.create(Link);
 import { heroImage, categoryColor } from '../../theme/imagery';
 import { useTheme } from '../../theme/useTheme';
 import './landing.css';
@@ -91,16 +97,17 @@ function Hero({ cats, summary }: { cats: Category[]; summary: LandingSummary | n
 
   return (
     <header className="ld-hero">
+      <div className="ld-hero-aurora" aria-hidden />
       <div className="ld-container ld-hero-grid">
-        <div className="ld-hero-copy">
-          <span className="ld-hero-eyebrow"><b>●</b> Zambia's trusted services marketplace</span>
-          <h1 className="ld-h1">Find <em>trusted</em> local pros for every job.</h1>
-          <p className="ld-hero-sub">
+        <motion.div className="ld-hero-copy" variants={staggerContainer} initial="hidden" animate="show">
+          <motion.span className="ld-hero-eyebrow" variants={fadeUpItem}><b>●</b> Zambia's trusted services marketplace</motion.span>
+          <motion.h1 className="ld-h1" variants={fadeUpItem}>Find <em>trusted</em> local pros for every job.</motion.h1>
+          <motion.p className="ld-hero-sub" variants={fadeUpItem}>
             Sebenza connects you with vetted, reviewed professionals near you — plumbers, electricians,
             cleaners, tutors and more. Agree the price upfront. Pay only when the job is done.
-          </p>
+          </motion.p>
 
-          <form className="ld-search" onSubmit={submit} role="search">
+          <motion.form className="ld-search" onSubmit={submit} role="search" variants={fadeUpItem}>
             <IconSearch />
             <input
               value={q}
@@ -109,18 +116,18 @@ function Hero({ cats, summary }: { cats: Category[]; summary: LandingSummary | n
               aria-label="Search services"
             />
             <button type="submit" className="ld-btn ld-btn-primary">Search</button>
-          </form>
+          </motion.form>
 
           {cats.length > 0 && (
-            <div className="ld-chips">
+            <motion.div className="ld-chips" variants={fadeUpItem}>
               {cats.slice(0, 6).map((c) => (
                 <Link key={c.id} to={`/browse?category_id=${c.id}`} className="ld-chip">{c.name}</Link>
               ))}
-            </div>
+            </motion.div>
           )}
 
           {stats && (stats.providers > 0 || stats.jobs_done > 0) && (
-            <div className="ld-stats">
+            <motion.div className="ld-stats" variants={fadeUpItem}>
               {stats.providers > 0 && <Stat num={stats.providers.toLocaleString('en')} label="Vetted providers" />}
               {stats.jobs_done > 0 && <Stat num={stats.jobs_done.toLocaleString('en')} label="Jobs completed" />}
               {stats.avg_rating != null && (
@@ -129,15 +136,30 @@ function Hero({ cats, summary }: { cats: Category[]; summary: LandingSummary | n
                   label={`Average rating · ${stats.reviews.toLocaleString('en')} ${stats.reviews === 1 ? 'review' : 'reviews'}`}
                 />
               )}
-            </div>
+            </motion.div>
           )}
-        </div>
+        </motion.div>
 
         {/* Marketing image (Unsplash) — desktop only, keeps the mobile hero tight. */}
-        <div className="ld-hero-media" aria-hidden>
-          <img src={heroImage} alt="" loading="eager" />
+        <motion.div
+          className="ld-hero-media"
+          aria-hidden
+          initial={{ opacity: 0, scale: 0.96, y: 12 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.15, ease: [0.2, 0.7, 0.2, 1] }}
+        >
+          <div className="ld-hero-editorial"><img src={heroImage} alt="" loading="eager" /></div>
+          <div className="ld-hero-float ld-hero-request">
+            <span className="ld-float-kicker">New request</span>
+            <strong>Kitchen tap repair</strong>
+            <span className="ld-float-meta"><i /> Matched with 3 trusted pros</span>
+          </div>
+          <div className="ld-hero-float ld-hero-provider">
+            <span className="ld-provider-avatar">KM</span>
+            <span><strong>Kaluba is available</strong><small><IconCheck size={13} /> ID verified · 4.9</small></span>
+          </div>
           <span className="ld-hero-media-badge"><IconCheck size={15} /> Vetted &amp; reviewed pros</span>
-        </div>
+        </motion.div>
       </div>
     </header>
   );
@@ -170,11 +192,24 @@ function CategoriesSection({ cats }: { cats: Category[] }) {
           </div>
           <Link to="/browse" className="ld-btn ld-btn-outline">See all services</Link>
         </div>
-        <div className="ld-grid ld-grid-4">
+        <motion.div
+          className="ld-grid ld-grid-4"
+          variants={staggerContainer}
+          initial="hidden"
+          whileInView="show"
+          viewport={{ once: true, margin: '0px 0px -12% 0px' }}
+        >
           {cats.slice(0, 12).map((c) => {
             const accent = categoryColor(c.id);
             return (
-              <Link key={c.id} to={`/browse?category_id=${c.id}`} className="ld-cat">
+              <MotionLink
+                key={c.id}
+                to={`/browse?category_id=${c.id}`}
+                className="ld-cat"
+                variants={fadeUpItem}
+                whileHover={{ y: -3 }}
+                transition={{ type: 'spring', stiffness: 300, damping: 22 }}
+              >
                 <span
                   className="ld-cat-badge"
                   aria-hidden
@@ -184,10 +219,10 @@ function CategoriesSection({ cats }: { cats: Category[] }) {
                 </span>
                 {c.name}
                 <span className="ld-cat-arrow" aria-hidden>›</span>
-              </Link>
+              </MotionLink>
             );
           })}
-        </div>
+        </motion.div>
       </div>
     </section>
   );
@@ -209,9 +244,9 @@ function FeaturedSection({ results }: { results: SearchResult[] }) {
           </div>
           <Link to="/browse" className="ld-btn ld-btn-outline">Browse all</Link>
         </div>
-        <div className="ld-featured-grid">
+        <Reveal className="ld-featured-grid">
           {results.map((r) => <ServiceCard key={r.id} result={r} />)}
-        </div>
+        </Reveal>
       </div>
     </section>
   );
@@ -227,6 +262,8 @@ const CUSTOMER_STEPS = [
 ];
 
 function HowItWorks() {
+  return <JourneySection />;
+
   return (
     <section className="ld-section ld-section-alt" id="how-it-works">
       <div className="ld-container">
@@ -307,6 +344,76 @@ const PROVIDER_STEPS = [
 
 const PROVIDER_PERKS = ['Free to get listed', 'You set your prices', 'Work your own hours', 'Verified badge builds trust'];
 
+type JourneyAudience = 'customer' | 'provider';
+
+function JourneySection() {
+  const [audience, setAudience] = useState<JourneyAudience>('customer');
+  const [activeStep, setActiveStep] = useState(0);
+  const steps = audience === 'customer' ? CUSTOMER_STEPS : PROVIDER_STEPS;
+  const headings = audience === 'customer'
+    ? { eyebrow: 'Customer journey', title: 'A clearer way to get a job done.', body: 'Tell us what you need, see who is trusted, then book with confidence.' }
+    : { eyebrow: 'Provider journey', title: 'Your work, made easier to find.', body: 'Build trust once, respond to the right work, and turn great service into growth.' };
+
+  const chooseAudience = (next: JourneyAudience) => {
+    setAudience(next);
+    setActiveStep(0);
+  };
+
+  return (
+    <section className="ld-section ld-journey" id="how-it-works">
+      <div className="ld-container">
+        <div className="ld-journey-top">
+          <div>
+            <span className="ld-eyebrow">{headings.eyebrow}</span>
+            <h2 className="ld-h2">{headings.title}</h2>
+            <p className="ld-section-sub">{headings.body}</p>
+          </div>
+          <div className="ld-journey-toggle" role="tablist" aria-label="Choose a journey">
+            <button type="button" role="tab" aria-selected={audience === 'customer'} className={audience === 'customer' ? 'is-active' : ''} onClick={() => chooseAudience('customer')}>I need a service</button>
+            <button type="button" role="tab" aria-selected={audience === 'provider'} className={audience === 'provider' ? 'is-active' : ''} onClick={() => chooseAudience('provider')}>I provide a service</button>
+          </div>
+        </div>
+        <div className="ld-journey-layout">
+          <div className="ld-journey-steps" aria-label={`${audience} journey steps`}>
+            {steps.map((step, index) => (
+              <button type="button" key={step.title} className={`ld-journey-step ${index === activeStep ? 'is-active' : ''}`} onClick={() => setActiveStep(index)}>
+                <span className="ld-journey-number">0{index + 1}</span>
+                <span><strong>{step.title}</strong><small>{step.body}</small></span>
+                <span className="ld-journey-arrow" aria-hidden>↗</span>
+              </button>
+            ))}
+          </div>
+          <JourneyPreview audience={audience} step={steps[activeStep]} activeStep={activeStep} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function JourneyPreview({ audience, step, activeStep }: { audience: JourneyAudience; step: { title: string; body: string }; activeStep: number }) {
+  const status = audience === 'customer'
+    ? ['Looking nearby', '3 pros matched', 'Booking sent', 'Job complete'][activeStep]
+    : ['Profile draft', 'Identity checked', 'New nearby request', 'Review received'][activeStep];
+  return (
+    <div className="ld-journey-preview">
+      <div className="ld-preview-orbit ld-preview-orbit-one" />
+      <div className="ld-preview-orbit ld-preview-orbit-two" />
+      <div className="ld-phone">
+        <div className="ld-phone-notch" />
+        <div className="ld-phone-screen">
+          <div className="ld-phone-top"><span className="ld-logo">S<span>.</span></span><span className="ld-phone-signal" /></div>
+          <div className="ld-phone-greeting">{audience === 'customer' ? 'Hello, Chipo' : 'Hello, Kaluba'}</div>
+          <div className="ld-phone-status"><i /> {status}</div>
+          <div className="ld-phone-job"><span className="ld-phone-job-icon">{audience === 'customer' ? '⌁' : '✓'}</span><div><strong>{step.title}</strong><small>{audience === 'customer' ? 'Home service · near you' : 'Sebenza provider hub'}</small></div></div>
+          <div className="ld-phone-lines"><span /><span /><span /></div>
+          <div className="ld-phone-action">{audience === 'customer' ? 'View trusted pros' : 'Open request'} <b>→</b></div>
+        </div>
+      </div>
+      <div className="ld-preview-caption"><span>Live journey</span><strong>Step {activeStep + 1} of 4</strong></div>
+    </div>
+  );
+}
+
 function ProviderBand() {
   return (
     <section className="ld-band" id="providers">
@@ -322,7 +429,7 @@ function ProviderBand() {
           ))}
         </div>
         <Link to="/get-listed" className="ld-btn ld-btn-inverse">Get listed — it's free</Link>
-        <div className="ld-grid ld-grid-4">
+        <Reveal className="ld-grid ld-grid-4">
           {PROVIDER_STEPS.map((s, i) => (
             <div key={s.title} className="ld-card">
               <span className="ld-step-num" aria-hidden>{i + 1}</span>
@@ -330,7 +437,7 @@ function ProviderBand() {
               <p>{s.body}</p>
             </div>
           ))}
-        </div>
+        </Reveal>
       </div>
     </section>
   );
@@ -344,7 +451,7 @@ function TrustSection() {
       <div className="ld-container">
         <span className="ld-eyebrow">Trust &amp; safety</span>
         <h2 className="ld-h2">Vetted people. Honest reviews.</h2>
-        <div className="ld-grid ld-grid-3">
+        <Reveal className="ld-grid ld-grid-3">
           <div className="ld-card">
             <span className="ld-icon-badge"><IconShield /></span>
             <h3>Identity verified</h3>
@@ -360,7 +467,7 @@ function TrustSection() {
             <h3>Reviews from completed jobs only</h3>
             <p>You can only review a booking you actually finished — and our moderators remove anything fishy.</p>
           </div>
-        </div>
+        </Reveal>
       </div>
     </section>
   );
@@ -375,7 +482,7 @@ function ChannelsSection() {
         <span className="ld-eyebrow">Channels</span>
         <h2 className="ld-h2">Book or work — the way that suits you.</h2>
         <p className="ld-section-sub">Low-data by design. Whatever phone you have, Sebenza works.</p>
-        <div className="ld-grid ld-grid-3">
+        <Reveal className="ld-grid ld-grid-3">
           <div className="ld-card ld-channel">
             <span className="ld-icon-badge"><IconGlobe /></span>
             <h3>Web app<span className="ld-channel-tag">Live</span></h3>
@@ -402,7 +509,7 @@ function ChannelsSection() {
             <h3>Mobile app<span className="ld-channel-tag">Rolling out</span></h3>
             <p>Our full Android experience for customers and providers — richer notifications, offline-friendly.</p>
           </div>
-        </div>
+        </Reveal>
       </div>
     </section>
   );
@@ -439,14 +546,14 @@ function FaqSection() {
       <div className="ld-container">
         <span className="ld-eyebrow">FAQ</span>
         <h2 className="ld-h2">Good questions, straight answers.</h2>
-        <div className="ld-faq">
+        <Reveal className="ld-faq">
           {FAQS.map((f) => (
             <details key={f.q}>
               <summary>{f.q}</summary>
               <p>{f.a}</p>
             </details>
           ))}
-        </div>
+        </Reveal>
       </div>
     </section>
   );
@@ -481,6 +588,15 @@ function Footer() {
               {WA_NUMBER && (
                 <a href={`https://wa.me/${WA_NUMBER}`} target="_blank" rel="noreferrer">WhatsApp us</a>
               )}
+            </div>
+          </div>
+          <div>
+            <h4>Legal</h4>
+            <div className="ld-footer-links">
+              <Link to="/legal/terms_of_service">Terms of Service</Link>
+              <Link to="/legal/privacy_policy">Privacy Policy</Link>
+              <Link to="/legal/user_agreement">User Agreement</Link>
+              <Link to="/privacy">Privacy &amp; consent</Link>
             </div>
           </div>
         </div>

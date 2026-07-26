@@ -23,13 +23,44 @@ class CategoryController extends Controller
 
     // ── Public ─────────────────────────────────────────────────────────────────
 
-    /** GET /categories — public, active only, hierarchical. */
+    /** GET /categories — public, active only, hierarchical (the full taxonomy the picker searches). */
     public function index(): JsonResponse
     {
         return ApiResponse::success(
             CategoryResource::collection($this->service->listActive()),
             'Categories retrieved.',
         );
+    }
+
+    /** GET /categories/popular — most-used categories for the quick-tap chips. */
+    public function popular(): JsonResponse
+    {
+        return ApiResponse::success(
+            CategoryResource::collection($this->service->listPopular()),
+            'Popular categories retrieved.',
+        );
+    }
+
+    /**
+     * GET /pricing-models — user-facing labels + descriptions for the four
+     * pricing models. The ONE source the service editors (RN + PWA) and any
+     * customer-facing surface read, so no client hardcodes model copy.
+     */
+    public function pricingModels(): JsonResponse
+    {
+        $models = collect(config('pricing.models', []))
+            ->map(fn ($m, $value) => [
+                'value'       => $value,
+                'label'       => $m['label'] ?? $value,
+                'description' => $m['description'] ?? '',
+                'rationale'   => $m['rationale'] ?? '',
+            ])
+            ->values();
+
+        return ApiResponse::success([
+            'models'        => $models,
+            'default_model' => config('pricing.default_model', 'OUTCOME_FIXED'),
+        ], 'Pricing models retrieved.');
     }
 
     // ── Admin (requires auth:admin + admin.can:categories.manage) ──────────────
@@ -58,6 +89,9 @@ class CategoryController extends Controller
             metadata: ['after' => $data],
             mutation: fn () => $this->service->create($data),
         );
+
+        // Name/synonym text drives the semantic matcher — re-embed on write.
+        \App\Jobs\EmbedCatalogItemJob::dispatch('category', (string) $category->id);
 
         return ApiResponse::success(new CategoryResource($category), 'Category created.', 201);
     }
@@ -95,6 +129,9 @@ class CategoryController extends Controller
             metadata: ['before' => $before, 'after' => $data],
             mutation: fn () => $this->service->update($category, $data),
         );
+
+        // Synonym enrichment is the cheapest accuracy lever — re-embed on edit.
+        \App\Jobs\EmbedCatalogItemJob::dispatch('category', (string) $category);
 
         return ApiResponse::success(new CategoryResource($updated), 'Category updated.');
     }

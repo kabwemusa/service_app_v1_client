@@ -109,8 +109,22 @@ class NotificationDispatcher
         'PAYOUT_RELEASED'     => 'payout_released',
     ];
 
+    /**
+     * Comms-layer types with no pre-approved template: sent as a plain session
+     * message inside the 24 h window (best-effort), skipped outside it. Free-form
+     * conversation is what WhatsApp is for, so these reach providers/customers on
+     * the platform's primary channel without a template round-trip.
+     */
+    private const WHATSAPP_SESSION_TYPES = ['STATUS_UPDATE', 'AGREEMENT_READY'];
+
     private function sendWhatsAppLeg(Notification $notification): void
     {
+        // Session-only comms types: a plain text ping on WhatsApp, within-window.
+        if (in_array($notification->type, self::WHATSAPP_SESSION_TYPES, true)) {
+            $this->sendWhatsAppSessionLeg($notification);
+            return;
+        }
+
         if (! array_key_exists($notification->type, self::WHATSAPP_TYPES)) {
             return;
         }
@@ -144,6 +158,39 @@ class NotificationDispatcher
             );
         } catch (\Throwable $e) {
             Log::warning('NotificationDispatcher: WhatsApp leg failed', [
+                'notification_id' => $notification->id,
+                'error'           => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Best-effort WhatsApp session ping for comms-layer types (STATUS_UPDATE,
+     * AGREEMENT_READY). Plain text inside the 24 h window; silently skipped
+     * outside it (there is no approved template for these, by design — free-form
+     * lives on WhatsApp, not in a template).
+     */
+    private function sendWhatsAppSessionLeg(Notification $notification): void
+    {
+        try {
+            $user = \App\Models\User::find($notification->user_id);
+            if (! $user?->phone) {
+                return;
+            }
+
+            $wa    = ltrim($user->phone, '+');
+            $convo = \App\Models\ConversationState::where('whatsapp_id', $wa)->first();
+            if (! $convo) {
+                return;
+            }
+
+            app(\App\Services\WhatsApp\TemplateManager::class)->sendMessage(
+                $wa,
+                "*{$notification->title}*\n{$notification->body}",
+                $convo,
+            );
+        } catch (\Throwable $e) {
+            Log::warning('NotificationDispatcher: WhatsApp session leg failed', [
                 'notification_id' => $notification->id,
                 'error'           => $e->getMessage(),
             ]);

@@ -27,6 +27,10 @@ export interface RankedCardData {
   /** First photo's relative path, or null → render the category tint + icon. */
   photoPath:     string | null;
   distance_km:   number | null;
+  /** REMOTE (online) service → the card shows "Online" instead of an area/distance. */
+  is_remote:      boolean;
+  /** Provider-set location label (or "Online" when remote) shown on the card. */
+  location_label: string | null;
   /** v3.2 §8.5 — 'promoted' rows occupy reserved positions and MUST be labelled. */
   placement:     'organic' | 'promoted';
   /** v3 §7.3 fairness floor — honest completed-job count for the "Rising star" label. */
@@ -93,13 +97,16 @@ export function searchResultToCard(s: SearchResult): RankedCardData {
     base_price:    s.base_price,
     payment_mode:  s.payment_mode,
     category:      s.category ? { id: s.category.id, name: s.category.name, icon: s.category.icon } : null,
-    photoPath:     null, // search results carry no photos → category tint fallback
+    photoPath:     s.photo_urls?.[0] ?? null,
     distance_km:   s.distance_km,
+    is_remote:      s.is_remote,
+    location_label: s.location_label,
     placement:     s.placement,
     completed_job_count: s.completed_job_count,
     provider: s.provider
       ? {
           display_name:           s.provider.display_name,
+          avatar_url:             s.provider.avatar_url,
           r_bayes:                s.provider.r_bayes,
           r_raw:                  s.provider.r_raw,
           v_reviews:              s.provider.v_reviews,
@@ -120,6 +127,8 @@ export function serviceToCard(s: Service): RankedCardData {
     category:      s.category ? { id: s.category.id, name: s.category.name, icon: null } : null,
     photoPath:     s.photos?.[0]?.path ?? null,
     distance_km:   s.distance_km,
+    is_remote:      s.is_remote ?? false,
+    location_label: s.location_label ?? null,
     placement:     'organic',
     completed_job_count: s.bookings_count ?? null,
     duration_estimate_mins: s.duration_estimate_mins,
@@ -149,6 +158,7 @@ interface Props {
 
 export function RankedServiceCard({ data, saved, onPress, onBook, onToggleSave }: Props) {
   const provider = data.provider;
+  const [avatarFailed, setAvatarFailed] = React.useState(false);
   const catColor = CAT_PALETTE[(data.category?.id ?? 0) % CAT_PALETTE.length];
   const catIcon  = (data.category?.icon ?? 'grid-outline') as React.ComponentProps<typeof Ionicons>['name'];
 
@@ -229,8 +239,13 @@ export function RankedServiceCard({ data, saved, onPress, onBook, onToggleSave }
             {/* Provider line — avatar + name + verified check + tier marker */}
             {provider && (
               <View style={styles.providerLine}>
-                {provider.avatar_url ? (
-                  <Image source={{ uri: provider.avatar_url }} style={styles.avatar} contentFit="cover" />
+                {provider.avatar_url && !avatarFailed ? (
+                  <Image
+                    source={{ uri: storageUrl(provider.avatar_url) }}
+                    style={styles.avatar}
+                    contentFit="cover"
+                    onError={() => setAvatarFailed(true)}
+                  />
                 ) : (
                   <View style={styles.avatar}>
                     <Text style={styles.avatarInitial}>
@@ -254,11 +269,26 @@ export function RankedServiceCard({ data, saved, onPress, onBook, onToggleSave }
                   </Text>
                 </View>
               )}
-              {data.distance_km != null && (
+              {data.is_remote ? (
                 <View style={styles.pill}>
-                  <Ionicons name="location-outline" size={11} color={palette.textSecondary} />
-                  <Text style={styles.pillTxt}>{data.distance_km} km</Text>
+                  <Ionicons name="globe-outline" size={11} color={palette.textSecondary} />
+                  <Text style={styles.pillTxt}>{data.location_label ?? 'Online'}</Text>
                 </View>
+              ) : (
+                <>
+                  {data.location_label && (
+                    <View style={styles.pill}>
+                      <Ionicons name="location-outline" size={11} color={palette.textSecondary} />
+                      <Text style={styles.pillTxt} numberOfLines={1}>{data.location_label}</Text>
+                    </View>
+                  )}
+                  {data.distance_km != null && (
+                    <View style={styles.pill}>
+                      <Ionicons name="navigate-outline" size={11} color={palette.textSecondary} />
+                      <Text style={styles.pillTxt}>{data.distance_km} km</Text>
+                    </View>
+                  )}
+                </>
               )}
               {responseTime && (
                 <View style={styles.pill}>

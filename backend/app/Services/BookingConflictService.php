@@ -46,13 +46,14 @@ class BookingConflictService
         string $providerId,
         string $scheduledStart,
         string $scheduledEnd,
-        float  $deliveryLat,
-        float  $deliveryLng,
+        ?float $deliveryLat,
+        ?float $deliveryLng,
         array  $availabilityMatrix,
     ): void {
         $start = Carbon::parse($scheduledStart)->setTimezone(self::LUSAKA_TZ);
         $end   = Carbon::parse($scheduledEnd)->setTimezone(self::LUSAKA_TZ);
 
+        // Availability (time slots) always applies — even for remote/online work.
         if (! empty($availabilityMatrix)) {
             $this->checkAvailabilityWindow($start, $end, $availabilityMatrix);
         } else {
@@ -60,7 +61,11 @@ class BookingConflictService
         }
 
         $this->checkOverlap($providerId, $scheduledStart, $scheduledEnd);
-        $this->checkTransitBuffer($providerId, $start, $scheduledStart, $deliveryLat, $deliveryLng);
+
+        // No delivery location (remote/online) → no travel, so no transit buffer.
+        if ($deliveryLat !== null && $deliveryLng !== null) {
+            $this->checkTransitBuffer($providerId, $start, $scheduledStart, $deliveryLat, $deliveryLng);
+        }
     }
 
     private function checkAvailabilityFromRecords(string $providerId, Carbon $start): void

@@ -14,6 +14,7 @@ use App\Services\AvailabilityService;
 use App\Services\BookingService;
 use App\Services\CatalogService;
 use App\Services\Dispatch\RequestClassifier;
+use App\Services\Matching\MatchingService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -24,7 +25,7 @@ class ConversationEngine
     private const VALID_TRANSITIONS = [
         'MENU'         => ['BROWSING', 'COLLECTING'],
         'BROWSING'     => ['MENU', 'MATCHING', 'BROWSING'],
-        'COLLECTING'   => ['MENU', 'MATCHING', 'COLLECTING'],
+        'COLLECTING'   => ['MENU', 'MATCHING', 'COLLECTING', 'BROWSING'],
         'MATCHING'     => ['DISPATCHING', 'NO_PROVIDERS', 'MENU'],
         'DISPATCHING'  => ['FUNDING', 'NO_PROVIDERS', 'CANCELLED', 'MENU'],
         'FUNDING'      => ['IN_PROGRESS', 'EXPIRED', 'PAYMENT_FAILED', 'CANCELLED', 'MENU'],
@@ -47,6 +48,7 @@ class ConversationEngine
         private readonly TemplateManager      $templates,
         private readonly RequestClassifier    $classifier,
         private readonly WhatsAppGateway      $gateway,
+        private readonly MatchingService      $matcher,
     ) {}
 
     public function handle(array $inbound, ConversationState $conversation): void
@@ -268,24 +270,87 @@ class ConversationEngine
 
     private function collectNeed(array $inbound, ConversationState $c): void
     {
-        if ($inbound['type'] === 'text' && ! empty($inbound['text'])) {
-            $c->setContextValue('need_description', $inbound['text']);
-            $c->sub_state = 'location';
-            $c->save();
-
-            $this->templates->sendInteractive(
+        if ($inbound['type'] !== 'text' || trim($inbound['text'] ?? '') === '') {
+            $this->templates->sendMessage(
                 $c->whatsapp_id,
-                MessageBuilder::locationRequest("*Step 2 of 3 — Where?*\nGot it! Now share your location so we can find providers near you."),
+                "Please describe what service you need. For example: \"I need a plumber to fix a leaking tap.\"",
                 $c,
             );
             return;
         }
 
-        $this->templates->sendMessage(
-            $c->whatsapp_id,
-            "Please describe what service you need. For example: \"I need a plumber to fix a leaking tap.\"",
-            $c,
-        );
+        $text = trim($inbound['text']);
+        $c->setContextValue('need_description', $text);
+        $c->save();
+
+        // Natural-language matcher — the SAME backend the app home calls, with
+        // identical thresholds (consistency across surfaces). It finds WHAT (real
+        // catalog); the existing browse flow then handles WHO / dates / booking.
+        $match = $this->matcher->match($text, $c->user_id, 'whatsapp');
+
+        // ── MATCHED — jump to the specific service, or the category's services ──
+        if ($match['status'] === 'matched' && $match['resolved_category_id'] !== null) {
+            $this->transitionTo($c, 'BROWSING');
+            $c->setContextValue('selected_category_id', (string) $match['resolved_category_id']);
+
+            if (! empty($match['service_ids'])) {
+                $serviceId = $match['service_ids'][0];
+                $c->setContextValue('selected_service_id', $serviceId);
+                $c->sub_state = 'service_detail';
+                $c->save();
+                $this->templates->sendMessage($c->whatsapp_id, "Got it — here's what matches \"{$text}\":", $c);
+                $this->showServiceDetail($c, $serviceId);
+                return;
+            }
+
+            $c->sub_state = 'services';
+            $c->save();
+            $this->templates->sendMessage($c->whatsapp_id, "Here's what can help with \"{$text}\":", $c);
+            $this->showServicesForCategory($c, (int) $match['resolved_category_id'], 1);
+            return;
+        }
+
+        // ── CLARIFY — ask with real category options (buttons), never guess ────
+        if ($match['status'] === 'clarify') {
+            $buttons = [];
+            foreach ($match['candidates'] as $cand) {
+                $catId = $cand['category_id'] ?? null;
+                if ($catId === null || isset($buttons['cat_' . $catId])) {
+                    continue;
+                }
+                $title = $cand['type'] === 'category' ? $cand['label'] : ($cand['subtitle'] ?: $cand['label']);
+                $buttons['cat_' . $catId] = ['id' => 'cat_' . $catId, 'title' => mb_substr($title, 0, 20)];
+            }
+            $btnList = array_slice(array_values($buttons), 0, 3);
+
+            if ($btnList !== []) {
+                $this->transitionTo($c, 'BROWSING', 'categories');
+                $this->templates->sendInteractive(
+                    $c->whatsapp_id,
+                    MessageBuilder::replyButtons(
+                        "I want to get this right — which of these did you mean?",
+                        $btnList,
+                    ),
+                    $c,
+                );
+                return;
+            }
+            // No usable buttons → fall through to the honest empty state.
+        }
+
+        // ── EMPTY — honest "we don't have that yet" + closest + browse-all ─────
+        $closest = $match['closest_categories'] ?? [];
+        $body    = "We don't have \"{$text}\" yet.";
+        if ($closest !== []) {
+            $body .= "\n\nThe closest we have:";
+            foreach ($closest as $cc) {
+                $body .= "\n• {$cc['name']}";
+            }
+        }
+        $this->templates->sendMessage($c->whatsapp_id, $body, $c);
+        $this->transitionTo($c, 'BROWSING', 'categories');
+        $this->templates->sendMessage($c->whatsapp_id, "Here's everything we do — tap a category to browse:", $c);
+        $this->showCategories($c);
     }
 
     private function collectLocation(array $inbound, ConversationState $c): void
@@ -1493,27 +1558,31 @@ class ConversationEngine
 
     private function handleProviderInProgress(string $action, ConversationState $c): void
     {
-        // HOURLY_CAPPED: mark-done asked for the actual time — parse it (0.5-hr
-        // steps) and deliver with the logged hours.
-        if ($c->sub_state === 'log_hours') {
-            $hours = $this->parseLoggedHours($action);
-            if ($hours === null) {
-                $this->templates->sendMessage(
+        $booking  = $c->booking_id ? Booking::with('service')->find($c->booking_id) : null;
+        $provider = $c->user_id ? User::find($c->user_id) : null;
+        $isHourly = $booking?->service?->pricing_model === 'HOURLY_CAPPED';
+
+        // HOURLY_CAPPED — observed timer: the provider taps "Start job" on arrival
+        // (records the server start time) and "Finish" when done. The elapsed time
+        // is computed server-side; no one ever types a number of hours.
+        if ($action === 'start_job' && $booking && $provider && $isHourly) {
+            if (\in_array($booking->status, ['FUNDS_HELD', 'DEPOSIT_HELD'], true)) {
+                $booking = $this->bookingService->markInProgress($booking->id, $provider);
+                $startedAt = optional($booking->job_started_at)->setTimezone('Africa/Lusaka')->format('H:i') ?? now()->setTimezone('Africa/Lusaka')->format('H:i');
+                $this->templates->sendInteractive(
                     $c->whatsapp_id,
-                    "Please reply with the time worked in half-hour steps — e.g. *1*, *1.5*, *2*, *2.5*.",
+                    MessageBuilder::replyButtons(
+                        "Timer started at {$startedAt}. Tap *Finish* when the job is done — we'll charge only the time worked, up to the cap.",
+                        [['id' => 'mark_done', 'title' => 'Finish']],
+                    ),
                     $c,
                 );
+                $this->notifyCustomerJobStarted($c, $booking);
                 return;
             }
-            $c->sub_state = null;
-            $c->save();
-            $this->providerMarkDone($c, $hours);
-            return;
         }
 
         if ($action === 'mark_done') {
-            $booking = $c->booking_id ? Booking::with('service')->find($c->booking_id) : null;
-
             if ($booking && $booking->status === 'PENDING_PAYMENT') {
                 $this->templates->sendMessage(
                     $c->whatsapp_id,
@@ -1523,20 +1592,34 @@ class ConversationEngine
                 return;
             }
 
-            // HOURLY_CAPPED: the provider logs actual time (never the customer).
-            if ($booking && $booking->service?->pricing_model === 'HOURLY_CAPPED') {
-                $capHours = rtrim(rtrim(number_format((float) ($booking->service->cap_hours ?? 0), 1), '0'), '.');
-                $c->sub_state = 'log_hours';
-                $c->save();
-                $this->templates->sendMessage(
+            // HOURLY_CAPPED requires the timer to have been started first.
+            if ($booking && $isHourly && $booking->job_started_at === null) {
+                $this->templates->sendInteractive(
                     $c->whatsapp_id,
-                    "How many hours did the job actually take?\n\nReply with a number in half-hour steps (e.g. *2* or *2.5*). Maximum: {$capHours} hours (the booked cap).",
+                    MessageBuilder::replyButtons(
+                        "Tap *Start job* first so we can time the work — we charge only the time worked, up to the cap.",
+                        [['id' => 'start_job', 'title' => 'Start job']],
+                    ),
                     $c,
                 );
                 return;
             }
 
-            $this->providerMarkDone($c, null);
+            $this->providerMarkDone($c);
+            return;
+        }
+
+        // Active-job prompt: hourly-capped shows Start (before) / Finish (after);
+        // other models just show Mark Done.
+        if ($isHourly && $booking && $booking->job_started_at === null) {
+            $this->templates->sendInteractive(
+                $c->whatsapp_id,
+                MessageBuilder::replyButtons(
+                    "You have an active job. Tap *Start job* when you begin — we'll time it and charge only the hours worked, up to the cap.",
+                    [['id' => 'start_job', 'title' => 'Start job']],
+                ),
+                $c,
+            );
             return;
         }
 
@@ -1544,27 +1627,43 @@ class ConversationEngine
             $c->whatsapp_id,
             MessageBuilder::replyButtons(
                 "You have an active job. Mark it as done when you've completed the work.",
-                [['id' => 'mark_done', 'title' => 'Mark Done']],
+                [['id' => $isHourly ? 'mark_done' : 'mark_done', 'title' => $isHourly ? 'Finish' : 'Mark Done']],
             ),
             $c,
         );
     }
 
-    /** Accepts "2", "2.5", "2,5", "2 hours", "2.5 hrs" — must land on a 0.5 step. */
-    private function parseLoggedHours(string $text): ?float
+    /** Tell the customer (over WhatsApp) that the job timer has started. */
+    private function notifyCustomerJobStarted(ConversationState $c, Booking $booking): void
     {
-        if (! preg_match('/(\d+(?:[.,]\d)?)/', $text, $m)) {
-            return null;
+        $customerWa = $c->getContextValue('customer_wa');
+        if (! $customerWa) {
+            return;
         }
-        $hours = (float) str_replace(',', '.', $m[1]);
-        if ($hours <= 0 || fmod($hours * 10, 5) > 0.001) {
-            return null;
+        $customerConvo = ConversationState::where('whatsapp_id', $customerWa)->first();
+        if (! $customerConvo) {
+            return;
         }
-        return $hours;
+        $startedAt = optional($booking->job_started_at)->setTimezone('Africa/Lusaka')->format('H:i') ?? now()->setTimezone('Africa/Lusaka')->format('H:i');
+        $this->templates->sendMessage(
+            $customerWa,
+            "Your provider has started the job at {$startedAt}. You'll only pay for the time worked, up to your approved cap.",
+            $customerConvo,
+        );
     }
 
-    /** Shared mark-done: start if needed, deliver (with hours when hourly-capped), notify customer. */
-    private function providerMarkDone(ConversationState $c, ?float $actualHours): void
+    /** "1 hr 30 min" / "45 min" from a minute count. */
+    private function formatElapsed(int $minutes): string
+    {
+        $h = intdiv($minutes, 60);
+        $m = $minutes % 60;
+        if ($h > 0 && $m > 0) return "{$h} hr {$m} min";
+        if ($h > 0)          return "{$h} hr";
+        return "{$m} min";
+    }
+
+    /** Shared mark-done: deliver (server-timed for hourly-capped), notify customer. */
+    private function providerMarkDone(ConversationState $c): void
     {
         $booking  = $c->booking_id ? Booking::with('service')->find($c->booking_id) : null;
         $provider = $c->user_id ? User::find($c->user_id) : null;
@@ -1574,12 +1673,13 @@ class ConversationEngine
         }
 
         try {
-            // WhatsApp providers don't have a separate "start job" tap —
-            // held bookings move through IN_PROGRESS on mark-done.
+            // Non-hourly WhatsApp providers have no separate "start job" tap —
+            // held bookings move through IN_PROGRESS on mark-done. Hourly-capped
+            // bookings were already started via the "Start job" tap.
             if (\in_array($booking->status, ['FUNDS_HELD', 'DEPOSIT_HELD'], true)) {
                 $this->bookingService->markInProgress($booking->id, $provider);
             }
-            $booking = $this->bookingService->markDelivered($booking->id, $provider, $actualHours);
+            $booking = $this->bookingService->markDelivered($booking->id, $provider);
 
             $this->templates->sendMessage(
                 $c->whatsapp_id,
@@ -1620,15 +1720,16 @@ class ConversationEngine
     {
         $service = $booking->service;
 
-        if ($service?->pricing_model === 'HOURLY_CAPPED' && $booking->actual_hours_logged !== null) {
+        if ($service?->pricing_model === 'HOURLY_CAPPED' && $booking->observed_minutes !== null) {
             $held   = (float) ($booking->agreed_amount ?? $booking->amount);
-            $charge = (float) $booking->actual_charge_zmw;
+            $charge = (float) ($booking->final_charge_zmw ?? $booking->actual_charge_zmw);
             $refund = max($held - $charge, 0);
-            $hours  = rtrim(rtrim(number_format((float) $booking->actual_hours_logged, 1), '0'), '.');
+            $elapsed = $this->formatElapsed((int) $booking->observed_minutes);
 
             $msg = "Your provider has marked the job as completed.\n\n"
-                . "*Time logged:* {$hours} hr\n"
-                . '*Final charge:* ZMW ' . number_format($charge, 2) . "\n";
+                . "*Time worked:* {$elapsed}\n"
+                . '*Final charge:* ZMW ' . number_format($charge, 2)
+                . ' of your ZMW ' . number_format($held, 2) . " hold\n";
             if ($refund >= 0.01) {
                 $msg .= '*Refund to you:* ZMW ' . number_format($refund, 2) . " (unused part of your hold)\n";
             }

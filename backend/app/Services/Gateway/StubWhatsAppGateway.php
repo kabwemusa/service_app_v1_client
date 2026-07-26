@@ -54,6 +54,13 @@ class StubWhatsAppGateway implements WhatsAppGateway
         return $msgId;
     }
 
+    public function sendDocument(string $to, string $documentUrl, string $filename, ?string $caption = null): string
+    {
+        $msgId = 'wamid.stub.' . Str::random(20);
+        Log::info('StubWhatsAppGateway::sendDocument', compact('to', 'filename', 'msgId'));
+        return $msgId;
+    }
+
     public function markRead(string $messageId, bool $typing = false): bool
     {
         Log::info('StubWhatsAppGateway::markRead', compact('messageId', 'typing'));

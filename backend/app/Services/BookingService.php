@@ -55,12 +55,55 @@ class BookingService
         private readonly PersonalizationService   $personalization,
         private readonly BookingStateMachine      $machine,
         private readonly NotificationDispatcher   $notifications,
+        private readonly PaymentReconciliationService $reconciliation,
+        private readonly BookingAgreementService  $agreements,
+        private readonly \App\Services\Growth\CampaignDiscountService $campaignDiscount,
     ) {}
+
+    /**
+     * Generate/refresh the Booking Agreement for a confirmed booking. Best-effort:
+     * a render failure is logged inside the service and never blocks the money
+     * flow. Called on confirmation and on any material change (cap extension).
+     */
+    public function issueAgreement(Booking $booking, string $reason): void
+    {
+        try {
+            $this->agreements->generate($booking, $reason);
+        } catch (\Throwable $e) {
+            Log::warning('BookingService: agreement generation failed', [
+                'booking_id' => $booking->id, 'error' => $e->getMessage(),
+            ]);
+        }
+    }
 
     // ── Create (escrow-first) ───────────────────────────────────────────────
 
     public function create(User $buyer, array $data): Booking
     {
+        // Buyer must be an active account. This is the single booking choke-point
+        // for EVERY channel (app, PWA, WhatsApp), so a banned/suspended customer
+        // cannot create a booking anywhere (§ SEC-9). The HTTP surface also has
+        // EnsureAccountActive, but WhatsApp does not — this covers both.
+        if ($buyer->account_state !== 'ACTIVE') {
+            throw new ApiException(
+                ErrorCode::ACCOUNT_RESTRICTED,
+                'Your account is not active, so you cannot make a booking. Please contact support.',
+            );
+        }
+
+        // CON-1 (double-tap): an Idempotency-Key makes booking creation safe to
+        // retry. If we've already created a booking for this buyer+key, return it
+        // instead of creating a duplicate (and a duplicate charge downstream).
+        $idempotencyKey = $data['idempotency_key'] ?? null;
+        if ($idempotencyKey) {
+            $existing = Booking::where('idempotency_key', $idempotencyKey)
+                ->where('buyer_id', $buyer->id)
+                ->first();
+            if ($existing) {
+                return $this->findOrFail($existing->id, $buyer);
+            }
+        }
+
         $service = Service::find($data['service_id']);
         if (! $service || ! $service->isActive()) {
             throw new NotFoundException('Service');
@@ -92,10 +135,14 @@ class BookingService
         // Risk-tier eligibility gate — server-enforced
         $eligibility = $this->trust->checkEligibility($provider->id, $service->id);
         if (! $eligibility['eligible']) {
-            $missing = implode(', ', $eligibility['missing']);
+            // ERR-4: the internal gate keys go to the log, not the customer.
+            Log::info('BookingService: eligibility gate failed', [
+                'provider_id' => $provider->id, 'service_id' => $service->id,
+                'missing'     => $eligibility['missing'] ?? [],
+            ]);
             throw new ApiException(
                 ErrorCode::TIER_EXCEEDED,
-                "This provider does not meet the eligibility requirements for this service (missing: {$missing}).",
+                'This provider isn\'t able to take this booking yet. Please choose another provider.',
             );
         }
 
@@ -138,6 +185,20 @@ class BookingService
         // never a customer duration input. Clients may omit it entirely.
         $data['scheduled_end'] = $data['scheduled_end']
             ?? $this->deriveScheduledEnd($service, $data['scheduled_start']);
+
+        // Remote (online) services carry no delivery location — the booking shows
+        // "Online" everywhere an area would appear, and geo is bypassed. Time-slot
+        // availability still applies.
+        if ($service->isRemote()) {
+            $data['delivery_lat']             = null;
+            $data['delivery_lng']             = null;
+            $data['delivery_location_label']  = config('catalog.online_location_label');
+            $data['delivery_location_region'] = null;
+            $data['delivery_location_source'] = null;
+        } else {
+            $data['delivery_lat'] = $data['delivery_lat'] ?? null;
+            $data['delivery_lng'] = $data['delivery_lng'] ?? null;
+        }
 
         $this->conflict->check(
             providerId:         $provider->id,
@@ -194,11 +255,29 @@ class BookingService
             buyerId:    $buyer->id,
         );
 
+        $idempotencyKey = $data['idempotency_key'] ?? null;
+
+        try {
         $booking = DB::transaction(function () use (
             $buyer, $provider, $service, $data, $amount, $protectionFee,
             $addonIds, $notes, $expiresAt, $channel, $commissionPreview,
-            $initialStatus, $scopeBrief,
+            $initialStatus, $scopeBrief, $idempotencyKey,
         ) {
+            // CON-1 (slot race): serialize all concurrent booking creates for THIS
+            // provider on a transaction-scoped advisory lock, then re-run the
+            // conflict check under the lock so two simultaneous requests can't both
+            // pass and double-book the same slot. Released automatically at commit.
+            DB::select('SELECT pg_advisory_xact_lock(hashtext(?)::bigint)', [$provider->id]);
+
+            $this->conflict->check(
+                providerId:         $provider->id,
+                scheduledStart:     $data['scheduled_start'],
+                scheduledEnd:       $data['scheduled_end'],
+                deliveryLat:        $data['delivery_lat'],
+                deliveryLng:        $data['delivery_lng'],
+                availabilityMatrix: $provider->providerProfile?->availability_matrix ?? [],
+            );
+
             $id = DB::selectOne("
                 INSERT INTO bookings
                     (id, buyer_id, provider_id, service_id,
@@ -209,7 +288,7 @@ class BookingService
                      scheduled_start, scheduled_end,
                      delivery_location,
                      delivery_location_label, delivery_location_region, delivery_location_source,
-                     notes, selected_addon_ids, scope_brief,
+                     notes, selected_addon_ids, scope_brief, idempotency_key,
                      created_at, updated_at)
                 VALUES
                     (gen_random_uuid(), ?, ?, ?,
@@ -218,9 +297,10 @@ class BookingService
                      ?, ?,
                      ?,
                      ?::timestamptz, ?::timestamptz,
-                     ST_GeogFromText('POINT(' || ? || ' ' || ? || ')'),
+                     CASE WHEN ?::float8 IS NULL THEN NULL
+                          ELSE ST_GeogFromText('POINT(' || ? || ' ' || ? || ')') END,
                      ?, ?, ?,
-                     ?, ?::jsonb, ?::jsonb,
+                     ?, ?::jsonb, ?::jsonb, ?,
                      NOW(), NOW())
                 RETURNING id
             ", [
@@ -233,6 +313,7 @@ class BookingService
                 $channel,
                 $data['scheduled_start'],
                 $data['scheduled_end'],
+                $data['delivery_lng'],   // CASE null-guard
                 $data['delivery_lng'],
                 $data['delivery_lat'],
                 $data['delivery_location_label']  ?? null,
@@ -241,10 +322,24 @@ class BookingService
                 $notes,
                 $addonIds,
                 $scopeBrief,
+                $idempotencyKey,
             ])->id;
 
             return $this->findOrFail($id, $buyer);
         });
+        } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+            // CON-1: a concurrent request with the same Idempotency-Key won the
+            // insert first. Return that booking rather than surfacing an error.
+            if ($idempotencyKey) {
+                $existing = Booking::where('idempotency_key', $idempotencyKey)
+                    ->where('buyer_id', $buyer->id)
+                    ->first();
+                if ($existing) {
+                    return $this->findOrFail($existing->id, $buyer);
+                }
+            }
+            throw $e;
+        }
 
         $this->notify(new BookingRequested($booking, $this->buyerLabel($buyer)));
         ExpireBookingJob::dispatch($booking->id)
@@ -433,7 +528,7 @@ class BookingService
 
         // QUOTE_DEPOSIT: two-phase escrow — deposit % now, balance at completion.
         if ($booking->service->pricing_model === 'QUOTE_DEPOSIT') {
-            $pct     = (int) ($booking->service->deposit_percent ?? 30);
+            $pct     = (int) ($booking->service->deposit_percent ?? config('booking.quote_deposit_default_percent', 30));
             $deposit = round($proposedAmount * $pct / 100, 2);
             $fields['deposit_amount'] = $deposit;
             $fields['balance_amount'] = round($proposedAmount - $deposit, 2);
@@ -456,12 +551,12 @@ class BookingService
      * Funds are only ever held AFTER this approval (deposit for QUOTE_DEPOSIT,
      * full amount otherwise).
      */
-    public function approveQuote(string $id, User $buyer, ?string $payerPhoneOverride = null): Booking
+    public function approveQuote(string $id, User $buyer, ?string $payerPhoneOverride = null, ?string $promoCode = null): Booking
     {
         $booking = $this->loadAndAuthorize($id, $buyer, 'buyer_id');
         $this->requireStatus($booking, 'QUOTE_SENT');
 
-        return $this->holdFunds($id, $buyer, $payerPhoneOverride);
+        return $this->holdFunds($id, $buyer, $payerPhoneOverride, $promoCode);
     }
 
     /**
@@ -547,7 +642,7 @@ class BookingService
      * Buyer confirms and holds funds — REQUESTED/QUOTED → FUNDS_HELD.
      * This is the escrow payment step: customer pays via gateway, funds held.
      */
-    public function holdFunds(string $id, User $buyer, ?string $payerPhoneOverride = null): Booking
+    public function holdFunds(string $id, User $buyer, ?string $payerPhoneOverride = null, ?string $promoCode = null): Booking
     {
         $booking = $this->loadAndAuthorize($id, $buyer, 'buyer_id');
         $booking->load(['buyer', 'service', 'provider.providerProfile']);
@@ -570,13 +665,13 @@ class BookingService
         $amount          = (float) ($booking->agreed_amount ?? $booking->amount);
         $commissionSplit = (float) ($booking->commission_split_zmw ?? 0);
         $providerSplit   = (float) ($booking->provider_split_zmw ?? $amount - $commissionSplit);
+        $protectionFee   = (float) $booking->buyer_protection_fee;
 
         // QUOTE_DEPOSIT holds only the deposit at confirm; the balance is a
         // second collection at completion (two-phase escrow).
-        $isDeposit  = $booking->service?->pricing_model === 'QUOTE_DEPOSIT' && $booking->deposit_amount !== null;
-        $holdAmount = ($isDeposit ? (float) $booking->deposit_amount : $amount)
-            + (float) $booking->buyer_protection_fee;
-        $heldState  = $isDeposit ? 'DEPOSIT_HELD' : 'FUNDS_HELD';
+        $isDeposit   = $booking->service?->pricing_model === 'QUOTE_DEPOSIT' && $booking->deposit_amount !== null;
+        $serviceHold = $isDeposit ? (float) $booking->deposit_amount : $amount;
+        $heldState   = $isDeposit ? 'DEPOSIT_HELD' : 'FUNDS_HELD';
 
         $isAsync = config('pawapay.enabled', false);
 
@@ -587,36 +682,133 @@ class BookingService
             // already there instead of treating it as illegal.
             if ($booking->status !== 'PENDING_PAYMENT') {
                 $this->machine->assertTransition($booking, 'PENDING_PAYMENT');
+            } elseif ($booking->escrow_hold_ref) {
+                // TXN-2: a retry while a hold already exists must NOT mint a second
+                // deposit (which would orphan the first ref and risk a double
+                // charge). Check the existing deposit first: if it already
+                // COMPLETED, advance instead of re-charging; if it is still
+                // pending, keep waiting on that prompt; only a terminally failed
+                // deposit is allowed to be re-issued.
+                $existing = $this->gateway instanceof \App\Contracts\PaymentStatusVerifier
+                    ? $this->gateway->verifyStatus('deposit', $booking->escrow_hold_ref)
+                    : 'UNKNOWN';
+
+                if ($existing === 'COMPLETED') {
+                    $booking->update(['status' => $heldState]);
+                    return $this->findOrFail($id, $buyer);
+                }
+
+                if (\in_array($existing, ['ACCEPTED', 'SUBMITTED', 'PENDING', 'PROCESSING', 'UNKNOWN'], true)) {
+                    // A prompt is still outstanding (or status is unconfirmable) —
+                    // don't create a competing charge. The client shows "a prompt
+                    // is already on your phone".
+                    return $this->findOrFail($id, $buyer);
+                }
+                // else: FAILED / REJECTED — fall through and issue a fresh hold.
             }
         } else {
             $this->machine->assertTransition($booking, $heldState);
         }
 
-        $holdRef = $this->gateway->holdFunds(
-            $buyerPhone, $holdAmount,
-            $booking->id, $commissionSplit, $providerSplit,
-        );
+        // ── Growth & Promotions: apply a checkout discount ──────────────────
+        // A live campaign / promo code reduces ONLY what the customer pays. The
+        // provider split is NEVER touched — the provider is paid in full — so
+        // Sebenza absorbs the discount out of its commission take (PERCENT/
+        // AMOUNT_OFF) or waives the buyer protection fee (FREE_SERVICE_FEE), and
+        // books it as spend against the campaign budget. Deposit holds are not
+        // discounted this phase.
+        if (! $isAsync) {
+            // Sync (stub) path — apply() records the spend atomically with the
+            // hold, so a gateway failure rolls back the ledger + budget too.
+            DB::transaction(function () use (
+                $booking, $buyer, $promoCode, $isDeposit, $serviceHold, $protectionFee,
+                $amount, $commissionSplit, $providerSplit, $heldState, $buyerPhone,
+            ) {
+                $disc       = $this->campaignDiscount->apply($booking, $promoCode, $buyer, $isDeposit);
+                $discount   = (float) $disc['discount_zmw'];
+                $reducesFee = (bool) $disc['reduces_fee'];
 
-        if ($isAsync) {
-            // PawaPay: deposit initiated, MoMo prompt sent to customer. Callback
-            // advances to FUNDS_HELD / DEPOSIT_HELD (per escrow_phase) on confirm.
-            $booking->update([
-                'status'          => 'PENDING_PAYMENT',
-                'escrow_hold_ref' => $holdRef,
-                'agreed_amount'   => $amount,
-                'escrow_phase'    => $isDeposit ? 'DEPOSIT' : 'FULL',
-            ]);
-        } else {
-            // Stub: instant success.
-            $booking->update([
-                'status'          => $heldState,
-                'escrow_hold_ref' => $holdRef,
-                'agreed_amount'   => $amount,
-                'escrow_phase'    => $isDeposit ? 'DEPOSIT' : 'FULL',
-            ]);
+                [$holdAmount, $newCommission] = $this->discountedHold(
+                    $serviceHold, $protectionFee, $commissionSplit, $discount, $reducesFee,
+                );
+
+                $holdRef = $this->gateway->holdFunds(
+                    $buyerPhone, $holdAmount, $booking->id, $newCommission, $providerSplit,
+                );
+
+                $booking->update([
+                    'status'                => $heldState,
+                    'escrow_hold_ref'       => $holdRef,
+                    'agreed_amount'         => $amount,
+                    'escrow_phase'          => $isDeposit ? 'DEPOSIT' : 'FULL',
+                    'campaign_id'           => $disc['campaign_id'],
+                    'campaign_discount_zmw' => $discount,
+                    'promo_code'            => $discount > 0 ? $promoCode : null,
+                    'commission_split_zmw'  => $newCommission,
+                ]);
+            });
+
+            // Confirmed (funds custodied) → generate the Booking Agreement. The
+            // async path does this from the PawaPay callback once funds settle.
+            $this->issueAgreement($booking->fresh()->load(['service.category', 'service.inclusions', 'buyer', 'provider.providerProfile']), BookingAgreementService::REASON_CONFIRMATION);
+
+            return $this->findOrFail($id, $buyer);
         }
 
+        // Async (PawaPay) path — the discount is fixed now so the MoMo prompt
+        // charges the reduced amount; the spend is recorded when the deposit
+        // settles (CampaignDiscountService::recordReserved in the callback).
+        $preview    = $isDeposit ? null : $this->campaignDiscount->preview($booking, $promoCode, $buyer);
+        $discount   = $preview ? (float) $preview['discount_zmw'] : 0.0;
+        $reducesFee = $preview ? (bool) $preview['reduces_fee'] : false;
+
+        [$holdAmount, $newCommission] = $this->discountedHold(
+            $serviceHold, $protectionFee, $commissionSplit, $discount, $reducesFee,
+        );
+
+        $holdRef = $this->gateway->holdFunds(
+            $buyerPhone, $holdAmount, $booking->id, $newCommission, $providerSplit,
+        );
+
+        $booking->update([
+            'status'                => 'PENDING_PAYMENT',
+            'escrow_hold_ref'       => $holdRef,
+            'agreed_amount'         => $amount,
+            'escrow_phase'          => $isDeposit ? 'DEPOSIT' : 'FULL',
+            'campaign_id'           => $preview['campaign_id'] ?? null,
+            'campaign_discount_zmw' => $discount,
+            'promo_code'            => $discount > 0 ? $promoCode : null,
+            'commission_split_zmw'  => $newCommission,
+        ]);
+
         return $this->findOrFail($id, $buyer);
+    }
+
+    /**
+     * The customer's reduced hold and Sebenza's reduced commission take for a
+     * given campaign discount. The provider split is intentionally NOT an input
+     * here — it never changes.
+     *
+     * @return array{0:float,1:float} [holdAmount, newCommissionSplit]
+     */
+    private function discountedHold(
+        float $serviceHold, float $protectionFee, float $commissionSplit, float $discount, bool $reducesFee,
+    ): array {
+        if ($discount <= 0) {
+            return [round($serviceHold + $protectionFee, 2), $commissionSplit];
+        }
+
+        if ($reducesFee) {
+            // FREE_SERVICE_FEE waives the buyer protection fee; the service price
+            // and the commission split are untouched.
+            $payableFee = max(0.0, $protectionFee - $discount);
+            return [round($serviceHold + $payableFee, 2), $commissionSplit];
+        }
+
+        // PERCENT/AMOUNT_OFF comes off the service price → off Sebenza's take.
+        $payableService = max(0.0, $serviceHold - $discount);
+        $newCommission  = round(max(0.0, $commissionSplit - $discount), 2);
+        return [round($payableService + $protectionFee, 2), $newCommission];
     }
 
     // ── Legacy DIRECT transitions (backward compat for migrated bookings) ──
@@ -686,6 +878,95 @@ class BookingService
         return $result;
     }
 
+    // ── Scope brief attachments (quote-first models) ─────────────────────────
+
+    private const MAX_SCOPE_ATTACHMENTS = 8;
+    private const MAX_SCOPE_VIDEOS      = 1;
+
+    /**
+     * Customer attaches photos / a short video to a quote-first brief
+     * (PROVIDER_SCOPE / QUOTE_DEPOSIT) so the provider has visual context to
+     * price the job — same idea as the text Q&A brief, just media. Buyer-only,
+     * and only while the brief is still open (before the customer accepts a
+     * quote and money moves).
+     *
+     * @param  \Illuminate\Http\UploadedFile[] $files
+     */
+    public function addScopeAttachments(string $id, User $buyer, array $files): Booking
+    {
+        $booking = Booking::with('service')->find($id);
+        if (! $booking) {
+            throw new NotFoundException('Booking');
+        }
+        if ($booking->buyer_id !== $buyer->id) {
+            throw new ForbiddenException('You are not party to this booking.');
+        }
+        if (! $booking->service->needsScopeQuote()) {
+            throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Attachments are only supported for quote-based services.');
+        }
+        if (! \in_array($booking->status, ['SCOPE_PENDING', 'QUOTE_SENT'], true)) {
+            throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Attachments can only be added while the brief is open.');
+        }
+
+        $existing       = $booking->scope_brief_attachments ?? [];
+        $existingVideos = collect($existing)->where('type', 'video')->count();
+        $newEntries     = [];
+
+        foreach ($files as $file) {
+            if (count($existing) + count($newEntries) >= self::MAX_SCOPE_ATTACHMENTS) {
+                throw new ApiException(
+                    ErrorCode::VALIDATION_ERROR,
+                    'Maximum ' . self::MAX_SCOPE_ATTACHMENTS . ' attachments per booking.',
+                );
+            }
+
+            $isVideo = str_starts_with((string) $file->getMimeType(), 'video/');
+            $videoCount = $existingVideos + collect($newEntries)->where('type', 'video')->count();
+            if ($isVideo && $videoCount >= self::MAX_SCOPE_VIDEOS) {
+                throw new ApiException(
+                    ErrorCode::VALIDATION_ERROR,
+                    'Only ' . self::MAX_SCOPE_VIDEOS . ' video is allowed per booking.',
+                );
+            }
+
+            // PRIVATE disk (§ SEC-4): these are photos of the customer's home /
+            // property. They are streamed only to the two booking parties via the
+            // authorized GET /bookings/{id}/scope-attachments/{index} route — never
+            // served from a public URL.
+            $path = $file->store("booking_attachments/{$booking->id}", 'local');
+            $newEntries[] = ['path' => $path, 'type' => $isVideo ? 'video' : 'image'];
+        }
+
+        $booking->update(['scope_brief_attachments' => array_merge($existing, $newEntries)]);
+
+        return $this->findOrFail($id, $buyer);
+    }
+
+    /**
+     * Stream a private scope attachment to a party of the booking (§ SEC-4).
+     * Authorizes on booking membership, bounds-checks the index, and returns the
+     * file straight off the private disk. Throws for non-parties / bad index.
+     */
+    public function streamScopeAttachment(string $id, User $user, int $index): \Symfony\Component\HttpFoundation\StreamedResponse
+    {
+        $booking = Booking::find($id);
+        if (! $booking) {
+            throw new NotFoundException('Booking');
+        }
+        if ($booking->buyer_id !== $user->id && $booking->provider_id !== $user->id) {
+            throw new ForbiddenException('You are not party to this booking.');
+        }
+
+        $attachments = $booking->scope_brief_attachments ?? [];
+        $path = $attachments[$index]['path'] ?? null;
+
+        if (! $path || ! \Illuminate\Support\Facades\Storage::disk('local')->exists($path)) {
+            throw new NotFoundException('Attachment');
+        }
+
+        return \Illuminate\Support\Facades\Storage::disk('local')->response($path);
+    }
+
     /**
      * System expiry for DIRECT REQUESTED bookings past the response window.
      * Called by BookingExpiryWorker; validates via state machine.
@@ -719,22 +1000,144 @@ class BookingService
     public function markInProgress(string $id, User $provider): Booking
     {
         $booking = $this->loadAndAuthorize($id, $provider, 'provider_id');
+        $booking->load('service');
         $this->machine->assertTransition($booking, 'IN_PROGRESS');
-        $booking->update(['status' => 'IN_PROGRESS']);
+
+        $fields = ['status' => 'IN_PROGRESS'];
+
+        // HOURLY_CAPPED observed timer — "Start job" records the server start time.
+        // The customer's app shows "Job started at {time}" and a live elapsed clock;
+        // the elapsed time is never a client-entered number.
+        if ($booking->service?->pricing_model === 'HOURLY_CAPPED'
+            && ! $this->machine->isLegacyDirect($booking)
+            && $booking->job_started_at === null) {
+            $fields['job_started_at'] = now();
+        }
+
+        $booking->update($fields);
         $result = $this->findOrFail($id, $provider);
         $this->notify(new BookingStarted($result));
         return $result;
     }
 
     /**
-     * Provider marks job delivered — IN_PROGRESS → DELIVERED (both modes).
-     *
-     * HOURLY_CAPPED: the provider logs the actual time worked here (structured,
-     * 0.5-hr increments, never customer input). The final charge is
-     * max(actual, minimum) × rate, capped at the held cap; the difference is
-     * refunded to the customer at completion.
+     * HOURLY_CAPPED — pause / resume the observed timer (breaks, waiting on the
+     * customer). Paused spans are excluded from billable time and kept as an
+     * audit trail for disputes.
      */
-    public function markDelivered(string $id, User $provider, ?float $actualHours = null): Booking
+    public function pauseJob(string $id, User $provider): Booking
+    {
+        $booking = $this->loadAndAuthorize($id, $provider, 'provider_id');
+        $this->requireActiveHourlyTimer($booking);
+
+        $events = $booking->pause_events ?? [];
+        // Idempotent: ignore if already paused (last event has no resumed_at).
+        $last = end($events);
+        if ($last === false || ! empty($last['resumed_at'])) {
+            $events[] = ['paused_at' => now()->toIso8601String(), 'resumed_at' => null];
+            $booking->update(['pause_events' => $events]);
+        }
+
+        return $this->findOrFail($id, $provider);
+    }
+
+    public function resumeJob(string $id, User $provider): Booking
+    {
+        $booking = $this->loadAndAuthorize($id, $provider, 'provider_id');
+        $this->requireActiveHourlyTimer($booking);
+
+        $events = $booking->pause_events ?? [];
+        $lastIdx = count($events) - 1;
+        if ($lastIdx >= 0 && empty($events[$lastIdx]['resumed_at'])) {
+            $events[$lastIdx]['resumed_at'] = now()->toIso8601String();
+            $booking->update(['pause_events' => $events]);
+        }
+
+        return $this->findOrFail($id, $provider);
+    }
+
+    private function requireActiveHourlyTimer(Booking $booking): void
+    {
+        $booking->loadMissing('service');
+        if ($booking->service?->pricing_model !== 'HOURLY_CAPPED'
+            || $this->machine->isLegacyDirect($booking)
+            || $booking->status !== 'IN_PROGRESS'
+            || $booking->job_started_at === null) {
+            throw new ApiException(ErrorCode::VALIDATION_ERROR, 'No active job timer to pause or resume.');
+        }
+    }
+
+    /**
+     * HOURLY_CAPPED — provider proposes a cap extension when the observed time is
+     * approaching the approved cap. The customer must explicitly approve it
+     * (re-authorising a higher hold); the cap is never exceeded silently.
+     */
+    public function requestCapExtension(string $id, User $provider): Booking
+    {
+        $booking = $this->loadAndAuthorize($id, $provider, 'provider_id');
+        $this->requireActiveHourlyTimer($booking);
+
+        $booking->update(['cap_extension_requested_at' => now()]);
+
+        $result = $this->findOrFail($id, $provider);
+        $this->notify(new \App\Events\BookingCapExtensionRequested($result));
+        return $result;
+    }
+
+    /**
+     * Customer approves a cap extension of `additionalHours` — re-authorises an
+     * additional hold via the gateway and raises this booking's approved cap by
+     * additionalHours × rate. Only valid while the job is running.
+     */
+    public function approveCapExtension(string $id, User $buyer, float $additionalHours, ?string $payerPhoneOverride = null): Booking
+    {
+        $booking = $this->loadAndAuthorize($id, $buyer, 'buyer_id');
+        $booking->load(['buyer', 'service']);
+
+        if ($booking->service?->pricing_model !== 'HOURLY_CAPPED'
+            || $booking->status !== 'IN_PROGRESS'
+            || $booking->job_started_at === null) {
+            throw new ApiException(ErrorCode::VALIDATION_ERROR, 'This job has no active timer to extend.');
+        }
+        if ($additionalHours <= 0 || fmod($additionalHours * 10, 5) > 0.001) {
+            throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Extension time must be in 0.5-hour increments.');
+        }
+
+        $rate      = (float) ($booking->service->hourly_rate ?? 0);
+        $extraZmw  = round($additionalHours * $rate, 2);
+        $buyerPhone = $payerPhoneOverride
+            ?? $booking->buyer->phone
+            ?? throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Your account has no phone number on file.');
+
+        // Re-authorise the extra hold via the gateway (PawaPay MoMo prompt).
+        $extRef = $this->gateway->holdFunds($buyerPhone, $extraZmw, $booking->id, 0.0, $extraZmw);
+
+        $booking->update([
+            'cap_extension_zmw'          => round((float) ($booking->cap_extension_zmw ?? 0) + $extraZmw, 2),
+            'cap_extension_ref'          => $extRef,
+            'cap_extension_requested_at' => null,
+            // The held amount (the cap the customer approved) grows by the extension.
+            'agreed_amount'              => round((float) ($booking->agreed_amount ?? $booking->amount) + $extraZmw, 2),
+            'amount'                     => round((float) ($booking->amount ?? 0) + $extraZmw, 2),
+        ]);
+
+        // Material change → a new versioned agreement reflecting the raised cap.
+        $this->issueAgreement($booking->fresh()->load(['service.category', 'service.inclusions', 'buyer', 'provider.providerProfile']), BookingAgreementService::REASON_CAP_EXTENSION);
+
+        return $this->findOrFail($id, $buyer);
+    }
+
+    /**
+     * Provider marks job delivered — IN_PROGRESS → DELIVERED (both modes).
+     * This is the HOURLY_CAPPED "Finish" tap.
+     *
+     * HOURLY_CAPPED: the elapsed time is computed SERVER-SIDE from the start/stop
+     * timestamps (job_started_at → now, minus any paused spans). There is NO
+     * provider "enter hours" input. The charge = observed time rounded UP to the
+     * provider's increment, ≥ minimum, ≤ the cap the customer approved; the
+     * difference (hold − charge) is refunded to the customer at completion.
+     */
+    public function markDelivered(string $id, User $provider): Booking
     {
         $booking = $this->loadAndAuthorize($id, $provider, 'provider_id');
         $booking->load('service');
@@ -743,25 +1146,23 @@ class BookingService
         $fields = ['status' => 'DELIVERED'];
 
         if ($booking->service?->pricing_model === 'HOURLY_CAPPED' && ! $this->machine->isLegacyDirect($booking)) {
-            if ($actualHours === null) {
+            if ($booking->job_started_at === null) {
                 throw new ApiException(
                     ErrorCode::VALIDATION_ERROR,
-                    'Log the actual time worked (in half-hour steps) to mark this job done.',
-                );
-            }
-            if (fmod($actualHours * 10, 5) > 0.001 || $actualHours <= 0) {
-                throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Actual time must be in 0.5-hour increments.');
-            }
-            $capHours = (float) ($booking->service->cap_hours ?? $actualHours);
-            if ($actualHours > $capHours) {
-                throw new ApiException(
-                    ErrorCode::VALIDATION_ERROR,
-                    "Actual time can't exceed the booked cap of {$capHours} hours.",
+                    'Start the job timer before marking it finished.',
                 );
             }
 
-            $fields['actual_hours_logged'] = $actualHours;
-            $fields['actual_charge_zmw']   = $this->hourlyCappedCharge($booking, $actualHours);
+            $endedAt  = now();
+            $observed = $this->computeObservedMinutes($booking, $endedAt);
+            $charge   = $this->hourlyCappedCharge($booking, $observed);
+
+            $fields['job_ended_at']     = $endedAt;
+            $fields['observed_minutes'] = $observed;
+            $fields['final_charge_zmw'] = $charge;
+            // Keep the legacy column in sync (derived from the timer, never entered)
+            // so downstream reporting/back-compat stays correct.
+            $fields['actual_charge_zmw'] = $charge;
         }
 
         $booking->update($fields);
@@ -771,14 +1172,44 @@ class BookingService
     }
 
     /**
-     * HOURLY_CAPPED final charge: max(actual, minimum) × rate, plus the
-     * confirmed add-ons, never above the held amount.
+     * Server-computed billable minutes: wall-clock elapsed (start → end) minus
+     * any paused spans. Never a client-entered number.
      */
-    private function hourlyCappedCharge(Booking $booking, float $actualHours): float
+    private function computeObservedMinutes(Booking $booking, \DateTimeInterface $endedAt): int
     {
-        $service  = $booking->service;
-        $rate     = (float) ($service->hourly_rate ?? 0);
-        $billable = max($actualHours, (float) ($service->minimum_hours ?? 0));
+        $start   = $booking->job_started_at;
+        $elapsed = max(0, $endedAt->getTimestamp() - $start->getTimestamp());
+
+        foreach ($booking->pause_events ?? [] as $span) {
+            if (empty($span['paused_at'])) {
+                continue;
+            }
+            $pausedAt  = strtotime($span['paused_at']);
+            $resumedAt = ! empty($span['resumed_at']) ? strtotime($span['resumed_at']) : $endedAt->getTimestamp();
+            $elapsed  -= max(0, $resumedAt - $pausedAt);
+        }
+
+        return (int) max(0, round($elapsed / 60));
+    }
+
+    /**
+     * HOURLY_CAPPED final charge from observed minutes:
+     *   round observed time UP to the provider's increment (config), enforce
+     *   ≥ minimum hours and ≤ the approved cap (cap_amount + any customer-approved
+     *   extension), plus the confirmed add-ons — never above the held amount.
+     */
+    private function hourlyCappedCharge(Booking $booking, int $observedMinutes): float
+    {
+        $service   = $booking->service;
+        $rate      = (float) ($service->hourly_rate ?? 0);
+        $increment = max(1, (int) config('booking.hourly.rounding_increment_mins', 30));
+
+        // Round observed minutes UP to the billing increment.
+        $roundedMins = (int) (ceil($observedMinutes / $increment) * $increment);
+
+        // Enforce the minimum billable time.
+        $minMins  = (int) round((float) ($service->minimum_hours ?? 0) * 60);
+        $billable = max($roundedMins, $minMins);
 
         $addonTotal = 0.0;
         if (! empty($booking->selected_addon_ids)) {
@@ -787,9 +1218,11 @@ class BookingService
                 ->sum('price');
         }
 
-        $held = (float) ($booking->agreed_amount ?? $booking->amount);
+        // The approved cap = the held amount (cap + any customer-approved extension).
+        $held   = (float) ($booking->agreed_amount ?? $booking->amount);
+        $charge = ($billable / 60) * $rate + $addonTotal;
 
-        return round(min($billable * $rate + $addonTotal, $held), 2);
+        return round(min($charge, $held), 2);
     }
 
     /**
@@ -855,12 +1288,17 @@ class BookingService
         $model     = $booking->service?->pricing_model;
         $heldGross = (float) ($booking->agreed_amount ?? $booking->amount);
 
-        // HOURLY_CAPPED: settle on the actual charge computed at delivery.
+        // HOURLY_CAPPED: settle on the observed-timer charge computed at "Finish"
+        // (final_charge_zmw is the source of truth; actual_charge_zmw mirrors it
+        // for old rows). The hold was the cap; the unused difference is refunded.
         $finalGross   = $heldGross;
         $refundAmount = 0.0;
-        if ($model === 'HOURLY_CAPPED' && $booking->actual_charge_zmw !== null) {
-            $finalGross   = (float) $booking->actual_charge_zmw;
-            $refundAmount = round(max($heldGross - $finalGross, 0), 2);
+        if ($model === 'HOURLY_CAPPED') {
+            $timerCharge = $booking->final_charge_zmw ?? $booking->actual_charge_zmw;
+            if ($timerCharge !== null) {
+                $finalGross   = (float) $timerCharge;
+                $refundAmount = round(max($heldGross - $finalGross, 0), 2);
+            }
         }
 
         // Escrow: payout hold logic
@@ -908,13 +1346,20 @@ class BookingService
                     $booking->buyer?->phone ?? '',
                     $refundAmount,
                 );
-                Log::info('BookingService: hourly-capped unused-cap refund ' . ($ok ? 'initiated' : 'FAILED'), [
+                if (! $ok) {
+                    throw new \RuntimeException('Gateway refund returned failure.');
+                }
+                Log::info('BookingService: hourly-capped unused-cap refund initiated', [
                     'booking_id' => $booking->id, 'refund_zmw' => $refundAmount,
                 ]);
             } catch (\Throwable $e) {
-                Log::error('BookingService: hourly-capped refund failed — needs manual reconciliation', [
+                Log::error('BookingService: hourly-capped refund failed — queued for reconciliation', [
                     'booking_id' => $booking->id, 'refund_zmw' => $refundAmount, 'error' => $e->getMessage(),
                 ]);
+                $this->reconciliation->record(
+                    $booking, \App\Models\PaymentReconciliation::KIND_REFUND,
+                    $refundAmount, $booking->escrow_hold_ref, $booking->buyer?->phone, $e->getMessage(),
+                );
             }
         }
 
@@ -958,9 +1403,13 @@ class BookingService
                 (float) $booking->balance_amount,
             );
         } catch (\Throwable $e) {
-            Log::error('BookingService::collectBalance — balance collection failed, will retry', [
+            Log::error('BookingService::collectBalance — balance collection failed, queued for reconciliation', [
                 'booking_id' => $booking->id, 'error' => $e->getMessage(),
             ]);
+            $this->reconciliation->record(
+                $booking, \App\Models\PaymentReconciliation::KIND_BALANCE,
+                (float) $booking->balance_amount, $booking->escrow_hold_ref, $buyerPhone, $e->getMessage(),
+            );
             return;
         }
 
@@ -1006,14 +1455,53 @@ class BookingService
             return;
         }
 
+        // ── Atomic claim (TXN-1) ────────────────────────────────────────────
+        // The due-payout batch, instant-payout, finalizeCompletion and the
+        // balance-completed callback can all reach this for the SAME booking. A
+        // single conditional UPDATE lets exactly one of them proceed: only a
+        // COMPLETED, not-yet-disbursed booking whose claim is free (or stale >15m,
+        // so a crashed claim self-heals) is claimed. Everyone else no-ops. The
+        // gateway call happens only AFTER we own the claim, so releaseFunds runs
+        // once per booking.
+        $claimed = DB::table('bookings')
+            ->where('id', $booking->id)
+            ->where('status', 'COMPLETED')
+            ->whereNull('disbursed_at')
+            ->where(function ($q) {
+                $q->whereNull('payout_claimed_at')
+                  ->orWhere('payout_claimed_at', '<', now()->subMinutes(15));
+            })
+            ->update(['payout_claimed_at' => now()]);
+
+        if ($claimed === 0) {
+            Log::info('BookingService::disbursePayout — booking already claimed/disbursed, skipping', [
+                'booking_id' => $booking->id, 'status' => $booking->status,
+            ]);
+            return;
+        }
+
         $amount = (float) ($booking->provider_split_zmw ?? $booking->amount);
 
-        $payoutRef = $this->gateway->releaseFunds(
-            $booking->escrow_hold_ref,
-            $profile->momo_number,
-            $amount,
-            $booking->id,
-        );
+        try {
+            $payoutRef = $this->gateway->releaseFunds(
+                $booking->escrow_hold_ref,
+                $profile->momo_number,
+                $amount,
+                $booking->id,
+            );
+        } catch (\Throwable $e) {
+            // Release the claim so the due-payout batch can retry (MNO outage etc.),
+            // and durably queue it so a lost batch cycle can't strand the payout.
+            DB::table('bookings')->where('id', $booking->id)->update(['payout_claimed_at' => null]);
+            Log::error('BookingService::disbursePayout — gateway threw, claim released and queued for reconciliation', [
+                'booking_id' => $booking->id, 'error' => $e->getMessage(),
+            ]);
+            $this->reconciliation->record(
+                $booking, \App\Models\PaymentReconciliation::KIND_PAYOUT,
+                $amount, $booking->escrow_hold_ref, $profile->momo_number, $e->getMessage(),
+            );
+            return;
+        }
 
         if ($payoutRef !== null) {
             // Persist the payout reference BEFORE the async callback can arrive —
@@ -1023,7 +1511,14 @@ class BookingService
             $booking->update(['status' => 'DISBURSED', 'disbursed_at' => now(), 'payout_ref' => $payoutRef]);
             $this->notify(new \App\Events\PayoutReleased($booking));
         } else {
-            Log::error('BookingService::disbursePayout — gateway release failed', ['booking_id' => $booking->id]);
+            // Failed to initiate — free the claim so it is retried, not stranded,
+            // and queue a durable reconciliation as a belt-and-braces backstop.
+            DB::table('bookings')->where('id', $booking->id)->update(['payout_claimed_at' => null]);
+            Log::error('BookingService::disbursePayout — gateway release failed, queued for reconciliation', ['booking_id' => $booking->id]);
+            $this->reconciliation->record(
+                $booking, \App\Models\PaymentReconciliation::KIND_PAYOUT,
+                $amount, $booking->escrow_hold_ref, $profile->momo_number, 'Gateway release returned null.',
+            );
         }
     }
 
@@ -1120,18 +1615,62 @@ class BookingService
             throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Booking can only be cancelled before it starts.');
         }
 
-        DB::transaction(function () use ($booking) {
-            if (\in_array($booking->status, ['FUNDS_HELD', 'DEPOSIT_HELD'], true) && $booking->escrow_hold_ref) {
-                $buyerPhone = $booking->buyer->phone ?? '';
-                $held       = $booking->status === 'DEPOSIT_HELD'
-                    ? (float) $booking->deposit_amount
-                    : (float) ($booking->agreed_amount ?? $booking->amount);
-                $this->gateway->refund($booking->escrow_hold_ref, $buyerPhone, $held + (float) $booking->buyer_protection_fee);
-            } elseif ($booking->status === 'FUNDS_HELD') {
-                $this->payment->initiateRefund($booking);
+        // TXN-3: never call the gateway inside a DB transaction. We first move the
+        // booking to CANCELLED with an ATOMIC, refund-claiming update (so a
+        // double-tapped cancel can't issue two refunds), then call the gateway
+        // AFTER commit. refunded_at is the idempotency marker: only the update
+        // that actually flips the status (and claims the refund) proceeds to pay.
+        $needsRefund = \in_array($booking->status, ['FUNDS_HELD', 'DEPOSIT_HELD'], true) && $booking->escrow_hold_ref;
+
+        $held = $booking->status === 'DEPOSIT_HELD'
+            ? (float) $booking->deposit_amount
+            : (float) ($booking->agreed_amount ?? $booking->amount);
+        $refundAmount = $held + (float) $booking->buyer_protection_fee;
+        $buyerPhone   = $booking->buyer->phone ?? '';
+        $holdRef      = $booking->escrow_hold_ref;
+        $legacyFundsHeld = ! $needsRefund && $booking->status === 'FUNDS_HELD';
+
+        // Atomic transition: claim the cancellation (and, when funds are held, the
+        // refund) in one conditional update keyed on the current status.
+        $claimed = DB::table('bookings')
+            ->where('id', $booking->id)
+            ->where('status', $booking->status)
+            ->update(array_merge(
+                ['status' => 'CANCELLED', 'updated_at' => now()],
+                $needsRefund ? ['refunded_at' => now()] : [],
+            ));
+
+        if ($claimed === 0) {
+            // Someone already transitioned it (double-tap / race) — no double refund.
+            return $this->findOrFail($id, $buyer);
+        }
+
+        // Post-commit external calls (best-effort; a failure is logged for
+        // reconciliation and never rolls the cancellation back onto held funds).
+        if ($needsRefund) {
+            try {
+                $ok = $this->gateway->refund($holdRef, $buyerPhone, $refundAmount);
+                if (! $ok) {
+                    throw new \RuntimeException('Gateway refund returned failure.');
+                }
+            } catch (\Throwable $e) {
+                Log::error('BookingService::cancel — refund failed, queued for reconciliation', [
+                    'booking_id' => $booking->id, 'refund_zmw' => $refundAmount, 'error' => $e->getMessage(),
+                ]);
+                $this->reconciliation->record(
+                    $booking, \App\Models\PaymentReconciliation::KIND_REFUND,
+                    $refundAmount, $holdRef, $buyerPhone, $e->getMessage(),
+                );
             }
-            $booking->update(['status' => 'CANCELLED']);
-        });
+        } elseif ($legacyFundsHeld) {
+            try {
+                $this->payment->initiateRefund($booking->fresh());
+            } catch (\Throwable $e) {
+                Log::error('BookingService::cancel — legacy refund failed, needs manual reconciliation', [
+                    'booking_id' => $booking->id, 'error' => $e->getMessage(),
+                ]);
+            }
+        }
 
         return $this->findOrFail($id, $buyer);
     }
@@ -1236,7 +1775,7 @@ class BookingService
         $booking->delivery_lat = $row->delivery_lat !== null ? (float) $row->delivery_lat : null;
         $booking->delivery_lng = $row->delivery_lng !== null ? (float) $row->delivery_lng : null;
 
-        $booking->load(['service.category', 'buyer', 'provider.providerProfile', 'transactions', 'commission', 'dispute', 'review']);
+        $booking->load(['service.category', 'buyer', 'provider.providerProfile', 'transactions', 'commission', 'dispute', 'review', 'statusUpdates']);
 
         // Provider-facing, qualitative buyer trust hint (§10.2) + privacy-safe label.
         $booking->setAttribute('buyer_trust_hint', $this->trustHint($booking->buyer, $booking->provider_id));
@@ -1246,7 +1785,7 @@ class BookingService
         $booking->setAttribute(
             'auto_release_at',
             $booking->status === 'DELIVERED' && $booking->updated_at
-                ? $booking->updated_at->copy()->addHours((int) config('booking.autoconfirm_hours', 24))->toISOString()
+                ? $booking->updated_at->copy()->addHours(\App\Support\Settings::int('autoconfirm_hours', (int) config('booking.autoconfirm_hours', 24)))->toISOString()
                 : null,
         );
 
@@ -1273,9 +1812,14 @@ class BookingService
     private function requireStatus(Booking $booking, string $expected): void
     {
         if ($booking->status !== $expected) {
+            // ERR-4: don't surface internal state names to the client — that detail
+            // goes to the log; the user gets an actionable, generic message.
+            Log::info('BookingService: status precondition failed', [
+                'booking_id' => $booking->id, 'expected' => $expected, 'actual' => $booking->status,
+            ]);
             throw new ApiException(
                 ErrorCode::VALIDATION_ERROR,
-                "This action requires booking status '{$expected}' (current: {$booking->status}).",
+                'This action isn\'t available for the booking right now. Refresh and try again.',
             );
         }
     }
@@ -1307,10 +1851,9 @@ class BookingService
     {
         if (! $buyer) return 'NEW';
 
-        $isRepeat = Booking::where('buyer_id', $buyer->id)
-            ->where('provider_id', $providerId)
-            ->where('status', 'COMPLETED')
-            ->exists();
+        // § DB-5 — reuse the commission service's memoized pair count instead of a
+        // separate exists() query per row (same key, one query per distinct buyer).
+        $isRepeat = $this->commission->pairBookingNumber($buyer->id, $providerId) > 1;
 
         if ($isRepeat) return 'REPEAT_CLIENT';
 
@@ -1322,8 +1865,15 @@ class BookingService
     private function buyerLabel(?User $buyer): string
     {
         if (! $buyer) return 'Customer';
+        if (! empty($buyer->legal_name)) return explode(' ', trim($buyer->legal_name))[0];
         if ($buyer->email) return ucfirst(explode('@', $buyer->email)[0]);
-        return $buyer->phone ?? 'Customer';
+        // Never expose a raw phone as the "privacy-safe" label (§ SEC-5): mask it
+        // to the last 3 digits so the provider gets a stable handle, not a number.
+        if ($buyer->phone) {
+            $digits = preg_replace('/\D/', '', $buyer->phone);
+            return strlen($digits) >= 3 ? 'Customer ' . substr($digits, -3) : 'Customer';
+        }
+        return 'Customer';
     }
 
     private function distanceKm(?ProviderProfile $profile, ?float $lat, ?float $lng): ?float

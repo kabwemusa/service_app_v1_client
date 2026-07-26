@@ -36,6 +36,7 @@ Broadcast::channel('admin.{module}', function (AdminUser $admin, string $module)
         'safety'       => 'safety.handle',
         'reviews'      => 'read:reviews',
         'services'     => 'read:services',
+        'promotions'   => 'read:promotions',
         default        => null,
     };
 
@@ -48,4 +49,13 @@ Broadcast::channel('admin.{module}', function (AdminUser $admin, string $module)
 Broadcast::routes([
     'middleware' => ['auth:admin'],
     'prefix'     => 'api/admin',
+]);
+
+// Registers POST /api/broadcasting/auth for the customer/provider apps + PWA,
+// authorized against the `api` JWT guard (same guard as every other /api route).
+// Private-channel subscriptions (private-user.{id}) authenticate here with the
+// caller's Bearer token — this is what lets the mobile Reverb client subscribe.
+Broadcast::routes([
+    'middleware' => ['auth:api'],
+    'prefix'     => 'api',
 ]);

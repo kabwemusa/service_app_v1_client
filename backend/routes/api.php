@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\Admin\AdminAuthController;
 use App\Http\Controllers\Api\Admin\AdminAuditLogController;
 use App\Http\Controllers\Api\Admin\AdminBookingController;
+use App\Http\Controllers\Api\Admin\AdminDashboardController;
 use App\Http\Controllers\Api\Admin\AdminFinanceController;
 use App\Http\Controllers\Api\Admin\AdminFraudController;
 use App\Http\Controllers\Api\Admin\AdminInsightsController;
@@ -13,15 +14,21 @@ use App\Http\Controllers\Api\Admin\AdminSettingsController;
 use App\Http\Controllers\Api\Admin\AdminUserController;
 use App\Http\Controllers\Api\Admin\AdminVerificationController;
 use App\Http\Controllers\Api\Admin\AdminWhatsAppController;
+use App\Http\Controllers\Api\Admin\AdminLegalController;
+use App\Http\Controllers\Api\Admin\AdminPromotionsController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\PawapayCallbackController;
 use App\Http\Controllers\Api\WhatsAppWebhookController;
 use App\Http\Controllers\Api\BookingController;
+use App\Http\Controllers\Api\BookingAgreementController;
+use App\Http\Controllers\Api\CommunicationController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\DisputeController;
 use App\Http\Controllers\Api\HomeBannerController;
 use App\Http\Controllers\Api\LandingController;
+use App\Http\Controllers\Api\LegalController;
+use App\Http\Controllers\Api\ConsentController;
 use App\Http\Controllers\Api\KycController;
 use App\Http\Controllers\Api\LocationController;
 use App\Http\Controllers\Api\SafetyReportController;
@@ -41,16 +48,22 @@ use Illuminate\Support\Facades\Route;
 // ── Auth (public) ──────────────────────────────────────────────────────────
 Route::prefix('auth')->group(function () {
     // Canonical passwordless phone-OTP (identity rule: phone = single account key)
-    Route::post('/otp/request', [AuthController::class, 'requestOtp']);
-    Route::post('/otp/verify',  [AuthController::class, 'verifyPhoneOtp']);
+    Route::post('/otp/request', [AuthController::class, 'requestOtp'])->middleware('throttle:otp');
+    Route::post('/otp/verify',  [AuthController::class, 'verifyPhoneOtp'])->middleware('throttle:otp');
 
     // Legacy email + password + email-OTP — DEPRECATED, retained dormant for the
-    // superseded Expo app during transition; not maintained going forward.
-    Route::post('/register',   [AuthController::class, 'register']);
-    Route::post('/verify-otp', [AuthController::class, 'verifyOtp']);
-    Route::post('/login',      [AuthController::class, 'login']);
-    Route::post('/refresh',    [AuthController::class, 'refresh']);
-    Route::post('/resend-otp', [AuthController::class, 'resendOtp']);
+    // superseded Expo app during transition (§ API-3). Gated behind a config flag
+    // so production can drop this weaker surface once no Expo clients remain
+    // (AUTH_LEGACY_PASSWORD_AUTH=false). `refresh` stays available regardless —
+    // the canonical phone-OTP flow issues refresh tokens too.
+    Route::post('/refresh',    [AuthController::class, 'refresh'])->middleware('throttle:auth');
+
+    if (config('auth.legacy_password_auth', true)) {
+        Route::post('/register',   [AuthController::class, 'register'])->middleware('throttle:auth');
+        Route::post('/verify-otp', [AuthController::class, 'verifyOtp'])->middleware('throttle:otp');
+        Route::post('/login',      [AuthController::class, 'login'])->middleware('throttle:auth');
+        Route::post('/resend-otp', [AuthController::class, 'resendOtp'])->middleware('throttle:otp');
+    }
 
     Route::middleware('auth:api')->group(function () {
         Route::post('/logout', [AuthController::class, 'logout']);
@@ -83,6 +96,20 @@ Route::middleware(['auth:admin', 'admin.can:categories.manage'])->prefix('admin'
     Route::patch('/categories/reorder',          [CategoryController::class, 'reorder']);
 });
 
+// ── Admin panel: Legal documents + consent settings ────────────────────────
+// super_admin only (legal.manage). Publishing a version triggers user re-consent.
+Route::middleware(['auth:admin', 'admin.can:legal.manage'])->prefix('admin')->group(function () {
+    Route::get('/legal/documents',                 [AdminLegalController::class, 'index']);
+    Route::get('/legal/documents/{id}',            [AdminLegalController::class, 'show']);
+    Route::post('/legal/documents',                [AdminLegalController::class, 'store']);
+    Route::patch('/legal/documents/{id}',          [AdminLegalController::class, 'update']);
+    Route::post('/legal/documents/{id}/publish',   [AdminLegalController::class, 'publish']);
+    Route::post('/legal/documents/{id}/archive',   [AdminLegalController::class, 'archive']);
+    Route::delete('/legal/documents/{id}',         [AdminLegalController::class, 'destroy']);
+    Route::get('/legal/data-requests',             [AdminLegalController::class, 'dataRequests']);
+    Route::patch('/legal/data-requests/{id}',      [AdminLegalController::class, 'updateDataRequest']);
+});
+
 // ── Admin panel: Verification queue + audit log ────────────────────────────
 Route::middleware('auth:admin')->prefix('admin')->group(function () {
     // Read — requires read:verification
@@ -102,6 +129,9 @@ Route::middleware('auth:admin')->prefix('admin')->group(function () {
 
     // Audit log — controller scopes non-read:audit admins to a single target
     Route::get('/audit-log', [AdminAuditLogController::class, 'index']);
+
+    // Dashboard overview — read-only marketplace-health counts (any admin).
+    Route::get('/dashboard', [AdminDashboardController::class, 'index']);
 
     // ── Users module ───────────────────────────────────────────────────────
     // Read (list + detail with MASKED pii) — requires read:users
@@ -221,6 +251,24 @@ Route::middleware('auth:admin')->prefix('admin')->group(function () {
         Route::post('/fraud/denylist/{denylist}/lift',    [AdminFraudController::class, 'liftFromDenylist']);
     });
 
+    // ── Growth & Promotions ──────────────────────────────────────────────────
+    Route::middleware('admin.can:read:promotions')->group(function () {
+        Route::get('/promotions/overview',           [AdminPromotionsController::class, 'overview']);
+        Route::get('/promotions/campaigns',          [AdminPromotionsController::class, 'index']);
+        Route::get('/promotions/campaigns/{id}',     [AdminPromotionsController::class, 'show']);
+        Route::get('/promotions/campaigns/{id}/performance', [AdminPromotionsController::class, 'performance']);
+        Route::post('/promotions/audience-estimate', [AdminPromotionsController::class, 'audienceEstimate']);
+        Route::get('/promotions/referral-config',    [AdminPromotionsController::class, 'referralConfig']);
+    });
+    Route::middleware('admin.can:write:promotions')->group(function () {
+        Route::post('/promotions/campaigns',              [AdminPromotionsController::class, 'store']);
+        Route::patch('/promotions/campaigns/{id}',        [AdminPromotionsController::class, 'update']);
+        Route::post('/promotions/campaigns/{id}/launch',  [AdminPromotionsController::class, 'launch']);
+        Route::post('/promotions/campaigns/{id}/pause',   [AdminPromotionsController::class, 'pause']);
+        Route::post('/promotions/campaigns/{id}/end',     [AdminPromotionsController::class, 'end']);
+        Route::put('/promotions/referral-config',         [AdminPromotionsController::class, 'updateReferralConfig']);
+    });
+
     // ── WhatsApp & Conversation Ops ──────────────────────────────────────────
     Route::middleware('admin.can:platform.ops')->group(function () {
         Route::get('/whatsapp/overview',      [AdminWhatsAppController::class, 'overview']);
@@ -260,25 +308,51 @@ Route::middleware('auth:admin')->prefix('admin')->group(function () {
 
 // ── WhatsApp Webhook (public — Meta Cloud API callbacks) ──────────────────
 Route::get('/webhook',  [WhatsAppWebhookController::class, 'verify']);
-Route::post('/webhook', [WhatsAppWebhookController::class, 'receive']);
+Route::post('/webhook', [WhatsAppWebhookController::class, 'receive'])->middleware('throttle:webhook');
 
 // ── PawaPay Payment Callbacks (public — PawaPay sends deposit/payout/refund status) ──
-Route::post('/pawapay/callback', [PawapayCallbackController::class, 'handle']);
+Route::post('/pawapay/callback', [PawapayCallbackController::class, 'handle'])->middleware('throttle:webhook');
+
+// ── Africa's Talking voice callback (public — masked-call bridge + metadata) ──
+// Acts only on session refs we minted; moves no money, exposes no real number.
+Route::post('/webhooks/africastalking/voice', [CommunicationController::class, 'voiceWebhook'])->middleware('throttle:webhook');
+
+// ── Signed Booking Agreement download (WhatsApp/Meta media fetch — no auth) ──
+// Short-lived signed URL; the 'signed' middleware rejects tampered/expired links.
+Route::get('/agreements/{agreement}/download', [BookingAgreementController::class, 'signedDownload'])
+    ->name('agreements.download')->middleware('signed');
 
 // ── Search & Discovery (public, Phase 3) ───────────────────────────────────
-Route::get('/search',         SearchController::class);
-Route::get('/search/suggest', SearchSuggestController::class);
+Route::get('/search',         SearchController::class)->middleware('throttle:search');
+Route::get('/search/suggest', SearchSuggestController::class)->middleware('throttle:search');
+// Natural-language matcher — primary customer entry point (app home + WhatsApp).
+// Finds WHAT (real catalog); SearchService ranks WHO. Type-ahead uses /suggest
+// (cheap layers, no LLM); the full pipeline runs here on submit.
+Route::post('/match',              \App\Http\Controllers\Api\MatchController::class)->middleware('throttle:match');
+Route::post('/match/{log}/outcome', [\App\Http\Controllers\Api\MatchController::class, 'outcome'])->middleware('throttle:search');
 Route::get('/home-banners',   [HomeBannerController::class, 'index']);
+// Growth & Promotions home-banner slot (auth-aware: resolves the caller's
+// audience when a token is present, audience-agnostic campaigns otherwise).
+Route::get('/placements/home', [\App\Http\Controllers\Api\PlacementController::class, 'home']);
 
 // ── Ranking instrumentation events (v3.2 §7 — public, fire-and-forget) ─────
-Route::post('/events/result-clicked',  [\App\Http\Controllers\Api\SearchEventController::class, 'resultClicked']);
-Route::post('/events/booking-started', [\App\Http\Controllers\Api\SearchEventController::class, 'bookingStarted']);
+Route::post('/events/result-clicked',  [\App\Http\Controllers\Api\SearchEventController::class, 'resultClicked'])->middleware('throttle:search');
+Route::post('/events/booking-started', [\App\Http\Controllers\Api\SearchEventController::class, 'bookingStarted'])->middleware('throttle:search');
 
 // ── Landing page summary (public marketing aggregates + featured reviews) ──
 Route::get('/landing', [LandingController::class, 'summary']);
 
+// ── Legal documents (public, read-anytime — versioned content source) ──────
+// Terms of Service, Privacy Policy, User Agreement. Same source feeds the
+// consent gate, the in-app Legal screens and the PWA/website (parity).
+Route::get('/legal/documents',        [LegalController::class, 'index']);
+Route::get('/legal/documents/{type}', [LegalController::class, 'show']);
+
 // ── Categories (public read) ────────────────────────────────────────────────
-Route::get('/categories', [CategoryController::class, 'index']);
+Route::get('/categories',         [CategoryController::class, 'index']);
+Route::get('/categories/popular', [CategoryController::class, 'popular']);
+// User-facing pricing-model labels/descriptions (the ONE source the editors read).
+Route::get('/pricing-models',     [CategoryController::class, 'pricingModels']);
 
 // ── Services (public browse + detail) ──────────────────────────────────────
 Route::get('/services',           [ServiceController::class, 'index']);
@@ -304,16 +378,45 @@ Route::middleware(['auth:api', 'account.active'])->group(function () {
 
     // ── Bookings (buyer + provider) ────────────────────────────────────────
     Route::get('/bookings',               [BookingController::class, 'index']);
-    Route::post('/bookings',              [BookingController::class, 'store']);
+    Route::post('/bookings',              [BookingController::class, 'store'])->middleware('throttle:write');
     Route::get('/bookings/{id}',          [BookingController::class, 'show']);
+    // Growth & Promotions: server-computed checkout price breakdown (original →
+    // discount → total) for the current user + booking (+ optional ?code=).
+    Route::get('/bookings/{id}/checkout-preview', [BookingController::class, 'checkoutPreview']);
+    // Quote-first brief (PROVIDER_SCOPE / QUOTE_DEPOSIT): customer attaches
+    // photos/a short video for pricing context, buyer-only, brief must be open.
+    Route::post('/bookings/{id}/scope-attachments', [BookingController::class, 'addScopeAttachments']);
+    // Authorized read of a private scope attachment — booking parties only (§ SEC-4).
+    Route::get('/bookings/{id}/scope-attachments/{index}', [BookingController::class, 'scopeAttachment'])
+        ->whereNumber('index');
 
     // Shared transitions (both modes)
     Route::post('/bookings/{id}/start',    [BookingController::class, 'start']);
     Route::post('/bookings/{id}/deliver',  [BookingController::class, 'deliver']);
     Route::post('/bookings/{id}/complete', [BookingController::class, 'complete']);
+
+    // HOURLY_CAPPED observed timer — provider start/finish is via start/deliver;
+    // these cover pause/resume and the customer-approved cap extension.
+    Route::post('/bookings/{id}/pause',                 [BookingController::class, 'pauseTimer']);
+    Route::post('/bookings/{id}/resume',                [BookingController::class, 'resumeTimer']);
+    Route::post('/bookings/{id}/request-cap-extension', [BookingController::class, 'requestCapExtension']);
+    Route::post('/bookings/{id}/approve-cap-extension', [BookingController::class, 'approveCapExtension']);
     Route::post('/bookings/{id}/dispute',  [BookingController::class, 'dispute']);
     Route::post('/bookings/{id}/cancel',   [BookingController::class, 'cancel']);
     Route::post('/bookings/{id}/review',   [BookingController::class, 'review']);
+
+    // ── Communication layer — masked calling + structured status updates ──
+    // NO chat / VoIP: free-form conversation deep-links to WhatsApp on clients.
+    // Both endpoints are gated server-side to funded, active bookings.
+    Route::post('/bookings/{id}/status-update', [CommunicationController::class, 'statusUpdate'])->middleware('throttle:write');
+    Route::post('/bookings/{id}/call',          [CommunicationController::class, 'call'])->middleware('throttle:write');
+    Route::get('/bookings/{id}/comms/timeline', [CommunicationController::class, 'timeline']);
+
+    // ── Booking Agreement document (both parties, versioned, immutable) ────
+    Route::get('/bookings/{id}/agreements',          [BookingAgreementController::class, 'index']);
+    Route::get('/bookings/{id}/agreement/link',      [BookingAgreementController::class, 'link']);
+    Route::get('/bookings/{id}/agreement',           [BookingAgreementController::class, 'latest']);
+    Route::get('/bookings/{id}/agreement/{version}', [BookingAgreementController::class, 'version'])->whereNumber('version');
 
     // ESCROW-only transitions
     Route::post('/bookings/{id}/pay',           [BookingController::class, 'pay']);
@@ -363,6 +466,17 @@ Route::middleware(['auth:api', 'account.active'])->group(function () {
 
     // ── Account self-service ───────────────────────────────────────────────
     Route::patch('/me/account', [AuthController::class, 'updateAccount']);
+    Route::post('/me/avatar',   [AuthController::class, 'uploadAvatar']);
+
+    // ── Consent + data-subject rights (Data Protection Act No. 3 of 2021) ──
+    // The gate calls status → store; withdrawal + rights capture live here too.
+    Route::get('/me/consent',            [ConsentController::class, 'status']);
+    Route::post('/me/consent',           [ConsentController::class, 'store']);
+    Route::post('/me/consent/decline',   [ConsentController::class, 'decline']);
+    Route::post('/me/consent/withdraw',  [ConsentController::class, 'withdraw']);
+    Route::get('/me/consent/history',    [ConsentController::class, 'history']);
+    Route::get('/me/data-requests',      [ConsentController::class, 'dataRequests']);
+    Route::post('/me/data-requests',     [ConsentController::class, 'storeDataRequest']);
 
     // ── Location & address book (v3.1 §4) ──────────────────────────────────
     Route::prefix('me')->group(function () {

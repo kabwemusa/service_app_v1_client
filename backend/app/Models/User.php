@@ -39,12 +39,15 @@ class User extends Authenticatable implements JWTSubject
         'password_hash',
         'role',
         'legal_name',
+        'avatar_url',
         'account_state',
         'referral_code',
         'referred_by',
         'password_changed_at',
         'is_verified',
-        'risk_score',
+        // risk_score is deliberately NOT mass-assignable (§ SEC-12): it is the
+        // internal trust number, written only by the trust engine via an explicit
+        // update — never from a request array.
         'disputes_raised_30d',
         'warned_at',
         'suspended_until',
@@ -56,8 +59,28 @@ class User extends Authenticatable implements JWTSubject
         'primary_location_source',
     ];
 
+    /**
+     * Fields never emitted by implicit model serialization (toArray/toJson).
+     * Defense-in-depth: even if a raw User (or a User relation) is returned
+     * without an explicit Resource, these must not leak. Resources that a party
+     * is entitled to still read a field access it explicitly, which bypasses
+     * $hidden — so this only strips the *accidental* exposure path.
+     *
+     * risk_score is THE internal trust number and must never reach any client
+     * (§8); the primary_location_* pair is the user's home coordinates (§4).
+     */
     protected $hidden = [
         'password_hash',
+        'risk_score',
+        'primary_location_lat',
+        'primary_location_lng',
+        'disputes_raised_30d',
+        'warned_at',
+        'suspended_until',
+        'session_invalidated_at',
+        'password_changed_at',
+        'referral_code',
+        'referred_by',
     ];
 
     protected function casts(): array
@@ -110,19 +133,14 @@ class User extends Authenticatable implements JWTSubject
             throw new \InvalidArgumentException("Not a valid Zambian phone number: {$rawPhone}");
         }
 
-        // Match on the trailing subscriber digits so a WhatsApp-created row
-        // (which may have been stored without the + or with odd prefixing)
-        // and a PWA sign-in for the same number resolve to one account.
-        $user = self::where('phone', $e164)
-            ->orWhere('phone', 'LIKE', '%' . substr($e164, -9))
-            ->first();
+        // Strict E.164 match only (§ SEC-8). A trailing-digits LIKE match could
+        // resolve to a DIFFERENT subscriber that happens to share the last nine
+        // digits, silently merging or hijacking an account. All stored numbers
+        // are canonicalized to E.164 (see the phone-backfill migration), so exact
+        // equality is both correct and safe.
+        $user = self::where('phone', $e164)->first();
 
         if ($user) {
-            // Canonicalize legacy/loosely-stored numbers to E.164 on first touch.
-            if ($user->phone !== $e164) {
-                $user->phone = $e164;
-                $user->save();
-            }
             $intent === 'PROVIDER' ? $user->ensureProviderProfile() : null;
 
             return $user;
@@ -216,6 +234,18 @@ class User extends Authenticatable implements JWTSubject
     public function savedLocations()
     {
         return $this->hasMany(SavedLocation::class, 'user_id');
+    }
+
+    /** Append-only consent audit (Data Protection Act No. 3 of 2021 — demonstrable consent). */
+    public function consentRecords()
+    {
+        return $this->hasMany(ConsentRecord::class, 'user_id');
+    }
+
+    /** Data-subject-rights requests the user has raised. */
+    public function dataSubjectRequests()
+    {
+        return $this->hasMany(DataSubjectRequest::class, 'user_id');
     }
 
     /** v3.1 §4.1 — every user must set a primary location before they can search/be discovered. */

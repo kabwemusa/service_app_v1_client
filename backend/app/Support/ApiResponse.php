@@ -28,6 +28,28 @@ final class ApiResponse
     }
 
     /**
+     * Return a paginated list in the canonical shape (§ API-1) — the same
+     * `{ data, current_page, last_page, per_page, total }` envelope the booking,
+     * review and notification endpoints use, so clients parse one shape.
+     *
+     * @param  \Illuminate\Contracts\Pagination\LengthAwarePaginator  $paginator
+     * @param  array|null  $items  Pre-transformed items (e.g. a Resource collection); defaults to the paginator's items.
+     */
+    public static function paginated(
+        \Illuminate\Contracts\Pagination\LengthAwarePaginator $paginator,
+        mixed $items = null,
+        string $message = 'Success.',
+    ): JsonResponse {
+        return self::success([
+            'data'         => $items ?? $paginator->items(),
+            'current_page' => $paginator->currentPage(),
+            'last_page'    => $paginator->lastPage(),
+            'per_page'     => $paginator->perPage(),
+            'total'        => $paginator->total(),
+        ], $message);
+    }
+
+    /**
      * Return an error JSON response.
      *
      * @param  string      $message   Human-readable error description.

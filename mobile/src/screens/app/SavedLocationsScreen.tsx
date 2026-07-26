@@ -3,7 +3,6 @@ import * as Haptics from 'expo-haptics';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   KeyboardAvoidingView,
   Modal,
@@ -16,6 +15,7 @@ import {
 import { Button, Switch, Text, TextInput, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { locationApi, PlaceCandidate, SavedLocation } from '../../api/location';
+import { ConfirmDialog, ConfirmDialogConfig } from '../../components/ui/ConfirmDialog';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useLocationStore } from '../../store/locationStore';
 import { palette, radius as r, spacing, typography } from '../../theme';
@@ -31,6 +31,7 @@ export default function SavedLocationsScreen({ navigation }: any) {
   const { showError, showSuccess } = useSnackbar();
 
   const [addVisible, setAddVisible] = useState(false);
+  const [dialog, setDialog] = useState<ConfirmDialogConfig | null>(null);
 
   useEffect(() => {
     fetchSaved();
@@ -45,40 +46,32 @@ export default function SavedLocationsScreen({ navigation }: any) {
 
   const handlePromote = (location: SavedLocation) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    Alert.alert(
-      'Set as primary location',
-      `"${location.label}" will become the location we use to find providers near you by default.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Set as primary',
-          onPress: async () => {
-            const ok = await updateSaved(location.id, { is_primary: true });
-            if (ok) showSuccess(`${location.label} is now your primary location.`);
-          },
-        },
-      ],
-    );
+    setDialog({
+      title: 'Set as primary location',
+      message: `"${location.label}" will become the location we use to find providers near you by default.`,
+      confirmLabel: 'Set as primary',
+      onConfirm: async () => {
+        setDialog(null);
+        const ok = await updateSaved(location.id, { is_primary: true });
+        if (ok) showSuccess(`${location.label} is now your primary location.`);
+      },
+    });
   };
 
   const handleDelete = (location: SavedLocation) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    Alert.alert(
-      'Remove place',
-      `Remove "${location.label}" from your saved places?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: async () => {
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-            const ok = await deleteSaved(location.id);
-            if (ok) showSuccess('Place removed.');
-          },
-        },
-      ],
-    );
+    setDialog({
+      title: 'Remove place',
+      message: `Remove "${location.label}" from your saved places?`,
+      destructive: true,
+      confirmLabel: 'Remove',
+      onConfirm: async () => {
+        setDialog(null);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        const ok = await deleteSaved(location.id);
+        if (ok) showSuccess('Place removed.');
+      },
+    });
   };
 
   return (
@@ -171,6 +164,8 @@ export default function SavedLocationsScreen({ navigation }: any) {
       </View>
 
       <AddPlaceModal visible={addVisible} onClose={() => setAddVisible(false)} />
+
+      <ConfirmDialog dialog={dialog} onDismiss={() => setDialog(null)} />
     </SafeAreaView>
   );
 }

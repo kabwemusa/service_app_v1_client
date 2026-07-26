@@ -125,4 +125,28 @@ return [
 
     'password_timeout' => env('AUTH_PASSWORD_TIMEOUT', 10800),
 
+    /*
+    |--------------------------------------------------------------------------
+    | OTP throttling (§ CFG-4)
+    |--------------------------------------------------------------------------
+    | Tunable without a deploy. Consumed by App\Services\AuthService.
+    */
+    'otp' => [
+        'resend_cooldown_seconds' => (int) env('OTP_RESEND_COOLDOWN_SECONDS', 60),
+        'max_sends_per_window'    => (int) env('OTP_MAX_SENDS_PER_WINDOW', 5),
+        'rate_window_seconds'     => (int) env('OTP_RATE_WINDOW_SECONDS', 3600),
+        'max_attempts'            => (int) env('OTP_MAX_ATTEMPTS', 5),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Legacy email/password + email-OTP endpoints (§ API-3)
+    |--------------------------------------------------------------------------
+    | The canonical auth is passwordless phone-OTP. The legacy register/login/
+    | verify-otp/resend-otp routes remain only for the superseded Expo app during
+    | transition and are the weakest surface. Set AUTH_LEGACY_PASSWORD_AUTH=false
+    | in production to remove them entirely once no Expo clients remain.
+    */
+    'legacy_password_auth' => (bool) env('AUTH_LEGACY_PASSWORD_AUTH', true),
+
 ];

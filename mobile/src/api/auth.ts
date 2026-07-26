@@ -8,6 +8,10 @@ export interface AuthUser {
   id: string;
   email: string | null;
   phone: string | null;
+  /** Full name, when set — takes over from email/phone wherever identity is shown. */
+  legal_name?: string | null;
+  /** Public profile photo — null until the customer uploads one. Never the KYC selfie. */
+  avatar_url?: string | null;
   role: UserRole;
   account_state: AccountState;
   is_verified: boolean;
@@ -76,6 +80,12 @@ export const authApi = {
 
   updateAccount: (payload: { phone?: string | null; name?: string | null }) =>
     api.patch<AuthUser>('/me/account', payload),
+
+  uploadAvatar: (asset: { uri: string; name: string; mimeType: string }) => {
+    const formData = new FormData();
+    formData.append('photo', { uri: asset.uri, name: asset.name, type: asset.mimeType } as any);
+    return api.upload<AuthUser>('/me/avatar', formData);
+  },
 
   logout: async () => {
     try {

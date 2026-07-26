@@ -41,6 +41,7 @@ class AdminVerificationService
     public function __construct(
         private readonly AuditedMutationService $audit,
         private readonly NotificationDispatcher $notifications,
+        private readonly KycService $kyc,
     ) {}
 
     // ── List ─────────────────────────────────────────────────────────────────
@@ -558,6 +559,17 @@ class AdminVerificationService
             // just hit 1 for the first time currently has trust_score = 0.00,
             // which is below the 0.40 floor and blocks them until the cron runs.
             \App\Jobs\ComputeTrustScoreJob::dispatch();
+        }
+
+        // Identity docs must also write the 'nrc' (+ 'momo_name_match') eligibility
+        // rows the provider ladder + dispatch gate read — the KYC pipeline does
+        // this on auto-approval, so the admin panel must match. Without it a
+        // manually-approved provider bumps to Tier 1 yet the ladder keeps showing
+        // "verify your identity" and their listings stay non-dispatchable.
+        if (in_array(DocType::from($doc->doc_type), [DocType::NRC, DocType::PASSPORT, DocType::DRIVERS_LICENSE], true)
+            && $doc->user
+        ) {
+            $this->kyc->bridgeIdentityApproval($doc->user, $doc->reviewer_admin_id, $doc->id);
         }
     }
 

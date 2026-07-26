@@ -3,11 +3,12 @@
 namespace App\Services\Gateway;
 
 use App\Contracts\PaymentGateway;
+use App\Contracts\PaymentStatusVerifier;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
-class PawapayPaymentGateway implements PaymentGateway
+class PawapayPaymentGateway implements PaymentGateway, PaymentStatusVerifier
 {
     private string $baseUrl;
     private string $token;
@@ -233,21 +234,72 @@ class PawapayPaymentGateway implements PaymentGateway
      */
     public function status(string $holdRef): array
     {
-        $response = Http::withToken($this->token)
-            ->timeout(15)
-            ->get("{$this->baseUrl}/v2/deposits/{$holdRef}");
-
-        if ($response->failed()) {
-            return ['status' => 'UNKNOWN', 'amount' => 0.0, 'created_at' => ''];
-        }
-
-        $data = $response->json();
+        $record = $this->fetchRecord('deposit', $holdRef);
 
         return [
-            'status'     => $data['status'] ?? 'UNKNOWN',
-            'amount'     => (float) ($data['amount'] ?? 0),
-            'created_at' => $data['created'] ?? '',
+            'status'     => $this->extractStatus($record) ?? 'UNKNOWN',
+            'amount'     => (float) ($record['amount'] ?? 0),
+            'created_at' => $record['created'] ?? '',
         ];
+    }
+
+    /**
+     * Authoritative status re-fetch (PaymentStatusVerifier). The callback handler
+     * uses THIS, never the callback body's status, so a forged callback cannot
+     * fake a payment outcome. Returns 'UNKNOWN' when the reference is unknown to
+     * pawaPay or the lookup fails (both → the handler makes no state change).
+     */
+    public function verifyStatus(string $kind, string $ref): string
+    {
+        return $this->extractStatus($this->fetchRecord($kind, $ref)) ?? 'UNKNOWN';
+    }
+
+    /** GET the deposit/payout/refund record from pawaPay, or [] on any failure. */
+    private function fetchRecord(string $kind, string $ref): array
+    {
+        $path = match ($kind) {
+            'deposit' => 'deposits',
+            'payout'  => 'payouts',
+            'refund'  => 'refunds',
+            default   => null,
+        };
+        if ($path === null || $ref === '') {
+            return [];
+        }
+
+        try {
+            $response = Http::withToken($this->token)
+                ->timeout(15)
+                ->get("{$this->baseUrl}/v2/{$path}/{$ref}");
+        } catch (\Throwable $e) {
+            Log::error('PawaPay: status re-fetch threw', ['kind' => $kind, 'ref' => $ref, 'error' => $e->getMessage()]);
+            return [];
+        }
+
+        if ($response->failed()) {
+            Log::warning('PawaPay: status re-fetch failed', ['kind' => $kind, 'ref' => $ref, 'http' => $response->status()]);
+            return [];
+        }
+
+        return (array) $response->json();
+    }
+
+    /**
+     * Pull the transaction status out of a pawaPay read response, tolerating both
+     * the flat shape ({"status": "..."} ) and the v2 envelope
+     * ({"status": "FOUND", "data": {"status": "COMPLETED", ...}}). We want the
+     * transaction status, not the lookup outcome, so a nested data.status wins.
+     */
+    private function extractStatus(array $record): ?string
+    {
+        if (isset($record['data']) && is_array($record['data']) && isset($record['data']['status'])) {
+            return (string) $record['data']['status'];
+        }
+        // Some list-shaped responses return [ { ...record } ].
+        if (isset($record[0]) && is_array($record[0]) && isset($record[0]['status'])) {
+            return (string) $record[0]['status'];
+        }
+        return isset($record['status']) ? (string) $record['status'] : null;
     }
 
     /**

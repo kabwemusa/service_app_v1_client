@@ -38,6 +38,9 @@ final class AdminCapabilities
         'read:subscriptions', 'write:subscriptions',
         'read:insights',
         'read:settings', 'write:settings',
+        // Legal documents + consent settings module. High-sensitivity (publishing
+        // an agreement version triggers re-consent for every user) — super_admin only.
+        'legal.manage',
         'manage:admins',
         'read:audit',
         'write:platform_params',

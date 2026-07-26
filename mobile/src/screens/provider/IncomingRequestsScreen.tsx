@@ -1,15 +1,17 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, FlatList, StyleSheet, useColorScheme, View } from 'react-native';
+import { FlatList, StyleSheet, useColorScheme, View } from 'react-native';
 import { Button, Dialog, Portal, Text, TextInput, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { IncomingRequestEntry, TrustHint } from '../../api/bookings';
 import { ApiError } from '../../api/errors';
 import { ProviderRequestFeedEntry, serviceRequestsApi } from '../../api/serviceRequests';
+import { ConfirmDialog, ConfirmDialogConfig } from '../../components/ui/ConfirmDialog';
 import { ScreenHeader } from '../../components/ui/ScreenHeader';
 import { CardSkeleton } from '../../components/ui/SkeletonBlock';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useBookingStore } from '../../store/bookingStore';
+import { useRealtimeStore } from '../../store/realtimeStore';
 import { palette, radius as r, spacing, typography } from '../../theme';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
@@ -292,12 +294,17 @@ export default function IncomingRequestsScreen({ navigation }: any) {
   const [leadQuote, setLeadQuote] = useState<ProviderRequestFeedEntry | null>(null);
   // Booking quote (DIRECT QUOTE request)
   const [bookingQuote, setBookingQuote] = useState<IncomingRequestEntry | null>(null);
+  const [dialog, setDialog] = useState<ConfirmDialogConfig | null>(null);
   const [quotePrice, setQuotePrice] = useState('');
   const [responding, setResponding] = useState(false);
 
   const fetchLeads = useCallback(() => { serviceRequestsApi.providerFeed().then(setLeads).catch(() => {}); }, []);
 
   useEffect(() => { fetchIncomingRequests(); fetchLeads(); }, []);
+  // Live: a new booking / status change for this provider pushes over Reverb →
+  // refresh the incoming list instantly so a new request appears without reload.
+  const rtBookingRevision = useRealtimeStore((s) => s.bookingRevision);
+  useEffect(() => { if (rtBookingRevision > 0) fetchIncomingRequests(); }, [rtBookingRevision]);
   useEffect(() => { const i = setInterval(() => setTick((t) => t + 1), 30_000); return () => clearInterval(i); }, []);
   useEffect(() => { if (incomingError) { showError(incomingError.message); clearIncomingError(); } }, [incomingError]);
 
@@ -315,16 +322,19 @@ export default function IncomingRequestsScreen({ navigation }: any) {
     }
   };
 
-  const confirmAccept = (e: IncomingRequestEntry) => Alert.alert(
-    'Accept request',
-    `Accept this booking at ZMW ${e.gross_zmw.toFixed(0)}? This confirms the job — the customer pays you directly.`,
-    [{ text: 'Cancel', style: 'cancel' }, { text: 'Accept', onPress: () => runTransition(e.booking_id, () => accept(e.booking_id), 'Accepted — the customer has been notified.') }],
-  );
-  const confirmDecline = (e: IncomingRequestEntry) => Alert.alert(
-    'Decline request',
-    'Decline this booking? The customer will be notified and this cannot be undone.',
-    [{ text: 'Cancel', style: 'cancel' }, { text: 'Decline', style: 'destructive', onPress: () => runTransition(e.booking_id, () => decline(e.booking_id), 'Request declined.') }],
-  );
+  const confirmAccept = (e: IncomingRequestEntry) => setDialog({
+    title: 'Accept request',
+    message: `Accept this booking at ZMW ${e.gross_zmw.toFixed(0)}? This confirms the job — the customer pays you directly.`,
+    confirmLabel: 'Accept',
+    onConfirm: () => { setDialog(null); runTransition(e.booking_id, () => accept(e.booking_id), 'Accepted — the customer has been notified.'); },
+  });
+  const confirmDecline = (e: IncomingRequestEntry) => setDialog({
+    title: 'Decline request',
+    message: 'Decline this booking? The customer will be notified and this cannot be undone.',
+    destructive: true,
+    confirmLabel: 'Decline',
+    onConfirm: () => { setDialog(null); runTransition(e.booking_id, () => decline(e.booking_id), 'Request declined.'); },
+  });
 
   const submitBookingQuote = async () => {
     if (!bookingQuote) return;
@@ -477,6 +487,8 @@ export default function IncomingRequestsScreen({ navigation }: any) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
+
+      <ConfirmDialog dialog={dialog} onDismiss={() => setDialog(null)} />
     </SafeAreaView>
   );
 }

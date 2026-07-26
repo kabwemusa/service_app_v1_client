@@ -134,24 +134,33 @@ class SimulatedWebhookTest extends TestCase
         $this->assertEquals('need', $convo->sub_state);
     }
 
-    public function test_collecting_need_stores_description(): void
+    public function test_collecting_need_runs_the_matcher(): void
     {
+        // Free-text intake now goes through the natural-language matcher (the same
+        // backend the app home calls). No categories are seeded here, so the
+        // matcher returns the honest empty state and hands off to browse; the raw
+        // need is still captured for the eventual booking.
         $this->postWithSignature($this->buildWebhookPayload('text', 'Hi'));
         $this->postWithSignature($this->buildWebhookPayload('button_reply', null, null, 'menu_book_now'));
 
         $this->postWithSignature($this->buildWebhookPayload('text', 'I need a plumber'));
 
         $convo = ConversationState::where('whatsapp_id', $this->testPhone)->first();
-        $this->assertEquals('COLLECTING', $convo->state);
-        $this->assertEquals('location', $convo->sub_state);
+        $this->assertEquals('BROWSING', $convo->state);
         $this->assertEquals('I need a plumber', $convo->getContextValue('need_description'));
     }
 
     public function test_collecting_location_stores_coordinates(): void
     {
-        $this->postWithSignature($this->buildWebhookPayload('text', 'Hi'));
-        $this->postWithSignature($this->buildWebhookPayload('button_reply', null, null, 'menu_book_now'));
-        $this->postWithSignature($this->buildWebhookPayload('text', 'plumber needed'));
+        // The booking flow (browse → dates → slots) lands in COLLECTING/location
+        // when it needs the delivery point; that's where a location message is
+        // handled. Arrange that state directly, then send the pin.
+        ConversationState::create([
+            'whatsapp_id' => $this->testPhone,
+            'state'       => 'COLLECTING',
+            'sub_state'   => 'location',
+            'context'     => [],
+        ]);
 
         $this->postWithSignature($this->buildWebhookPayload('location', null, null, null, -15.4167, 28.2833));
 
@@ -426,9 +435,13 @@ class SimulatedWebhookTest extends TestCase
 
     public function test_parses_location_message(): void
     {
-        $this->postWithSignature($this->buildWebhookPayload('text', 'Hi'));
-        $this->postWithSignature($this->buildWebhookPayload('button_reply', null, null, 'menu_book_now'));
-        $this->postWithSignature($this->buildWebhookPayload('text', 'cleaning service'));
+        // A location webhook is parsed and stored when the flow is awaiting one.
+        ConversationState::create([
+            'whatsapp_id' => $this->testPhone,
+            'state'       => 'COLLECTING',
+            'sub_state'   => 'location',
+            'context'     => [],
+        ]);
 
         $this->postWithSignature($this->buildWebhookPayload('location', null, null, null, -15.4167, 28.2833));
 

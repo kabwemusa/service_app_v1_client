@@ -213,20 +213,21 @@ class OutcomeBasedPricingTest extends TestCase
         $this->postJson("/api/bookings/{$booking->id}/pay", [], $this->asUser($this->buyer))->assertOk();
         $this->assertEqualsWithDelta(408.0, $this->holds[0]['amount'], 0.01); // cap + 2%
 
+        // START: server records job_started_at. No hours are ever entered.
         $this->postJson("/api/bookings/{$booking->id}/start", [], $this->asUser($this->provider))->assertOk();
+        $this->assertNotNull($booking->fresh()->job_started_at);
 
-        // Delivering without logging time is rejected — the provider logs hours,
-        // never the customer.
-        $this->postJson("/api/bookings/{$booking->id}/deliver", [], $this->asUser($this->provider))->assertStatus(422);
-        // Not a 0.5 step → rejected.
-        $this->postJson("/api/bookings/{$booking->id}/deliver", ['actual_hours' => 2.2], $this->asUser($this->provider))->assertStatus(422);
-        // Above the cap → rejected.
-        $this->postJson("/api/bookings/{$booking->id}/deliver", ['actual_hours' => 5], $this->asUser($this->provider))->assertStatus(422);
+        // Finishing without a started timer is impossible here (already started).
+        // Work for 2 h 20 min → rounds UP to the 30-min increment = 2.5 h = 250.
+        $this->travelTo(now()->addMinutes(140));
+        $this->postJson("/api/bookings/{$booking->id}/deliver", [], $this->asUser($this->provider))->assertOk();
+        $this->travelBack();
 
-        $this->postJson("/api/bookings/{$booking->id}/deliver", ['actual_hours' => 2.5], $this->asUser($this->provider))->assertOk();
         $booking->refresh();
-        $this->assertEquals(2.5, (float) $booking->actual_hours_logged);
-        $this->assertEquals(250.0, (float) $booking->actual_charge_zmw);
+        // Elapsed is server-computed from the two timestamps — never a self-report.
+        $this->assertEqualsWithDelta(140, (int) $booking->observed_minutes, 1);
+        $this->assertEquals(250.0, (float) $booking->final_charge_zmw);
+        $this->assertNull($booking->actual_hours_logged); // deprecated — never written
 
         $this->postJson("/api/bookings/{$booking->id}/complete", [], $this->asUser($this->buyer))->assertOk();
         $booking->refresh();
@@ -260,9 +261,63 @@ class OutcomeBasedPricingTest extends TestCase
         $this->postJson("/api/bookings/{$booking->id}/pay", [], $this->asUser($this->buyer))->assertOk();
         $this->postJson("/api/bookings/{$booking->id}/start", [], $this->asUser($this->provider))->assertOk();
 
-        // 0.5 h worked, but the 2-hr minimum bills 200.
-        $this->postJson("/api/bookings/{$booking->id}/deliver", ['actual_hours' => 0.5], $this->asUser($this->provider))->assertOk();
-        $this->assertEquals(200.0, (float) $booking->fresh()->actual_charge_zmw);
+        // 0.5 h observed, but the 2-hr minimum bills 200.
+        $this->travelTo(now()->addMinutes(30));
+        $this->postJson("/api/bookings/{$booking->id}/deliver", [], $this->asUser($this->provider))->assertOk();
+        $this->travelBack();
+        $this->assertEquals(200.0, (float) $booking->fresh()->final_charge_zmw);
+    }
+
+    public function test_hourly_capped_wraps_at_cap_when_timer_exceeds_it(): void
+    {
+        $service = $this->makeService([
+            'pricing_model' => 'HOURLY_CAPPED',
+            'base_price'    => 400,
+            'hourly_rate'   => 100,
+            'minimum_hours' => 1,
+            'cap_hours'     => 4,
+            'cap_amount'    => 400,
+        ]);
+
+        $booking = $this->createBooking($service);
+        $this->postJson("/api/bookings/{$booking->id}/pay", [], $this->asUser($this->buyer))->assertOk();
+        $this->postJson("/api/bookings/{$booking->id}/start", [], $this->asUser($this->provider))->assertOk();
+
+        // Runs 5 h — beyond the 4 h cap. Without a customer-approved extension the
+        // charge WRAPS AT THE CAP; it is never silently exceeded.
+        $this->travelTo(now()->addMinutes(300));
+        $this->postJson("/api/bookings/{$booking->id}/deliver", [], $this->asUser($this->provider))->assertOk();
+        $this->travelBack();
+
+        $this->assertEquals(400.0, (float) $booking->fresh()->final_charge_zmw);
+    }
+
+    public function test_hourly_capped_customer_extension_raises_cap(): void
+    {
+        $service = $this->makeService([
+            'pricing_model' => 'HOURLY_CAPPED',
+            'base_price'    => 400,
+            'hourly_rate'   => 100,
+            'minimum_hours' => 1,
+            'cap_hours'     => 4,
+            'cap_amount'    => 400,
+        ]);
+
+        $booking = $this->createBooking($service);
+        $this->postJson("/api/bookings/{$booking->id}/pay", [], $this->asUser($this->buyer))->assertOk();
+        $this->postJson("/api/bookings/{$booking->id}/start", [], $this->asUser($this->provider))->assertOk();
+
+        // Provider requests, customer approves +2 h → additional 200 hold; cap → 600.
+        $this->postJson("/api/bookings/{$booking->id}/request-cap-extension", [], $this->asUser($this->provider))->assertOk();
+        $this->postJson("/api/bookings/{$booking->id}/approve-cap-extension", ['additional_hours' => 2], $this->asUser($this->buyer))->assertOk();
+        $booking->refresh();
+        $this->assertEquals(600.0, (float) $booking->agreed_amount);
+
+        // Now 5 h is billable (≤ raised cap of 6 h) → 500.
+        $this->travelTo(now()->addMinutes(300));
+        $this->postJson("/api/bookings/{$booking->id}/deliver", [], $this->asUser($this->provider))->assertOk();
+        $this->travelBack();
+        $this->assertEquals(500.0, (float) $booking->fresh()->final_charge_zmw);
     }
 
     // ── PROVIDER_SCOPE ───────────────────────────────────────────────────────

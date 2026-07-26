@@ -32,8 +32,11 @@ const BG_TOKENS: Record<string, string> = {
 
 export function HomeBannerCarousel({
   onAction,
+  refreshKey,
 }: {
   onAction?: (action: string) => void;
+  /** Change this to force a re-fetch (e.g. on a live campaign change). */
+  refreshKey?: number;
 }) {
   const scrollRef  = useRef<ScrollView>(null);
   const activeRef  = useRef(0);
@@ -65,7 +68,7 @@ export function HomeBannerCarousel({
       })
       .catch(() => { if (alive) setStatus('empty'); });
     return () => { alive = false; };
-  }, []);
+  }, [refreshKey]);
 
   const goTo = useCallback(
     (idx: number) => {
@@ -76,13 +79,16 @@ export function HomeBannerCarousel({
     [reducedMotion],
   );
 
+  // Auto-advance always runs with 2+ banners — "reduce motion" changes HOW the
+  // transition looks (goTo already passes animated: !reducedMotion for an
+  // instant snap instead of a slide), never WHETHER the carousel moves at all.
   const startTimer = useCallback(() => {
-    if (reducedMotion || bannersRef.current.length <= 1) return;
+    if (bannersRef.current.length <= 1) return;
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
       goTo((activeRef.current + 1) % bannersRef.current.length);
     }, ADVANCE_MS);
-  }, [goTo, reducedMotion]);
+  }, [goTo]);
 
   useEffect(() => {
     if (status === 'ready') startTimer();

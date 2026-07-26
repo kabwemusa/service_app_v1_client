@@ -3,6 +3,7 @@
 namespace App\Http\Requests\Category;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class StoreCategoryRequest extends FormRequest
 {
@@ -29,6 +30,12 @@ class StoreCategoryRequest extends FormRequest
             'commission_band' => ['sometimes', 'nullable', 'string', 'max:50'],
             'commission_rates' => ['sometimes', 'nullable', 'array'],
             'commission_rates.*' => ['numeric', 'min:0', 'max:1'],
+            // Category-driven pricing guidance (selection guidance + copy only).
+            'default_pricing_model'        => ['sometimes', 'nullable', 'string', Rule::in(UpdateCategoryRequest::MODELS)],
+            'recommended_pricing_models'   => ['sometimes', 'nullable', 'array', 'max:4'],
+            'recommended_pricing_models.*' => ['string', Rule::in(UpdateCategoryRequest::MODELS)],
+            'pricing_rationale'            => ['sometimes', 'nullable', 'string', 'max:400'],
+            'pricing_mismatch_warning'     => ['sometimes', 'nullable', 'string', 'max:600'],
             'reason'          => ['sometimes', 'string', 'min:10', 'max:1000'],
         ];
     }

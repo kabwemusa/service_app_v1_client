@@ -35,6 +35,7 @@ interface AuthState {
   hydrate:        () => Promise<void>;
   setActiveRole:  (role: ActiveRole) => Promise<void>;
   updateAccount:  (payload: { phone?: string | null; name?: string | null }) => Promise<void>;
+  uploadAvatar:   (asset: { uri: string; name: string; mimeType: string }) => Promise<void>;
   clearError: () => void;
 }
 
@@ -179,6 +180,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const updatedUser = await authApi.updateAccount(payload);
+      const merged = { ...get().user, ...updatedUser } as AuthUser;
+      await AsyncStorage.setItem('auth_user', JSON.stringify(merged));
+      set({ user: merged });
+    } catch (e) {
+      const err = toApiError(e);
+      set({ error: err });
+      throw err;
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  uploadAvatar: async (asset) => {
+    set({ loading: true, error: null });
+    try {
+      const updatedUser = await authApi.uploadAvatar(asset);
       const merged = { ...get().user, ...updatedUser } as AuthUser;
       await AsyncStorage.setItem('auth_user', JSON.stringify(merged));
       set({ user: merged });

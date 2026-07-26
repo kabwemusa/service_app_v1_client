@@ -14,6 +14,9 @@ export interface SearchResult {
   title:         string;
   description:   string | null;
   pricing_model: PricingModel;
+  // Remote (online) services → show "Online" instead of an area/distance.
+  delivery_type: 'IN_PERSON' | 'REMOTE';
+  is_remote:     boolean;
   base_price:    number | null;
   payment_mode:  'DIRECT' | 'ESCROW';
   latitude:      number;

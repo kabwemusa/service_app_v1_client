@@ -1,7 +1,9 @@
 import { Suspense, useEffect } from 'react';
 import { BrowserRouter, useLocation } from 'react-router-dom';
+import { MotionConfig } from 'motion/react';
 import { AppRoutes } from './routes';
 import { SignInHost } from './features/auth/SignInHost';
+import { ConsentGateHost } from './features/legal/ConsentGateHost';
 import { useAuthStore } from './store/authStore';
 import { useTheme } from './theme/useTheme';
 import './i18n';
@@ -18,6 +20,8 @@ function Shell() {
       </Suspense>
       {/* Root-level sign-in sheet for the customer first-action flow. */}
       <SignInHost />
+      {/* Root-level consent gate — blocks a signed-in user who must (re)consent. */}
+      <ConsentGateHost />
     </div>
   );
 }
@@ -29,8 +33,13 @@ export default function App() {
   useEffect(() => { hydrate(); }, [hydrate]);
 
   return (
-    <BrowserRouter>
-      <Shell />
-    </BrowserRouter>
+    // reducedMotion="user" makes every Motion animation honour the OS
+    // "reduce motion" setting automatically — movement is dropped, content
+    // still appears. One switch for the whole app.
+    <MotionConfig reducedMotion="user">
+      <BrowserRouter>
+        <Shell />
+      </BrowserRouter>
+    </MotionConfig>
   );
 }

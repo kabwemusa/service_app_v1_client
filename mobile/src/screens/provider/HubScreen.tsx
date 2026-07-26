@@ -20,12 +20,14 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
+import { storageUrl } from "../../api/client";
 import { VettingBadge } from "../../components/discovery/VettingBadge";
 import { Card, Divider } from "../../components/ui/Card";
 import { NotificationBell } from "../../components/ui/NotificationBell";
 import { ScreenHeader } from "../../components/ui/ScreenHeader";
 import { CardSkeleton } from "../../components/ui/SkeletonBlock";
 import { useSnackbar } from "../../providers/SnackbarProvider";
+import { useAuthStore } from "../../store/authStore";
 import { useBookingStore } from "../../store/bookingStore";
 import { useProfileStore } from "../../store/profileStore";
 import { palette, radius as r, spacing, typography } from "../../theme";
@@ -199,7 +201,7 @@ function ProviderAvatar({
   if (uri && !err) {
     return (
       <Image
-        source={{ uri }}
+        source={{ uri: storageUrl(uri) }}
         onError={() => setErr(true)}
         style={{
           width: size,
@@ -254,7 +256,7 @@ const SETUP_STEPS: SetupStep[] = [
   {
     key: "profile",
     label: "Profile",
-    sub: "Name, photo, area & languages",
+    sub: "Name, photo, bio & languages",
     route: "ProviderProfileEdit",
     stepNo: 2,
   },
@@ -300,11 +302,16 @@ export default function HubScreen({ navigation }: any) {
     accept,
     decline,
   } = useBookingStore();
+  const authUser = useAuthStore((s) => s.user);
   const { showError } = useSnackbar();
   const insets = useSafeAreaInsets();
   const scheme = useColorScheme();
   const c = scheme === "dark" ? DARK : LIGHT;
   const reduced = useReducedMotion();
+
+  // The account milestone reflects the channel the account was actually verified
+  // with — phone-registered accounts verify by SMS, email-registered by email.
+  const accountSub = authUser?.phone ? "Phone number verified" : "Email verified";
 
   const [toggling, setToggling] = useState(false);
   const [offerActing, setOfferActing] = useState<null | "accept" | "decline">(
@@ -466,6 +473,7 @@ export default function HubScreen({ navigation }: any) {
           <SetupHub
             dashboard={dashboard}
             profile={profile}
+            accountSub={accountSub}
             c={c}
             cardStyle={cardStyle}
             dividerColor={dividerColor}
@@ -484,6 +492,7 @@ export default function HubScreen({ navigation }: any) {
 function SetupHub({
   dashboard,
   profile,
+  accountSub,
   c,
   cardStyle,
   dividerColor,
@@ -493,9 +502,12 @@ function SetupHub({
   const stepDone = (k: string): boolean =>
     dashboard.listing?.steps.find((s: any) => s.key === k)?.done ?? false;
 
+  // `profile` is NOT the profile_strength search gate (completeness ≥ 40) — that
+  // only reaches 40 via KYC + MoMo + services, which made this step impossible to
+  // finish. It reflects the profile editor's fields instead: name + bio.
   const done: Record<MilestoneKey, boolean> = {
     account: true, // authenticated providers have a verified phone by definition
-    profile: stepDone("profile_strength"),
+    profile: !!profile?.display_name?.trim() && !!profile?.bio?.trim(),
     service: stepDone("active_service"),
     identity: stepDone("verify_identity") || (profile?.trust_tier ?? 0) >= 1,
     payment: !!profile?.momo_number && !!profile?.momo_provider,
@@ -614,7 +626,7 @@ function SetupHub({
                     style={[styles.checkSub, { color: c.t3 }]}
                     numberOfLines={1}
                   >
-                    {s.sub}
+                    {s.key === "account" ? accountSub : s.sub}
                   </Text>
                 </View>
                 {/* trailing */}

@@ -70,6 +70,19 @@ interface WhatsAppGateway
     public function sendImage(string $to, string $imageUrl, ?string $caption = null): string;
 
     /**
+     * Send a document message (e.g. the Booking Agreement PDF). Meta fetches the
+     * file by link, so $documentUrl must be publicly reachable for the fetch
+     * window (we hand it a short-lived SIGNED URL — never a permanent public one).
+     *
+     * @param  string       $to
+     * @param  string       $documentUrl  Signed, time-limited URL Meta can fetch
+     * @param  string       $filename     Filename shown to the recipient
+     * @param  string|null  $caption
+     * @return string  Message ID
+     */
+    public function sendDocument(string $to, string $documentUrl, string $filename, ?string $caption = null): string;
+
+    /**
      * Mark a received message as read, optionally showing the "typing…" indicator.
      *
      * The WhatsApp Cloud API exposes the typing indicator on the read receipt: when

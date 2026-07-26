@@ -2,16 +2,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
-  TextInput as RNTextInput,
   View,
 } from 'react-native';
 import {
@@ -36,44 +33,54 @@ import {
   servicesApi,
 } from '../../api/services';
 import { LocationPickerSheet } from '../../components/location/LocationPickerSheet';
+import { CategoryPicker } from '../../components/ui/CategoryPicker';
+import { ConfirmDialog, ConfirmDialogConfig } from '../../components/ui/ConfirmDialog';
 import { MarkdownEditor } from '../../components/ui/MarkdownEditor';
 import { ScreenHeader } from '../../components/ui/ScreenHeader';
 import { OnboardingProgress } from '../../components/provider/OnboardingProgress';
 import { TabItem, Tabs } from '../../components/ui/Tabs';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { DeliveryLocation } from '../../store/locationStore';
-import { Category } from '../../api/categories';
+import { flattenTaxonomy, findCategoryById, PricingModelMeta } from '../../api/categories';
 import { useCategoryStore } from '../../store/categoryStore';
 import { useProfileStore } from '../../store/profileStore';
 import { useServiceStore } from '../../store/serviceStore';
 import { palette, radius as r, spacing, typography } from '../../theme';
-import { fontFamily } from '../../theme/typography';
 
 type SectionKey = 'details' | 'pricing' | 'extras' | 'photos';
 
-// Outcome-based pricing — the provider owns every price parameter; customers
-// never input hours anywhere.
+// The four pricing models. USER-FACING labels/descriptions come from the server
+// (config('pricing.models'), via the category store); this list only fixes the
+// enum + display ORDER and is a graceful fallback until the labels load.
 const PRICING_OPTIONS: { value: PricingModel; label: string; description: string }[] = [
   {
     value: 'OUTCOME_FIXED',
-    label: 'Fixed outcome',
-    description: 'One price for a defined outcome. Customers book and pay it upfront.',
+    label: 'Fixed price',
+    description: "One price for the finished job. You're paid for the result, not the hours.",
   },
   {
     value: 'HOURLY_CAPPED',
-    label: 'Hourly with a cap',
-    description: 'Rate + minimum + spend cap. The cap is held; customers only pay for actual time.',
+    label: 'Time-based (for open-ended jobs)',
+    description: "For work where nobody can know the scope upfront — like tracing a fault. You're paid for the time actually worked, up to an agreed maximum.",
   },
   {
     value: 'PROVIDER_SCOPE',
-    label: 'Quote after brief',
-    description: 'Customers answer your questions; you send a fixed quote they approve before paying.',
+    label: 'Price after you see the job',
+    description: 'Customer describes the job; you send a price before they pay.',
   },
   {
     value: 'QUOTE_DEPOSIT',
-    label: 'Quote + deposit',
-    description: 'For large jobs: full quote after the brief, a deposit confirms, balance on completion.',
+    label: 'Quote with deposit',
+    description: 'For big jobs — a deposit confirms the booking, the balance is paid on completion.',
   },
+];
+
+// Delivery type — values are the backend contract (config('catalog.delivery_types'));
+// labels/help are UI copy. REMOTE = delivered online (nationwide, no location).
+type DeliveryType = 'IN_PERSON' | 'REMOTE';
+const DELIVERY_OPTIONS: { value: DeliveryType; label: string; description: string }[] = [
+  { value: 'IN_PERSON', label: 'In person', description: 'You travel to the customer or meet at a venue.' },
+  { value: 'REMOTE',    label: 'Delivered online', description: 'Done remotely — tutoring, design, consulting. Nationwide, no location needed.' },
 ];
 
 // Legacy model names may still arrive from cached payloads — map them forward.
@@ -104,6 +111,9 @@ export default function CreateServiceScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
 
   const { categories, fetchCategories } = useCategoryStore();
+  // User-facing pricing-model labels + the category's guidance come from ONE
+  // source (config, via the store) — never hardcoded in this component.
+  const pricingModels = useCategoryStore((s) => s.pricingModels);
   const { loading, createService, updateService, clearError } = useServiceStore();
   const dashboardMode = useProfileStore((s) => s.dashboard?.payment_mode);
   const fetchDashboard = useProfileStore((s) => s.fetchDashboard);
@@ -123,9 +133,17 @@ export default function CreateServiceScreen({ navigation, route }: any) {
   const markDirty = useCallback(() => setDirty(true), []);
 
   const [categoryId, setCategoryId]     = useState<number | undefined>(editing?.category_id);
+  const [categoryName, setCategoryName] = useState<string | null>(editing?.category?.name ?? null);
+  const [categoryPickerVisible, setCategoryPickerVisible] = useState(false);
+  const [deliveryType, setDeliveryType] = useState<DeliveryType>(editing?.delivery_type ?? 'IN_PERSON');
   const [title, setTitle]               = useState(editing?.title ?? '');
   const [description, setDescription]   = useState(editing?.description ?? '');
   const [pricingModel, setPricingModel] = useState<PricingModel>(normalizeModel(editing?.pricing_model));
+  // Whether the provider has manually picked a model (so category changes stop
+  // auto-selecting the category default over their choice).
+  const modelTouchedRef = useRef(false);
+  // Non-blocking category-mismatch nudge (guide, don't block).
+  const [mismatch, setMismatch] = useState<{ warning: string; recommended: PricingModel } | null>(null);
   const [price, setPrice]               = useState(editing?.base_price != null ? String(editing.base_price) : '');
   // HOURLY_CAPPED parameters — all provider-set, all required to publish.
   const [hourlyRate, setHourlyRate]     = useState(editing?.hourly_rate != null ? String(editing.hourly_rate) : '');
@@ -162,6 +180,7 @@ export default function CreateServiceScreen({ navigation, route }: any) {
   const [photos, setPhotos]       = useState<ServicePhoto[]>(editing?.photos ?? []);
   const [uploading, setUploading] = useState(false);
   const [busyPhotoId, setBusyPhotoId] = useState<number | null>(null);
+  const [dialog, setDialog] = useState<ConfirmDialogConfig | null>(null);
   const [photoError, setPhotoError]   = useState<string | null>(null);
 
   // Publish-validation state — which tabs/fields are offending.
@@ -214,10 +233,14 @@ export default function CreateServiceScreen({ navigation, route }: any) {
     const sub = navigation.addListener('beforeRemove', (e: any) => {
       if (!dirtyRef.current || savingRef.current) return;
       e.preventDefault();
-      Alert.alert('Discard changes?', 'You have unsaved changes. Leave without saving?', [
-        { text: 'Keep editing', style: 'cancel' },
-        { text: 'Discard', style: 'destructive', onPress: () => navigation.dispatch(e.data.action) },
-      ]);
+      setDialog({
+        title: 'Discard changes?',
+        message: 'You have unsaved changes. Leave without saving?',
+        destructive: true,
+        confirmLabel: 'Discard',
+        cancelLabel: 'Keep editing',
+        onConfirm: () => { setDialog(null); navigation.dispatch(e.data.action); },
+      });
     });
     return sub;
   }, [navigation]);
@@ -356,24 +379,24 @@ export default function CreateServiceScreen({ navigation, route }: any) {
   };
 
   const deletePhoto = (photo: ServicePhoto) => {
-    Alert.alert('Remove photo', 'Delete this photo from your service?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          setBusyPhotoId(photo.id);
-          try {
-            await servicesApi.deletePhoto(editing!.id, photo.id);
-            setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
-          } catch (e) {
-            showError(e instanceof ApiError ? e.message : 'Failed to delete photo.');
-          } finally {
-            setBusyPhotoId(null);
-          }
-        },
+    setDialog({
+      title: 'Remove photo',
+      message: 'Delete this photo from your service?',
+      destructive: true,
+      confirmLabel: 'Delete',
+      onConfirm: async () => {
+        setDialog(null);
+        setBusyPhotoId(photo.id);
+        try {
+          await servicesApi.deletePhoto(editing!.id, photo.id);
+          setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
+        } catch (e) {
+          showError(e instanceof ApiError ? e.message : 'Failed to delete photo.');
+        } finally {
+          setBusyPhotoId(null);
+        }
       },
-    ]);
+    });
   };
 
   // Reorder (first = cover). No gesture lib installed — move left/right controls.
@@ -439,6 +462,40 @@ export default function CreateServiceScreen({ navigation, route }: any) {
     }, 120);
   };
 
+  // ── Category-driven pricing guidance ────────────────────────────────────────
+  const guidance = findCategoryById(categories, categoryId)?.pricing_guidance ?? null;
+
+  /** User-facing label/description/rationale for a model (config, via the store). */
+  const modelMeta = useCallback((value: string): { label: string; description: string; rationale: string } => {
+    const m = pricingModels.find((x) => x.value === value);
+    if (m) return { label: m.label, description: m.description, rationale: m.rationale };
+    const fb = PRICING_OPTIONS.find((x) => x.value === value);
+    return { label: fb?.label ?? value, description: fb?.description ?? '', rationale: '' };
+  }, [pricingModels]);
+
+  // Pre-select the category's recommended model when creating — unless the
+  // provider has already picked one themselves. It's a default, not a lock.
+  useEffect(() => {
+    if (isEdit || modelTouchedRef.current) return;
+    const g = findCategoryById(categories, categoryId)?.pricing_guidance;
+    if (g?.default_model && g.default_model !== pricingModel) {
+      setPricingModel(g.default_model as PricingModel);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryId, categories, isEdit]);
+
+  function chooseModel(value: PricingModel) {
+    Haptics.selectionAsync();
+    modelTouchedRef.current = true;
+    setPricingModel(value);
+    markDirty();
+  }
+
+  // The chosen model is "ill-suited" when it's outside the category's recommended
+  // set. Guides, never blocks.
+  const isMismatch =
+    !!guidance && guidance.recommended.length > 0 && !guidance.recommended.includes(pricingModel);
+
   // ── Submit (one Save commits every tab) ─────────────────────────────────────
   const handleSubmit = async () => {
     const errs = collectErrors(status);
@@ -459,11 +516,24 @@ export default function CreateServiceScreen({ navigation, route }: any) {
       return;
     }
 
+    // Category mismatch nudge — non-blocking. Show it once; the buttons decide
+    // whether to switch to the recommended model or proceed (logged as override).
+    if (isMismatch && guidance) {
+      setMismatch({ warning: guidance.mismatch_warning, recommended: guidance.default_model as PricingModel });
+      return;
+    }
+
+    await performSave({ warningShown: false, warningOverridden: false });
+  };
+
+  const performSave = async (opts: { warningShown: boolean; warningOverridden: boolean }) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const durationMins = duration.trim() ? parseInt(duration, 10) : null;
     const payload = {
       category_id:            categoryId!,
       title:                  title.trim(),
       description:            description.trim() || undefined,
+      delivery_type:          deliveryType,
       pricing_model:          pricingModel,
       // Per-model pricing parameters — the backend clears whatever the model doesn't use.
       base_price:             pricingModel === 'OUTCOME_FIXED' ? (parseFloat(price) || null) : null,
@@ -477,8 +547,12 @@ export default function CreateServiceScreen({ navigation, route }: any) {
       duration_estimate_mins: durationMins,
       status,
       is_pinned:              isPinned,
-      // Omitted → backend defaults to the provider's base location.
-      ...(location ? { latitude: location.lat, longitude: location.lng } : {}),
+      // Selection-guidance telemetry (not persisted on the service).
+      pricing_warning_shown:      opts.warningShown,
+      pricing_warning_overridden: opts.warningOverridden,
+      // Remote services are nationwide (no location). In-person: omitted → backend
+      // defaults to the provider's base location.
+      ...(deliveryType !== 'REMOTE' && location ? { latitude: location.lat, longitude: location.lng } : {}),
       inclusions,
       addons: addons.map((a) => ({ name: a.name.trim(), price: parseFloat(a.price) || 0 })),
     };
@@ -510,8 +584,13 @@ export default function CreateServiceScreen({ navigation, route }: any) {
     }
   };
 
-  // ── Render helpers ──────────────────────────────────────────────────────────
-  const categoryName = categories.find((c) => c.id === categoryId)?.name;
+  // Resolve the selected category's name from the shared taxonomy when we only
+  // have its id (e.g. editing a service whose list payload omitted the name).
+  useEffect(() => {
+    if (categoryName || !categoryId || categories.length === 0) return;
+    const found = flattenTaxonomy(categories as any).find((c) => c.id === categoryId);
+    if (found) setCategoryName(found.name);
+  }, [categories, categoryId, categoryName]);
 
   const tabs: TabItem[] = [
     { key: 'details', label: 'Details', hasError: tabHasError('details') },
@@ -559,12 +638,30 @@ export default function CreateServiceScreen({ navigation, route }: any) {
               <View style={styles.divider} />
 
               <Text style={styles.subLabel}>Category</Text>
-              <CategoryPicker
-                categories={categories}
-                selectedId={categoryId}
-                onSelect={(id) => { Haptics.selectionAsync(); setCategoryId(id); markDirty(); }}
-              />
+              <TouchableRipple
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setCategoryPickerVisible(true); }}
+                borderless
+                style={[styles.rowField, hasError('category') && styles.rowFieldError]}
+              >
+                <View style={styles.rowFieldInner}>
+                  <Ionicons name="pricetags-outline" size={18} color={palette.primary} />
+                  <Text style={[styles.rowFieldText, !categoryName && { color: palette.textDisabled }]} numberOfLines={1}>
+                    {categoryName ?? 'Choose a category'}
+                  </Text>
+                  <Ionicons name="chevron-forward" size={16} color={palette.textSecondary} />
+                </View>
+              </TouchableRipple>
               {hasError('category') && <HelperText type="error" visible>Choose a category.</HelperText>}
+
+              <View style={styles.divider} />
+
+              <Text style={styles.subLabel}>How is it delivered?</Text>
+              <SegmentedButtons
+                value={deliveryType}
+                onValueChange={(v) => { Haptics.selectionAsync(); setDeliveryType(v as DeliveryType); markDirty(); }}
+                buttons={DELIVERY_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+              />
+              <Text style={styles.hint}>{DELIVERY_OPTIONS.find((o) => o.value === deliveryType)?.description}</Text>
 
               <View style={styles.divider} />
 
@@ -578,19 +675,35 @@ export default function CreateServiceScreen({ navigation, route }: any) {
 
               <View style={styles.divider} />
 
-              <Text style={styles.subLabel}>Where do you offer this from?</Text>
-              <TouchableRipple
-                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setPickerVisible(true); }}
-                borderless
-                style={styles.rowField}
-              >
-                <View style={styles.rowFieldInner}>
-                  <Ionicons name="location-outline" size={18} color={palette.primary} />
-                  <Text style={styles.rowFieldText} numberOfLines={1}>{locationLabel ?? 'Same as my base location'}</Text>
-                  <Ionicons name="chevron-forward" size={16} color={palette.textSecondary} />
-                </View>
-              </TouchableRipple>
-              <HelperText type="info" visible>Leave as-is to use your base location, or set a different spot for this service.</HelperText>
+              {/* Remote services are nationwide — no location is captured. */}
+              {deliveryType === 'REMOTE' ? (
+                <>
+                  <Text style={styles.subLabel}>Location</Text>
+                  <View style={styles.rowField}>
+                    <View style={styles.rowFieldInner}>
+                      <Ionicons name="globe-outline" size={18} color={palette.primary} />
+                      <Text style={styles.rowFieldText}>Online — available nationwide</Text>
+                    </View>
+                  </View>
+                  <HelperText type="info" visible>Delivered online, so customers anywhere can book it — no travel or area needed.</HelperText>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.subLabel}>Where do you offer this from?</Text>
+                  <TouchableRipple
+                    onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setPickerVisible(true); }}
+                    borderless
+                    style={styles.rowField}
+                  >
+                    <View style={styles.rowFieldInner}>
+                      <Ionicons name="location-outline" size={18} color={palette.primary} />
+                      <Text style={styles.rowFieldText} numberOfLines={1}>{locationLabel ?? 'Same as my base location'}</Text>
+                      <Ionicons name="chevron-forward" size={16} color={palette.textSecondary} />
+                    </View>
+                  </TouchableRipple>
+                  <HelperText type="info" visible>Leave as-is to use your base location, or set a different spot for this service.</HelperText>
+                </>
+              )}
 
               <View style={styles.divider} />
 
@@ -636,10 +749,12 @@ export default function CreateServiceScreen({ navigation, route }: any) {
               <Text style={styles.subLabel}>How do you price this?</Text>
               {PRICING_OPTIONS.map((opt) => {
                 const active = pricingModel === opt.value;
+                const meta   = modelMeta(opt.value);
+                const isDefault = guidance?.default_model === opt.value;
                 return (
                   <TouchableRipple
                     key={opt.value}
-                    onPress={() => { Haptics.selectionAsync(); setPricingModel(opt.value); markDirty(); }}
+                    onPress={() => chooseModel(opt.value)}
                     borderless
                     style={[styles.modelCard, active && styles.modelCardActive]}
                   >
@@ -650,13 +765,32 @@ export default function CreateServiceScreen({ navigation, route }: any) {
                         color={active ? palette.primary : palette.textDisabled}
                       />
                       <View style={styles.modelCardText}>
-                        <Text style={[styles.modelCardTitle, active && { color: palette.primary }]}>{opt.label}</Text>
-                        <Text style={styles.modelCardDesc}>{opt.description}</Text>
+                        <View style={styles.modelTitleRow}>
+                          <Text style={[styles.modelCardTitle, active && { color: palette.primary }]}>{meta.label}</Text>
+                          {isDefault && (
+                            <View style={styles.recBadge}>
+                              <Text style={styles.recBadgeText}>Recommended</Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={styles.modelCardDesc}>{meta.description}</Text>
                       </View>
                     </View>
                   </TouchableRipple>
                 );
               })}
+
+              {/* Rationale for the selected model — why it pays fairly for this work. */}
+              {!!modelMeta(pricingModel).rationale && (
+                <View style={styles.rationaleRow}>
+                  <Ionicons name="bulb-outline" size={15} color={palette.primary} />
+                  <Text style={styles.rationaleText}>
+                    {guidance && guidance.default_model === pricingModel && guidance.rationale
+                      ? guidance.rationale
+                      : modelMeta(pricingModel).rationale}
+                  </Text>
+                </View>
+              )}
 
               <View style={styles.divider} />
 
@@ -1020,195 +1154,56 @@ export default function CreateServiceScreen({ navigation, route }: any) {
         onSelect={handleLocationSelect}
         title="Where do you offer this from?"
       />
+
+      <CategoryPicker
+        visible={categoryPickerVisible}
+        selectedId={categoryId ?? null}
+        onSelect={(c) => { Haptics.selectionAsync(); setCategoryId(c.id); setCategoryName(c.name); markDirty(); }}
+        onClose={() => setCategoryPickerVisible(false)}
+      />
+
+      <ConfirmDialog dialog={dialog} onDismiss={() => setDialog(null)} />
+
+      {/* Non-blocking category mismatch nudge — guide, don't block. */}
+      {mismatch && (
+        <View style={styles.mismatchOverlay}>
+          <View style={styles.mismatchSheet}>
+            <View style={styles.mismatchIcon}>
+              <Ionicons name="bulb-outline" size={22} color={palette.primary} />
+            </View>
+            <Text style={styles.mismatchTitle}>A quick suggestion</Text>
+            <Text style={styles.mismatchBody}>{mismatch.warning}</Text>
+            <Button
+              mode="contained"
+              style={styles.mismatchPrimary}
+              contentStyle={styles.mismatchBtnContent}
+              labelStyle={styles.mismatchPrimaryLabel}
+              onPress={() => {
+                modelTouchedRef.current = true;
+                setPricingModel(mismatch.recommended);
+                markDirty();
+                setMismatch(null);
+                setSection('pricing');
+              }}
+            >
+              Use {modelMeta(mismatch.recommended).label}
+            </Button>
+            <Button
+              mode="text"
+              textColor={palette.textSecondary}
+              onPress={() => {
+                setMismatch(null);
+                performSave({ warningShown: true, warningOverridden: true });
+              }}
+            >
+              Use {modelMeta(pricingModel).label} anyway
+            </Button>
+          </View>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
-
-// ── Category picker (searchable) ────────────────────────────────────────────
-
-function flattenCategories(cats: Category[]): Category[] {
-  const out: Category[] = [];
-  for (const c of cats) {
-    out.push(c);
-    if (c.children?.length) out.push(...flattenCategories(c.children));
-  }
-  return out;
-}
-
-function CategoryPicker({
-  categories,
-  selectedId,
-  onSelect,
-}: {
-  categories: Category[];
-  selectedId: number | undefined;
-  onSelect:   (id: number) => void;
-}) {
-  const [query, setQuery] = useState('');
-  const [open, setOpen]   = useState(false);
-
-  const all = useMemo(() => flattenCategories(categories), [categories]);
-  const selected = all.find((c) => c.id === selectedId);
-
-  const filtered = useMemo(() => {
-    if (!query.trim()) return all;
-    const q = query.toLowerCase();
-    return all.filter((c) =>
-      c.name.toLowerCase().includes(q) ||
-      c.synonyms?.some((s) => s.toLowerCase().includes(q)),
-    );
-  }, [all, query]);
-
-  const handleSelect = (cat: Category) => {
-    onSelect(cat.id);
-    setQuery('');
-    setOpen(false);
-  };
-
-  return (
-    <View style={cpStyles.wrap}>
-      {/* Selected chip */}
-      {selected && !open && (
-        <Pressable onPress={() => setOpen(true)} style={cpStyles.selectedChip}>
-          {selected.icon && (
-            <Ionicons name={selected.icon as any} size={14} color={palette.primary} />
-          )}
-          <Text style={cpStyles.selectedText}>{selected.name}</Text>
-          <Ionicons name="chevron-down" size={14} color={palette.textSecondary} />
-        </Pressable>
-      )}
-
-      {/* Search input */}
-      {(!selected || open) && (
-        <View style={cpStyles.inputWrap}>
-          <Ionicons name="search-outline" size={16} color={palette.textSecondary} style={cpStyles.searchIcon} />
-          <RNTextInput
-            style={cpStyles.input}
-            placeholder="Search categories…"
-            placeholderTextColor={palette.textDisabled}
-            value={query}
-            onChangeText={(t) => { setQuery(t); setOpen(true); }}
-            onFocus={() => setOpen(true)}
-            autoCorrect={false}
-          />
-          {query.length > 0 && (
-            <Pressable onPress={() => setQuery('')} hitSlop={8}>
-              <Ionicons name="close-circle" size={16} color={palette.textDisabled} />
-            </Pressable>
-          )}
-        </View>
-      )}
-
-      {/* Results dropdown */}
-      {open && (
-        <View style={cpStyles.dropdown}>
-          <ScrollView style={cpStyles.dropdownScroll} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
-            {filtered.length === 0 ? (
-              <Text style={cpStyles.empty}>No categories found</Text>
-            ) : (
-              filtered.map((cat) => {
-                const isActive = cat.id === selectedId;
-                return (
-                  <Pressable
-                    key={cat.id}
-                    onPress={() => handleSelect(cat)}
-                    style={[cpStyles.row, isActive && cpStyles.rowActive]}
-                  >
-                    {cat.icon && (
-                      <Ionicons
-                        name={cat.icon as any}
-                        size={16}
-                        color={isActive ? palette.primary : palette.textSecondary}
-                      />
-                    )}
-                    <Text
-                      style={[cpStyles.rowText, isActive && cpStyles.rowTextActive]}
-                      numberOfLines={1}
-                    >
-                      {cat.name}
-                    </Text>
-                    {isActive && <Ionicons name="checkmark" size={16} color={palette.primary} />}
-                  </Pressable>
-                );
-              })
-            )}
-          </ScrollView>
-        </View>
-      )}
-    </View>
-  );
-}
-
-const cpStyles = StyleSheet.create({
-  wrap: { marginBottom: spacing.xs },
-  selectedChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    alignSelf: 'flex-start',
-    paddingVertical: spacing.xs + 4,
-    paddingHorizontal: spacing.md,
-    borderRadius: r.sm,
-    borderWidth: 1,
-    borderColor: palette.primary,
-    backgroundColor: palette.primaryLight,
-  },
-  selectedText: {
-    fontFamily: fontFamily.medium,
-    fontSize: 14,
-    color: palette.primary,
-  },
-  inputWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: r.sm,
-    borderWidth: 1,
-    borderColor: palette.border,
-    backgroundColor: palette.surface,
-    paddingHorizontal: spacing.sm,
-    minHeight: 44,
-  },
-  searchIcon: { marginRight: spacing.xs },
-  input: {
-    flex: 1,
-    fontFamily: fontFamily.regular,
-    fontSize: 14,
-    color: palette.textPrimary,
-    paddingVertical: Platform.OS === 'ios' ? spacing.sm : spacing.xs,
-  },
-  dropdown: {
-    marginTop: spacing.xs,
-    borderRadius: r.sm,
-    borderWidth: 1,
-    borderColor: palette.border,
-    backgroundColor: palette.surface,
-    overflow: 'hidden',
-  },
-  dropdownScroll: { maxHeight: 220 },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    paddingVertical: spacing.sm + 2,
-    paddingHorizontal: spacing.md,
-    minHeight: 44,
-  },
-  rowActive: { backgroundColor: palette.primaryLight },
-  rowText: {
-    flex: 1,
-    fontFamily: fontFamily.regular,
-    fontSize: 14,
-    color: palette.textPrimary,
-  },
-  rowTextActive: { fontFamily: fontFamily.medium, color: palette.primary },
-  empty: {
-    fontFamily: fontFamily.regular,
-    fontSize: 13,
-    color: palette.textDisabled,
-    textAlign: 'center',
-    paddingVertical: spacing.lg,
-  },
-});
 
 // ── Styles ──────────────────────────────────────────────────────────────────
 
@@ -1288,8 +1283,25 @@ const styles = StyleSheet.create({
   modelCardActive: { borderColor: palette.primary, backgroundColor: palette.primaryLight },
   modelCardInner:  { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, padding: spacing.md },
   modelCardText:   { flex: 1 },
+  modelTitleRow:   { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, flexWrap: 'wrap' },
   modelCardTitle:  { ...typography.label, color: palette.textPrimary, fontSize: 14 },
   modelCardDesc:   { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12, marginTop: 2 },
+  recBadge:        { backgroundColor: palette.primary, borderRadius: r.sm, paddingHorizontal: 6, paddingVertical: 1 },
+  recBadgeText:    { ...typography.label, color: '#fff', fontSize: 10 },
+
+  // Rationale ("why this pays fairly")
+  rationaleRow:  { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.xs, marginTop: spacing.sm, backgroundColor: palette.primaryLight, borderRadius: r.sm, padding: spacing.sm },
+  rationaleText: { ...typography.bodySmall, color: palette.primary, fontSize: 13, flex: 1, lineHeight: 18 },
+
+  // Mismatch nudge
+  mismatchOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
+  mismatchSheet:   { backgroundColor: palette.surface, borderTopLeftRadius: r.md, borderTopRightRadius: r.md, padding: spacing.lg, gap: spacing.sm },
+  mismatchIcon:    { width: 44, height: 44, borderRadius: r.full, backgroundColor: palette.primaryLight, alignItems: 'center', justifyContent: 'center' },
+  mismatchTitle:   { ...typography.heading3, color: palette.textPrimary, fontSize: 18 },
+  mismatchBody:    { ...typography.body, color: palette.textSecondary, fontSize: 15, lineHeight: 22 },
+  mismatchPrimary: { borderRadius: r.sm, marginTop: spacing.xs },
+  mismatchBtnContent: { height: 48 },
+  mismatchPrimaryLabel: { ...typography.label, fontSize: 15 },
 
   hourlyRow: { flexDirection: 'row', gap: spacing.sm },
   hourlyCol: { flex: 1 },

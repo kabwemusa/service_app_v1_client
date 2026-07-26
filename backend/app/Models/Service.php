@@ -25,6 +25,7 @@ class Service extends Model
         'category_id',
         'title',
         'description',
+        'delivery_type',
         'pricing_model',
         'base_price',
         'hourly_rate',
@@ -62,6 +63,15 @@ class Service extends Model
 
     /** Outcome-based pricing — the four models the provider chooses from. */
     public const PRICING_MODELS = ['OUTCOME_FIXED', 'PROVIDER_SCOPE', 'HOURLY_CAPPED', 'QUOTE_DEPOSIT'];
+
+    /**
+     * Delivered online (tutoring, design, consulting) — nationwide, no location,
+     * and the eligibility/dispatch layer bypasses geo entirely.
+     */
+    public function isRemote(): bool
+    {
+        return $this->delivery_type === 'REMOTE';
+    }
 
     /** Models where the price is only known after the provider sends a scoped quote. */
     public function needsScopeQuote(): bool

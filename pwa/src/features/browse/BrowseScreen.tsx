@@ -8,6 +8,7 @@ import { useAuthStore } from '../../store/authStore';
 import { usePendingAction } from '../../store/pendingActionStore';
 import { ServiceCard } from '../../components/discovery/ServiceCard';
 import { useTheme } from '../../theme/useTheme';
+import './browse.css';
 
 // Zero-wall browse: no account needed. Discovery goes through the SAME ranked
 // /search engine the app uses — the PWA renders the backend's order verbatim and
@@ -33,10 +34,14 @@ export function BrowseScreen() {
   });
   const [q, setQ] = useState(params.get('q') ?? '');
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [lastPage, setLastPage] = useState(1);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => { catalogApi.categories().then(setCats).catch(() => {}); }, []);
   useEffect(() => { hydrate(); fetchPrimary(); }, [hydrate, fetchPrimary]);
 
+  // First page — refetched whenever the filters/location change. Resets pagination.
   useEffect(() => {
     setLoading(true);
     const id = setTimeout(() => {
@@ -45,67 +50,88 @@ export function BrowseScreen() {
       searchApi.search({
         query: q || undefined,
         category_id: active ?? undefined,
+        page: 1,
         ...(location ? { lat: location.lat, lng: location.lng } : {}),
         ...(location?.region ? { region: location.region } : {}),
       })
-        .then((r) => { setResults(r.data); setFallback(r.fallback); })
-        .catch(() => { setResults([]); setFallback(false); })
+        .then((r) => { setResults(r.data); setFallback(r.fallback); setPage(r.current_page); setLastPage(r.last_page); })
+        .catch(() => { setResults([]); setFallback(false); setPage(1); setLastPage(1); })
         .finally(() => setLoading(false));
     }, q ? 300 : 0); // debounce search
     return () => clearTimeout(id);
   }, [active, q, location]);
 
+  // Append the next page — the backend paginates /search; we render its order verbatim.
+  const loadMore = () => {
+    if (loadingMore || page >= lastPage) return;
+    setLoadingMore(true);
+    searchApi.search({
+      query: q || undefined,
+      category_id: active ?? undefined,
+      page: page + 1,
+      ...(location ? { lat: location.lat, lng: location.lng } : {}),
+      ...(location?.region ? { region: location.region } : {}),
+    })
+      .then((r) => { setResults((prev) => [...prev, ...r.data]); setPage(r.current_page); setLastPage(r.last_page); })
+      .catch(() => {})
+      .finally(() => setLoadingMore(false));
+  };
+
   return (
-    <div style={{ paddingBottom: 'var(--space-xl)' }}>
-      <header style={{ padding: 'var(--space-md)', paddingTop: 'calc(var(--space-md) + env(safe-area-inset-top))' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h1 className="t-h2">{t('browse.title')}</h1>
-          <button aria-label="Toggle dark mode" onClick={toggle} style={{ width: 44, height: 44, border: 'none', background: 'transparent', fontSize: 18 }}>
+    <div className="bz">
+      <div className="bz-head">
+        <div className="bz-head-row">
+          <div>
+            <h1 className="bz-title">{t('browse.title')}</h1>
+            <p className="bz-sub">{t('browse.subtitle')}</p>
+          </div>
+          <button className="bz-icon-btn" aria-label="Toggle dark mode" onClick={toggle}>
             {theme === 'dark' ? '☀️' : '🌙'}
           </button>
         </div>
-        <button
-          onClick={() => { resolveDevice(); }}
-          className="t-small t-muted"
-          style={{ border: 'none', background: 'transparent', padding: 0, marginTop: 4 }}
-        >
-          📍 {location?.label ? t('browse.near', { area: location.label }) : t('browse.setLocation')}
-        </button>
-      </header>
 
-      <div style={{ padding: '0 var(--space-md)' }}>
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder={t('browse.searchPlaceholder')}
-          style={{
-            width: '100%', minHeight: 48, padding: '0 var(--space-md)',
-            borderRadius: 'var(--radius-md)', border: '1px solid var(--border)',
-            background: 'var(--surface)', color: 'var(--text-primary)', fontSize: 16,
-          }}
-        />
+        <button className="bz-loc" onClick={() => { resolveDevice(); }}>
+          <IconPin />
+          {location?.label ? t('browse.near', { area: location.label }) : t('browse.setLocation')}
+        </button>
+
+        <div className="bz-search">
+          <IconSearch />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder={t('browse.searchPlaceholder')}
+            aria-label={t('browse.searchPlaceholder')}
+          />
+        </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 8, overflowX: 'auto', padding: 'var(--space-md)' }}>
-        <Chip label="All" active={active === null} onClick={() => setActive(null)} />
-        {cats.map((c) => <Chip key={c.id} label={c.name} active={active === c.id} onClick={() => setActive(c.id)} />)}
+      <div className="bz-chips">
+        <button className={`bz-chip ${active === null ? 'is-active' : ''}`} onClick={() => setActive(null)}>All</button>
+        {cats.map((c) => (
+          <button key={c.id} className={`bz-chip ${active === c.id ? 'is-active' : ''}`} onClick={() => setActive(c.id)}>{c.name}</button>
+        ))}
       </div>
 
       {fallback && !loading && results.length > 0 && (
-        <p className="t-small t-muted" style={{ padding: '0 var(--space-md) var(--space-sm)' }}>
-          {t('browse.fallbackNote')}
-        </p>
+        <p className="bz-meta">{t('browse.fallbackNote')}</p>
       )}
 
-      <div className="browse-grid" style={{ padding: '0 var(--space-md)' }}>
+      <div className="browse-grid bz-grid">
         {loading
           ? Array.from({ length: 4 }).map((_, i) => <div key={i} className="skeleton" style={{ height: 300, borderRadius: 'var(--radius-sm)' }} />)
           : results.length === 0
-            ? <p className="t-muted" style={{ gridColumn: '1 / -1', textAlign: 'center', padding: 'var(--space-xl)' }}>{t('browse.noResults')}</p>
-            : results.map((s) => (
+            ? (
+              <div className="bz-empty">
+                <span className="bz-empty-emoji" aria-hidden>🔍</span>
+                {t('browse.noResults')}
+              </div>
+            )
+            : results.map((s, i) => (
                 <ServiceCard
                   key={s.id}
                   result={s}
+                  revealIndex={i}
                   onBook={() => {
                     if (user) { navigate(`/book/${s.id}`); return; }
                     requireAuth({ kind: 'book', serviceId: s.id, label: t('common.almostThere') });
@@ -113,24 +139,31 @@ export function BrowseScreen() {
                 />
               ))}
       </div>
+
+      {!loading && results.length > 0 && page < lastPage && (
+        <div className="bz-more-wrap">
+          <button className="bz-more" onClick={loadMore} disabled={loadingMore}>
+            {loadingMore ? t('browse.loadingMore') : t('browse.loadMore')}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-function Chip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+function IconSearch() {
   return (
-    <button
-      onClick={onClick}
-      style={{
-        whiteSpace: 'nowrap', minHeight: 36, padding: '0 var(--space-md)',
-        borderRadius: 'var(--radius-full)', fontSize: 14, fontWeight: 600,
-        border: '1px solid var(--border)',
-        background: active ? 'var(--primary)' : 'var(--surface)',
-        color: active ? '#fff' : 'var(--text-primary)',
-      }}
-    >
-      {label}
-    </button>
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+      <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+    </svg>
+  );
+}
+
+function IconPin() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M12 21s-6-5.2-6-10a6 6 0 1 1 12 0c0 4.8-6 10-6 10z" /><circle cx="12" cy="11" r="2" />
+    </svg>
   );
 }
 

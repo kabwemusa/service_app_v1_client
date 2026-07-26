@@ -105,6 +105,21 @@ class CloudApiAdapter implements WhatsAppGateway
         ]);
     }
 
+    public function sendDocument(string $to, string $documentUrl, string $filename, ?string $caption = null): string
+    {
+        $document = ['link' => $documentUrl, 'filename' => $filename];
+        if ($caption) {
+            $document['caption'] = $caption;
+        }
+
+        return $this->send([
+            'messaging_product' => 'whatsapp',
+            'to'                => $to,
+            'type'              => 'document',
+            'document'          => $document,
+        ]);
+    }
+
     public function markRead(string $messageId, bool $typing = false): bool
     {
         $payload = [

@@ -44,6 +44,11 @@ class RecordingWhatsAppGateway implements WhatsAppGateway
         return $this->record('image', compact('to', 'imageUrl', 'caption'));
     }
 
+    public function sendDocument(string $to, string $documentUrl, string $filename, ?string $caption = null): string
+    {
+        return $this->record('document', compact('to', 'documentUrl', 'filename', 'caption'));
+    }
+
     public function markRead(string $messageId, bool $typing = false): bool
     {
         $this->record('mark_read', compact('messageId', 'typing'));

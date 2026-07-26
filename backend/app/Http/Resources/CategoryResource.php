@@ -27,6 +27,22 @@ class CategoryResource extends JsonResource
             'display_order'    => $this->display_order,
             'commission_band'  => $this->commission_band,
             'commission_rates' => $this->commission_rates,
+            // ── Category-driven pricing guidance (steers the service editor) ──
+            // Raw admin-editable fields (null = "use platform default")…
+            'default_pricing_model'      => $this->default_pricing_model,
+            'recommended_pricing_models' => $this->recommended_pricing_models,
+            'pricing_rationale'          => $this->pricing_rationale,
+            'pricing_mismatch_warning'   => $this->pricing_mismatch_warning,
+            // …plus the RESOLVED guidance the clients render (config fallbacks
+            // applied here so no client re-implements the fallback logic).
+            'pricing_guidance' => [
+                'default_model' => $this->defaultPricingModel(),
+                'recommended'   => $this->recommendedPricingModels(),
+                'rationale'     => $this->pricing_rationale
+                    ?: (string) config('pricing.models.' . $this->defaultPricingModel() . '.rationale', ''),
+                'mismatch_warning' => $this->pricing_mismatch_warning
+                    ?: (string) config('pricing.default_mismatch_warning', ''),
+            ],
             'children'         => $this->when(
                 $this->relationLoaded($childRelation),
                 fn () => CategoryResource::collection($this->$childRelation),

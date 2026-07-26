@@ -19,6 +19,7 @@ class BookingController extends Controller
     public function __construct(
         private readonly BookingService  $bookings,
         private readonly DisputeService  $disputes,
+        private readonly \App\Services\Growth\CampaignDiscountService $campaignDiscount,
     ) {}
 
     /** GET /bookings */
@@ -44,7 +45,14 @@ class BookingController extends Controller
     /** POST /bookings */
     public function store(StoreBookingRequest $request): JsonResponse
     {
-        $booking = $this->bookings->create($request->user(), $request->validated());
+        $data = $request->validated();
+
+        // Double-submit protection (CON-1): accept an Idempotency-Key from the
+        // header (preferred) or the body. A retried create with the same key
+        // returns the original booking instead of a duplicate.
+        $data['idempotency_key'] = $request->header('Idempotency-Key') ?: ($data['idempotency_key'] ?? null);
+
+        $booking = $this->bookings->create($request->user(), $data);
         return ApiResponse::success(new BookingResource($booking), 'Booking created.', 201);
     }
 
@@ -53,6 +61,68 @@ class BookingController extends Controller
     {
         $booking = $this->bookings->findOrFail($id, $request->user());
         return ApiResponse::success(new BookingResource($booking), 'Booking retrieved.');
+    }
+
+    /**
+     * GET /bookings/{id}/checkout-preview — the checkout price breakdown for the
+     * customer: original price, any campaign / promo-code discount, and what they
+     * pay. Server-computed and non-mutating (eligibility is re-checked and the
+     * discount re-applied for real at pay time). Returns null discount when
+     * nothing applies. The provider payout is never affected.
+     */
+    public function checkoutPreview(Request $request, string $id): JsonResponse
+    {
+        $request->validate(['code' => ['sometimes', 'nullable', 'string', 'max:40']]);
+
+        $user    = $request->user();
+        $booking = $this->bookings->findOrFail($id, $user);
+
+        $amount    = (float) ($booking->agreed_amount ?? $booking->amount ?? 0);
+        $fee       = (float) ($booking->buyer_protection_fee ?? 0);
+        $code      = $request->query('code');
+        $promo     = $this->campaignDiscount->preview($booking, $code, $user);
+        $discount  = $promo['discount_zmw'] ?? 0.0;
+
+        return ApiResponse::success([
+            'original_zmw'       => round($amount, 2),
+            'service_fee_zmw'    => round($fee, 2),
+            'discount_zmw'       => round((float) $discount, 2),
+            'total_zmw'          => round(max(0.0, $amount + $fee - (float) $discount), 2),
+            'campaign' => $promo ? [
+                'id'         => $promo['campaign_id'],
+                'name'       => $promo['name'],
+                'offer_type' => $promo['offer_type'],
+            ] : null,
+            'code_invalid'       => $code !== null && trim($code) !== '' && $promo === null,
+        ], 'Checkout preview.');
+    }
+
+    /**
+     * POST /bookings/{id}/scope-attachments — customer adds photos/a short
+     * video to a quote-first brief so the provider has visual context to
+     * price the job. Buyer-only; the brief must still be open.
+     */
+    public function addScopeAttachments(Request $request, string $id): JsonResponse
+    {
+        $request->validate([
+            'files'   => ['required', 'array', 'min:1', 'max:6'],
+            'files.*' => ['required', 'file', 'mimes:jpeg,jpg,png,webp,mp4,mov,quicktime', 'max:25600'],
+        ]);
+
+        $booking = $this->bookings->addScopeAttachments($id, $request->user(), $request->file('files'));
+
+        return ApiResponse::success(new BookingResource($booking), 'Attachments added.');
+    }
+
+    /**
+     * GET /bookings/{id}/scope-attachments/{index} — stream a private scope
+     * attachment (customer's home/property photo or short video) to a party of
+     * the booking only. The files live on the private disk (§ SEC-4); this is
+     * the sole authorized read path.
+     */
+    public function scopeAttachment(Request $request, string $id, int $index): mixed
+    {
+        return $this->bookings->streamScopeAttachment($id, $request->user(), $index);
     }
 
     /**
@@ -70,6 +140,7 @@ class BookingController extends Controller
     {
         $data = $request->validate([
             'momo_number' => ['sometimes', 'nullable', 'string'],
+            'promo_code'  => ['sometimes', 'nullable', 'string', 'max:40'],
         ]);
 
         $momoNumber = null;
@@ -84,11 +155,11 @@ class BookingController extends Controller
             }
         }
 
-        $booking = $this->bookings->holdFunds($id, $request->user(), $momoNumber);
+        $booking = $this->bookings->holdFunds($id, $request->user(), $momoNumber, $data['promo_code'] ?? null);
 
         $message = $booking->status === 'PENDING_PAYMENT'
-            ? 'Check your phone — approve the mobile-money prompt to hold the funds.'
-            : 'Payment confirmed. Funds held in escrow.';
+            ? 'Check your phone — approve the mobile-money prompt to pay.'
+            : 'Payment confirmed. Your money is held safely until the job is done.';
 
         return ApiResponse::success(new BookingResource($booking), $message);
     }
@@ -141,7 +212,10 @@ class BookingController extends Controller
      */
     public function approveQuote(Request $request, string $id): JsonResponse
     {
-        $data = $request->validate(['momo_number' => ['sometimes', 'nullable', 'string']]);
+        $data = $request->validate([
+            'momo_number' => ['sometimes', 'nullable', 'string'],
+            'promo_code'  => ['sometimes', 'nullable', 'string', 'max:40'],
+        ]);
 
         $momoNumber = null;
         if (! empty($data['momo_number'])) {
@@ -155,11 +229,11 @@ class BookingController extends Controller
             }
         }
 
-        $booking = $this->bookings->approveQuote($id, $request->user(), $momoNumber);
+        $booking = $this->bookings->approveQuote($id, $request->user(), $momoNumber, $data['promo_code'] ?? null);
 
         $message = $booking->status === 'PENDING_PAYMENT'
-            ? 'Check your phone — approve the mobile-money prompt to hold the funds.'
-            : 'Quote approved. Funds held in escrow.';
+            ? 'Check your phone — approve the mobile-money prompt to pay.'
+            : 'Quote approved. Your money is held safely until the job is done.';
 
         return ApiResponse::success(new BookingResource($booking), $message);
     }
@@ -193,22 +267,64 @@ class BookingController extends Controller
     }
 
     /**
-     * POST /bookings/{id}/deliver
-     * HOURLY_CAPPED requires `actual_hours` (0.5-hr increments) — the provider
-     * logs actual time here; the customer is never asked for hours.
+     * POST /bookings/{id}/deliver — the HOURLY_CAPPED "Finish" tap.
+     * No hours input: the elapsed time is computed server-side from the start/stop
+     * timestamps. The customer is never asked for hours, and the provider can't
+     * self-report them.
      */
     public function deliver(Request $request, string $id): JsonResponse
     {
+        $booking = $this->bookings->markDelivered($id, $request->user());
+        return ApiResponse::success(new BookingResource($booking), 'Booking marked as delivered.');
+    }
+
+    /** POST /bookings/{id}/pause — HOURLY_CAPPED: pause the observed timer. */
+    public function pauseTimer(Request $request, string $id): JsonResponse
+    {
+        $booking = $this->bookings->pauseJob($id, $request->user());
+        return ApiResponse::success(new BookingResource($booking), 'Job timer paused.');
+    }
+
+    /** POST /bookings/{id}/resume — HOURLY_CAPPED: resume the observed timer. */
+    public function resumeTimer(Request $request, string $id): JsonResponse
+    {
+        $booking = $this->bookings->resumeJob($id, $request->user());
+        return ApiResponse::success(new BookingResource($booking), 'Job timer resumed.');
+    }
+
+    /** POST /bookings/{id}/request-cap-extension — provider asks the customer to approve more time. */
+    public function requestCapExtension(Request $request, string $id): JsonResponse
+    {
+        $booking = $this->bookings->requestCapExtension($id, $request->user());
+        return ApiResponse::success(new BookingResource($booking), 'Extension request sent to the customer.');
+    }
+
+    /**
+     * POST /bookings/{id}/approve-cap-extension — customer re-authorises a higher
+     * hold (additional_hours × rate) so the cap can be raised. Optional momo_number.
+     */
+    public function approveCapExtension(Request $request, string $id): JsonResponse
+    {
         $data = $request->validate([
-            'actual_hours' => ['sometimes', 'nullable', 'numeric', 'min:0.5', 'max:24', 'multiple_of:0.5'],
+            'additional_hours' => ['required', 'numeric', 'min:0.5', 'max:24', 'multiple_of:0.5'],
+            'momo_number'      => ['sometimes', 'nullable', 'string'],
         ]);
 
-        $booking = $this->bookings->markDelivered(
-            $id,
-            $request->user(),
-            isset($data['actual_hours']) ? (float) $data['actual_hours'] : null,
-        );
-        return ApiResponse::success(new BookingResource($booking), 'Booking marked as delivered.');
+        $momoNumber = null;
+        if (! empty($data['momo_number'])) {
+            $momoNumber = PhoneNumber::normalize($data['momo_number']);
+            if (! $momoNumber) {
+                return ApiResponse::error('Enter a valid Zambian Mobile Money number (e.g. 0977123456).', 'VALIDATION_ERROR', 422);
+            }
+        }
+
+        $booking = $this->bookings->approveCapExtension($id, $request->user(), (float) $data['additional_hours'], $momoNumber);
+
+        $message = $booking->status === 'PENDING_PAYMENT'
+            ? 'Check your phone — approve the mobile-money prompt for the extra time.'
+            : 'Extension approved — the cap has been raised.';
+
+        return ApiResponse::success(new BookingResource($booking), $message);
     }
 
     /** POST /bookings/{id}/complete */
@@ -276,6 +392,7 @@ class BookingController extends Controller
             SELECT DISTINCT ON (b.provider_id)
                 b.provider_id  AS id,
                 pp.display_name,
+                pp.avatar_url,
                 pp.trust_tier,
                 u.r_raw,
                 u.v_reviews
@@ -292,6 +409,7 @@ class BookingController extends Controller
             array_map(fn ($r) => [
                 'id'           => $r->id,
                 'display_name' => $r->display_name,
+                'avatar_url'   => $r->avatar_url,
                 'trust_tier'   => (int) $r->trust_tier,
                 'r_raw'        => round((float) $r->r_raw, 2),
                 'v_reviews'    => (int) $r->v_reviews,

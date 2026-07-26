@@ -34,6 +34,7 @@ class KycController extends Controller
         $doc = $this->kyc->submitTier1(
             user:      $request->user(),
             legalName: $request->validated('legal_name'),
+            nrcNumber: $request->validated('nrc_number'),
             selfie:    $request->file('selfie'),
         );
 

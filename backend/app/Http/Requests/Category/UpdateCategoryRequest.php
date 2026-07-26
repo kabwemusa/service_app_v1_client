@@ -7,6 +7,9 @@ use Illuminate\Validation\Rule;
 
 class UpdateCategoryRequest extends FormRequest
 {
+    /** The immutable pricing-model enum (labels/guidance vary; these do not). */
+    public const MODELS = ['OUTCOME_FIXED', 'PROVIDER_SCOPE', 'HOURLY_CAPPED', 'QUOTE_DEPOSIT'];
+
     public function authorize(): bool
     {
         return true;
@@ -34,6 +37,12 @@ class UpdateCategoryRequest extends FormRequest
             'commission_band'    => ['sometimes', 'nullable', 'string', 'max:50'],
             'commission_rates'   => ['sometimes', 'nullable', 'array'],
             'commission_rates.*' => ['numeric', 'min:0', 'max:1'],
+            // Category-driven pricing guidance (selection guidance + copy only).
+            'default_pricing_model'        => ['sometimes', 'nullable', 'string', Rule::in(self::MODELS)],
+            'recommended_pricing_models'   => ['sometimes', 'nullable', 'array', 'max:4'],
+            'recommended_pricing_models.*' => ['string', Rule::in(self::MODELS)],
+            'pricing_rationale'            => ['sometimes', 'nullable', 'string', 'max:400'],
+            'pricing_mismatch_warning'     => ['sometimes', 'nullable', 'string', 'max:600'],
             'reason'             => ['sometimes', 'string', 'min:10', 'max:1000'],
         ];
     }

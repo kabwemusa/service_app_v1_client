@@ -71,6 +71,50 @@ class ProviderTierUpgradeTest extends TestCase
         $this->admin->approve($doc->fresh(), $admin, 'looks good');
     }
 
+    /**
+     * Regression: approving an NRC from the admin panel (AdminVerificationService)
+     * must bump the tier, write the 'nrc' eligibility bridge row, AND flip the
+     * ladder's Tier-1 row to DONE. Previously the panel path only bumped the tier,
+     * so the provider app kept re-offering "verify your identity".
+     */
+    public function test_admin_panel_identity_approval_marks_tier1_done_and_bridges_eligibility(): void
+    {
+        $user = User::create([
+            'legal_name' => 'Kai Provider', 'phone' => '+26097' . random_int(1000000, 9999999),
+            'role' => 'PROVIDER', 'account_state' => 'ACTIVE',
+        ]);
+        ProviderProfile::create([
+            'user_id' => $user->id, 'trust_tier' => 0, 'accepting_bookings' => true,
+            'display_name' => 'Kai', 'momo_provider' => 'MTN', 'momo_number' => $user->phone,
+        ]);
+
+        // Before approval the ladder offers Tier 1 (identity) as an action.
+        $tier1 = collect($this->service->status($user)['tiers'])->firstWhere('tier', 1);
+        $this->assertSame('ADD', $tier1['state']);
+
+        // An NRC document awaiting review in the admin panel queue.
+        $doc = IdentityDocument::create([
+            'user_id'      => $user->id,
+            'doc_type'     => 'NRC',
+            'status'       => DocStatus::SUBMITTED->value,
+            'submitted_at' => now(),
+        ]);
+
+        $this->approve($doc);
+
+        // NRC approval bumps to TrustTier::IDENTIFIED (enum value 2).
+        $this->assertSame(2, (int) ProviderProfile::where('user_id', $user->id)->value('trust_tier'));
+        $this->assertDatabaseHas('provider_verifications', [
+            'provider_id' => $user->id, 'verification_type' => 'nrc', 'status' => 'VERIFIED',
+        ]);
+
+        $status = $this->service->status($user);
+        $this->assertSame(2, $status['current_tier']);
+        // The ladder's Tier-1 ("Identified") row now reads DONE, not ADD.
+        $tier1 = collect($status['tiers'])->firstWhere('tier', 1);
+        $this->assertSame('DONE', $tier1['state']);
+    }
+
     public function test_police_clearance_submit_enters_queue_and_approval_flips_eligibility(): void
     {
         [$user, $svc] = $this->provider(3, ['nrc', 'momo_name_match', 'portfolio'], 3);

@@ -13,15 +13,19 @@ import {
 } from 'react-native';
 import { Button, Text, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { storageUrl } from '../../api/client';
 import { ApiError } from '../../api/errors';
 import { Booking, BookingStatus, bookingsApi } from '../../api/bookings';
 import { SafetyCategory, safetyReportsApi } from '../../api/safetyReports';
+import { BookingCommsSection } from '../../components/booking/BookingCommsSection';
+import { JobTimerCard } from '../../components/booking/JobTimerCard';
 import { PaymentConfirmDialog } from '../../components/booking/PaymentConfirmDialog';
 import { ConfirmDialog, ConfirmDialogConfig } from '../../components/ui/ConfirmDialog';
 import { CardSkeleton } from '../../components/ui/SkeletonBlock';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useAuthStore } from '../../store/authStore';
 import { useBookingStore } from '../../store/bookingStore';
+import { useRealtimeStore } from '../../store/realtimeStore';
 import { palette, radius as r, spacing, typography } from '../../theme';
 
 // ── Display maps ─────────────────────────────────────────────────────────────
@@ -69,21 +73,73 @@ const DISPUTE_CATEGORIES: { label: string; value: string }[] = [
   { label: 'Other',         value: 'OTHER' },
 ];
 
-const STEP_LABELS = ['Confirmed', 'In progress', 'Completed'] as const;
+const STEP_LABELS = ['Confirmed', 'On the way', 'In progress', 'Done'] as const;
 type StepState = 'done' | 'current' | 'upcoming';
 
-function stepStates(status: BookingStatus): StepState[] {
-  switch (status) {
-    case 'ACCEPTED':     return ['current', 'upcoming', 'upcoming'];
-    // ESCROW: a held payment (full or deposit) is the "Confirmed" step.
+// The "On the way" step lights up once the provider taps a location preset.
+const ENROUTE_TYPES = ['ON_MY_WAY', 'ARRIVED', 'RUNNING_LATE'];
+
+function stepStates(booking: Booking): StepState[] {
+  const s = booking.status;
+  const enroute = ENROUTE_TYPES.includes(booking.last_update?.type ?? '');
+  switch (s) {
+    // Confirmed / funded — "On the way" becomes current the moment the provider
+    // signals they're heading over.
+    case 'ACCEPTED':
     case 'FUNDS_HELD':
-    case 'DEPOSIT_HELD': return ['current', 'upcoming', 'upcoming'];
-    case 'IN_PROGRESS':  return ['done',    'current',  'upcoming'];
-    case 'DELIVERED':    return ['done',    'done',     'current'];
+    case 'DEPOSIT_HELD':
+      return enroute
+        ? ['done', 'current', 'upcoming', 'upcoming']
+        : ['current', 'upcoming', 'upcoming', 'upcoming'];
+    case 'IN_PROGRESS': return ['done', 'done', 'current', 'upcoming'];
+    case 'DELIVERED':   return ['done', 'done', 'done', 'current'];
     case 'COMPLETED':
-    case 'DISBURSED':    return ['done',    'done',     'done'];
-    default:             return ['upcoming', 'upcoming', 'upcoming'];
+    case 'DISBURSED':   return ['done', 'done', 'done', 'done'];
+    default:            return ['upcoming', 'upcoming', 'upcoming', 'upcoming'];
   }
+}
+
+type BannerTone = 'primary' | 'secondary' | 'warning' | 'success' | 'neutral';
+const TONE_BG: Record<BannerTone, string> = {
+  primary:   palette.primaryLight,
+  secondary: '#F7E9EF',
+  warning:   palette.warningLight,
+  success:   palette.successLight,
+  neutral:   palette.background,
+};
+const TONE_FG: Record<BannerTone, string> = {
+  primary:   palette.primary,
+  secondary: palette.secondary,
+  warning:   palette.warning,
+  success:   palette.success,
+  neutral:   palette.textSecondary,
+};
+
+// Live status banner — copy adapts to the real state + the latest provider update.
+function bannerFor(booking: Booking, providerName: string): { title: string; sub?: string; tone: BannerTone; icon: keyof typeof Ionicons.glyphMap } {
+  const s = booking.status;
+  const u = booking.last_update;
+  const enroute = ENROUTE_TYPES.includes(u?.type ?? '');
+
+  if (s === 'COMPLETED' || s === 'DISBURSED')
+    return { title: 'All done', sub: `Thanks for booking with ${providerName}.`, tone: 'success', icon: 'checkmark-circle' };
+  if (s === 'DELIVERED')
+    return { title: `${providerName} has finished`, sub: 'Check the work and release payment.', tone: 'secondary', icon: 'flag' };
+  if (s === 'IN_PROGRESS')
+    return { title: 'Job in progress', sub: `${providerName} is working now.`, tone: 'primary', icon: 'construct' };
+
+  if (['FUNDS_HELD', 'DEPOSIT_HELD', 'ACCEPTED'].includes(s)) {
+    if (u?.type === 'ARRIVED')
+      return { title: `${providerName} has arrived`, tone: 'primary', icon: 'location' };
+    if (u?.type === 'RUNNING_LATE')
+      return { title: `${providerName} is running late`, sub: u.eta_minutes ? `About ${u.eta_minutes} min behind.` : undefined, tone: 'warning', icon: 'time' };
+    if (u?.type === 'ON_MY_WAY' || enroute)
+      return { title: `${providerName} is on the way`, tone: 'primary', icon: 'navigate' };
+    return { title: 'Booking confirmed', sub: `${providerName} will start soon.`, tone: 'primary', icon: 'checkmark-circle' };
+  }
+
+  const meta = STATUS_META[s];
+  return { title: meta.label, tone: 'neutral', icon: 'information-circle' };
 }
 
 function fmtDateTime(iso: string): string {
@@ -111,6 +167,8 @@ function tierLabel(tier: number): string {
   return 'Tier 1';
 }
 
+const WHATSAPP_NUMBER = (process.env.EXPO_PUBLIC_WHATSAPP_NUMBER ?? '').replace(/[^0-9]/g, '');
+
 const TERMINAL: BookingStatus[]  = ['CANCELLED', 'DECLINED', 'EXPIRED', 'NO_SHOW', 'DISPUTED'];
 const CANCELLABLE: BookingStatus[] = ['REQUESTED', 'QUOTED', 'SCOPE_PENDING', 'QUOTE_SENT', 'ACCEPTED'];
 const ACTIVE_DIRECT: BookingStatus[] = ['ACCEPTED', 'IN_PROGRESS', 'DELIVERED', 'COMPLETED'];
@@ -124,6 +182,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
   const accountPhone = useAuthStore((s) => s.user?.phone ?? null);
   const {
     acceptQuote, approveQuote, declineQuote, complete, cancel, markPaid, review, pay,
+    approveCapExtension,
     submitting, error, clearError,
   } = useBookingStore();
 
@@ -131,6 +190,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
   const [loading, setLoading]   = useState(true);
   const [actionBusy, setActionBusy] = useState(false);
   const [copied, setCopied]     = useState(false);
+  const [avatarFailed, setAvatarFailed] = useState(false);
 
   // App-styled confirmation dialog (replaces Alert.alert)
   const [dialog, setDialog] = useState<ConfirmDialogConfig | null>(null);
@@ -160,6 +220,15 @@ export default function BookingDetailScreen({ navigation, route }: any) {
 
   useEffect(() => { if (bookingId) loadBooking(); }, [bookingId]);
   useEffect(() => { if (error) { showError(error.message); clearError(); } }, [error]);
+
+  // Live refresh: when a realtime event lands for THIS booking (provider
+  // accepted, quoted, marked paid, completed…), refetch instantly — no reload.
+  const rtRevision    = useRealtimeStore((s) => s.bookingRevision);
+  const rtLastBooking = useRealtimeStore((s) => s.lastBookingId);
+  useEffect(() => {
+    if (bookingId && rtLastBooking === bookingId) loadBooking();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rtRevision]);
 
   async function loadBooking() {
     if (!bookingId) return;
@@ -201,6 +270,37 @@ export default function BookingDetailScreen({ navigation, route }: any) {
         runAction(action);
       },
     });
+  }
+
+  // Masked call — routes through the proxy so neither party sees a number.
+  // Available only inside the funded/active window (server-gated via comms).
+  async function startMaskedCall() {
+    if (!booking || actionBusy) return;
+    setActionBusy(true);
+    try {
+      const res = await bookingsApi.call(booking.id);
+      showSuccess(res.message);
+      if (res.mode === 'reveal' && res.revealed_number) {
+        Linking.openURL(`tel:${res.revealed_number}`).catch(() => {});
+      }
+    } catch (e) {
+      showError(e instanceof ApiError ? e.message : 'Could not start the call.');
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  function openWhatsApp() {
+    if (!booking) return;
+    if (!WHATSAPP_NUMBER) {
+      showSnackbar({ message: 'Messaging opens once the booking is funded.', variant: 'info' });
+      return;
+    }
+    const ref = booking.id.slice(0, 8).toUpperCase();
+    const text = encodeURIComponent(`Hi, about my booking (ref ${ref}).`);
+    Linking.openURL(`https://wa.me/${WHATSAPP_NUMBER}?text=${text}`).catch(() =>
+      showError('Could not open WhatsApp.'),
+    );
   }
 
   async function handleCopyMomo() {
@@ -247,9 +347,9 @@ export default function BookingDetailScreen({ navigation, route }: any) {
         ? 'Resend payment prompt'
         : booking.status === 'QUOTED'
           ? 'Accept & pay'
-          : 'Hold funds in escrow',
+          : 'Confirm payment',
       amountLabel: `ZMW ${chargeAmount.toFixed(2)}`,
-      helperText:  `Held securely in escrow until the job is marked complete${feeNote}.`,
+      helperText:  `Held safely until the job’s done, then released to the provider${feeNote}.`,
       confirmLabel: booking.status === 'PENDING_PAYMENT' ? 'Resend prompt' : 'Send payment request',
     });
   }
@@ -340,7 +440,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
 
   const isDirect       = (booking.payment_mode ?? 'ESCROW') === 'DIRECT';
   const meta           = STATUS_META[booking.status];
-  const steps          = stepStates(booking.status);
+  const steps          = stepStates(booking);
   const total          = booking.agreed_amount ?? booking.amount ?? booking.service.base_price ?? 0;
   const providerName   = booking.provider.display_name?.trim() || booking.provider.email.split('@')[0];
   const tier           = booking.provider.trust_tier ?? 0;
@@ -349,6 +449,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
   const providerPaid   = !!booking.provider_marked_paid_at;
   const fullySettled   = customerPaid && providerPaid;
   const isCancellable  = CANCELLABLE.includes(booking.status);
+  const callEnabled    = !!booking.comms?.call_enabled;
   const isTerminal     = TERMINAL.includes(booking.status);
   const isQuoted       = booking.status === 'QUOTED';
   const isDelivered    = booking.status === 'DELIVERED';
@@ -359,13 +460,19 @@ export default function BookingDetailScreen({ navigation, route }: any) {
   const isQuoteSent    = booking.status === 'QUOTE_SENT';
   const isCapped       = booking.service.pricing_model === 'HOURLY_CAPPED';
   const isDeposit      = booking.service.pricing_model === 'QUOTE_DEPOSIT';
-  const hourlyRefund   = isCapped && booking.actual_hours_logged != null
-    ? Math.max((booking.amount ?? 0) - (booking.actual_charge_zmw ?? 0), 0)
-    : 0;
+  // Observed-timer settlement (server-computed; never a self-report).
+  const hourlyCharge   = booking.final_charge_zmw ?? booking.actual_charge_zmw ?? null;
+  const hourlyCap      = booking.approved_cap_zmw ?? booking.amount ?? 0;
+  const hourlySettled  = isCapped && booking.observed_minutes != null && hourlyCharge != null;
+  const hourlyRefund   = hourlySettled ? Math.max(hourlyCap - (hourlyCharge ?? 0), 0) : 0;
+  const fmtElapsed = (mins: number) => {
+    const h = Math.floor(mins / 60), m = mins % 60;
+    return h > 0 ? (m > 0 ? `${h} hr ${m} min` : `${h} hr`) : `${m} min`;
+  };
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
-      <NavBar onBack={() => navigation.goBack()} />
+      <NavBar onBack={() => navigation.goBack()} onHelp={openWhatsApp} />
 
       <ScrollView
         ref={scrollRef}
@@ -373,15 +480,43 @@ export default function BookingDetailScreen({ navigation, route }: any) {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Service title + status pill */}
+        {/* ── 1. Live status banner + 4-step progress ─────────────────── */}
         <Text style={styles.title}>{booking.service.title}</Text>
-        <View style={[styles.pill, { backgroundColor: meta.bg }]} accessibilityLabel={`Status: ${meta.label}`}>
-          <Text style={[styles.pillText, { color: meta.fg }]}>{meta.label}</Text>
-        </View>
+        <StatusBanner booking={booking} providerName={providerName} />
 
-        {/* Stepper — only shown on active jobs */}
-        {!isTerminal && (
-          <Stepper steps={steps} />
+        {!isTerminal && <Stepper steps={steps} />}
+
+        {/* SCREEN 3 — the same live timer the provider drives, read-only for the
+            customer. Mutual visibility is what makes observed time honest. */}
+        {isInProgress && (
+          <View style={{ marginBottom: spacing.md }}>
+            <JobTimerCard
+              booking={booking}
+              role="customer"
+              busy={busy}
+              firstName={providerName}
+              onApproveExtension={(hours) =>
+                confirmAction(
+                  'Approve more time',
+                  `${providerName} needs more time. Authorise ${hours < 1 ? `${hours * 60} minutes` : `${hours} hour${hours > 1 ? 's' : ''}`} — we'll hold an extra ZMW ${(hours * (booking.service.hourly_rate ?? 0)).toFixed(0)}. You're still only charged for the time actually worked.`,
+                  () => approveCapExtension(booking.id, hours),
+                  { confirmLabel: 'Authorise' },
+                )
+              }
+            />
+          </View>
+        )}
+
+        {/* SCREEN 4 — confirm & release (ESCROW). Transparent, all figures
+            server-computed; the timestamps the customer already watched are the
+            dispute-killer. */}
+        {isDelivered && !isDirect && (
+          <ConfirmReleaseCard
+            booking={booking}
+            providerName={providerName}
+            isCapped={isCapped}
+            isDeposit={isDeposit}
+          />
         )}
 
         {/* All booking sections live in one flat white card, separated by the
@@ -392,12 +527,13 @@ export default function BookingDetailScreen({ navigation, route }: any) {
         <Text style={styles.sectionLabel}>Provider</Text>
 
         <View style={styles.providerRow}>
-          {booking.provider.avatar_url ? (
+          {booking.provider.avatar_url && !avatarFailed ? (
             <Image
-              source={{ uri: booking.provider.avatar_url }}
+              source={{ uri: storageUrl(booking.provider.avatar_url) }}
               style={styles.avatar}
               contentFit="cover"
               accessibilityLabel={`${providerName} profile photo`}
+              onError={() => setAvatarFailed(true)}
             />
           ) : (
             <View style={styles.avatarFallback}>
@@ -422,6 +558,34 @@ export default function BookingDetailScreen({ navigation, route }: any) {
             </View>
           </View>
         </View>
+
+        {/* Contact — masked call + WhatsApp. Phone numbers are never exposed. */}
+        <View style={styles.contactRow}>
+          <Button
+            mode="outlined"
+            icon="phone-outline"
+            style={styles.contactBtn}
+            contentStyle={styles.contactBtnContent}
+            textColor={callEnabled ? palette.primary : palette.textDisabled}
+            disabled={!callEnabled || busy}
+            onPress={startMaskedCall}
+            accessibilityLabel="Call the provider through a private masked line"
+          >
+            Call
+          </Button>
+          <Button
+            mode="outlined"
+            icon="whatsapp"
+            style={styles.contactBtn}
+            contentStyle={styles.contactBtnContent}
+            textColor={palette.primary}
+            onPress={openWhatsApp}
+            accessibilityLabel="Message on WhatsApp"
+          >
+            Message
+          </Button>
+        </View>
+        <Text style={styles.privacyCaption}>Your number stays private.</Text>
 
         {/* Gated momo number (DIRECT + active booking + provider has number set) */}
         {hasMomo && (
@@ -471,8 +635,26 @@ export default function BookingDetailScreen({ navigation, route }: any) {
 
         <Divider />
 
-        {/* ── 2. Payment ────────────────────────────────────────────── */}
+        {/* ── 2. Payment (held) — brand-teal card ──────────────────── */}
         <Text style={styles.sectionLabel}>Payment</Text>
+
+        <View style={styles.payCard}>
+        {!isDirect && (
+          <View style={styles.payCardHeadRow}>
+            <Ionicons
+              name={isCompleted ? 'checkmark-circle' : 'lock-closed'}
+              size={15}
+              color={isCompleted ? palette.success : palette.primary}
+            />
+            <Text style={styles.payCardHead}>
+              {isCompleted
+                ? 'Payment released to the provider'
+                : isCapped
+                  ? 'Cap held — you’re charged only for the time worked'
+                  : 'Held safely until you confirm the job is done'}
+            </Text>
+          </View>
+        )}
 
         {isScopePending ? (
           <View style={styles.quoteNote}>
@@ -527,20 +709,19 @@ export default function BookingDetailScreen({ navigation, route }: any) {
               <View style={styles.iconLine}>
                 <Ionicons name="speedometer-outline" size={15} color={palette.textSecondary} />
                 <Text style={styles.iconLineText}>
-                  ZMW {booking.service.hourly_rate.toFixed(0)}/hr · {booking.service.minimum_hours ?? 1}-hr minimum
-                  · max ZMW {(booking.service.cap_amount ?? booking.amount ?? 0).toFixed(0)}
+                  ZMW {booking.service.hourly_rate.toFixed(0)}/hr · you only pay for the time worked
                 </Text>
               </View>
             )}
-            {isCapped && booking.actual_hours_logged != null ? (
+            {hourlySettled ? (
               <>
-                <LineItem label={`Time logged (${booking.actual_hours_logged} hr)`} value={booking.actual_charge_zmw ?? total} />
+                <LineItem label={`Time worked (${fmtElapsed(booking.observed_minutes!)})`} value={hourlyCharge ?? total} />
                 {hourlyRefund > 0 && (
-                  <LineItem label="Refunded to you (unused hold)" value={hourlyRefund} />
+                  <LineItem label="Returned to you" value={hourlyRefund} />
                 )}
               </>
             ) : (
-              <LineItem label={isCapped ? 'Held (maximum)' : 'Amount'} value={total} />
+              <LineItem label={isCapped ? 'Cost (up to)' : 'Amount'} value={total} />
             )}
             {/* QUOTE_DEPOSIT after approval: deposit / balance split. */}
             {isDeposit && booking.deposit_amount != null && (
@@ -556,19 +737,30 @@ export default function BookingDetailScreen({ navigation, route }: any) {
             {!isDirect && (booking.buyer_protection_fee ?? 0) > 0 && (
               <LineItem label="Buyer protection (2%)" value={booking.buyer_protection_fee} />
             )}
+            {/* Growth & Promotions: the customer's saving. Sebenza absorbed it —
+                the provider is still paid in full (their earnings are unchanged). */}
+            {(booking.campaign_discount_zmw ?? 0) > 0 && (
+              <View style={styles.discountLine}>
+                <View style={styles.discountLabelWrap}>
+                  <Ionicons name="pricetag" size={13} color={palette.success} />
+                  <Text style={styles.discountLabel} numberOfLines={1}>
+                    Promo saved{booking.promo_code ? ` · ${booking.promo_code}` : ''}
+                  </Text>
+                </View>
+                <Text style={styles.discountValue}>− ZMW {(booking.campaign_discount_zmw ?? 0).toFixed(2)}</Text>
+              </View>
+            )}
           </>
         )}
 
         {isDirect ? (
-          <Text style={styles.paymentMode}>Direct payment · no platform escrow</Text>
+          <Text style={styles.paymentMode}>Direct payment · you pay the provider directly</Text>
         ) : (
-          <>
-            <Text style={styles.paymentMode}>Secured by Sebenza Escrow</Text>
-            <Text style={styles.paymentMode}>
-              Money-back guarantee — full refund if the job isn’t delivered.
-            </Text>
-          </>
+          <Text style={styles.paymentMode}>
+            Released to {providerName} only once you confirm the job is done — full refund if it isn’t delivered.
+          </Text>
         )}
+        </View>
 
         <Divider />
 
@@ -812,6 +1004,11 @@ export default function BookingDetailScreen({ navigation, route }: any) {
         )}
 
         </View>
+
+        {/* Communication layer — masked call + status updates + agreement download */}
+        <View style={{ paddingHorizontal: spacing.md }}>
+          <BookingCommsSection booking={booking} onChanged={loadBooking} />
+        </View>
       </ScrollView>
 
       {/* ── Sticky action bar ─────────────────────────────────────── */}
@@ -839,7 +1036,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
             booking.service.pricing_model === 'QUOTE_DEPOSIT' ? 'Approve quote & pay deposit' : 'Approve quote & pay',
             booking.service.pricing_model === 'QUOTE_DEPOSIT'
               ? `Pay ZMW ${(booking.deposit_amount ?? 0).toFixed(2)} now to confirm. The balance of ZMW ${(booking.balance_amount ?? 0).toFixed(2)} is collected when the job completes.`
-              : `Approve the quote of ZMW ${(booking.agreed_amount ?? 0).toFixed(2)}? A mobile-money prompt will be sent to hold the funds in escrow.`,
+              : `Approve the quote of ZMW ${(booking.agreed_amount ?? 0).toFixed(2)}? A mobile-money prompt will be sent so you can pay.`,
             () => approveQuote(booking.id),
           )
         }
@@ -868,7 +1065,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
               ? 'Confirm the job is done and that payment has been settled directly with the provider.'
               : isDirect
                 ? 'Confirm the job is done. This closes the booking and lets you leave a review.'
-                : 'This releases the funds held in escrow to the provider. The action cannot be undone.',
+                : 'This releases your payment to the provider. The action cannot be undone.',
             async () => {
               const updated = await complete(booking.id);
               if (isDirect && !customerPaid) {
@@ -911,7 +1108,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
         visible={!!payIntent}
         onClose={() => !actionBusy && setPayIntent(null)}
         accountPhone={accountPhone}
-        title={payIntent?.title ?? 'Hold funds in escrow'}
+        title={payIntent?.title ?? 'Confirm payment'}
         amountLabel={payIntent?.amountLabel ?? ''}
         helperText={payIntent?.helperText}
         confirmLabel={payIntent?.confirmLabel}
@@ -924,14 +1121,36 @@ export default function BookingDetailScreen({ navigation, route }: any) {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function NavBar({ onBack }: { onBack: () => void }) {
+function NavBar({ onBack, onHelp }: { onBack: () => void; onHelp?: () => void }) {
   return (
     <View style={styles.header}>
       <TouchableRipple onPress={onBack} borderless style={styles.iconBtn} accessibilityRole="button" accessibilityLabel="Back">
         <Ionicons name="arrow-back" size={22} color={palette.textPrimary} />
       </TouchableRipple>
       <Text style={styles.headerTitle}>Booking</Text>
-      <View style={styles.iconBtn} />
+      {onHelp ? (
+        <TouchableRipple onPress={onHelp} borderless style={styles.iconBtn} accessibilityRole="button" accessibilityLabel="Get help with this booking">
+          <Ionicons name="help-circle-outline" size={22} color={palette.textPrimary} />
+        </TouchableRipple>
+      ) : (
+        <View style={styles.iconBtn} />
+      )}
+    </View>
+  );
+}
+
+function StatusBanner({ booking, providerName }: { booking: Booking; providerName: string }) {
+  const b = bannerFor(booking, providerName);
+  return (
+    <View
+      style={[styles.banner, { backgroundColor: TONE_BG[b.tone] }]}
+      accessibilityLabel={`${b.title}${b.sub ? `. ${b.sub}` : ''}`}
+    >
+      <Ionicons name={b.icon} size={22} color={TONE_FG[b.tone]} />
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.bannerTitle, { color: TONE_FG[b.tone] }]}>{b.title}</Text>
+        {!!b.sub && <Text style={styles.bannerSub}>{b.sub}</Text>}
+      </View>
     </View>
   );
 }
@@ -967,6 +1186,97 @@ function Stepper({ steps }: { steps: StepState[] }) {
           </React.Fragment>
         );
       })}
+    </View>
+  );
+}
+
+// SCREEN 4 — confirm & release. Every figure here is server-computed; the client
+// only renders. For HOURLY_CAPPED it cites the observed timestamps the customer
+// already watched live (the dispute-killer). For fixed-price models there is no
+// time maths — confirm the agreed price → release.
+function ConfirmReleaseCard({
+  booking, providerName, isCapped, isDeposit,
+}: {
+  booking: Booking;
+  providerName: string;
+  isCapped: boolean;
+  isDeposit: boolean;
+}) {
+  const total       = booking.agreed_amount ?? booking.amount ?? booking.service.base_price ?? 0;
+  const held        = booking.approved_cap_zmw ?? total;
+  const finalCharge = isCapped ? (booking.final_charge_zmw ?? held) : total;
+  const refund      = Math.max(held - finalCharge, 0);
+  const rate        = booking.service.hourly_rate ?? 0;
+  const observed    = booking.observed_minutes ?? 0;
+
+  const fmtTime = (iso?: string | null) =>
+    iso ? new Date(iso).toLocaleTimeString('en-ZM', { hour: '2-digit', minute: '2-digit' }) : '—';
+  const fmtMins = (m: number) => {
+    const h = Math.floor(m / 60), mm = m % 60;
+    return h > 0 ? (mm > 0 ? `${h} hr ${mm} min` : `${h} hr`) : `${mm} min`;
+  };
+
+  return (
+    <View style={styles.releaseCard}>
+      <Text style={styles.releaseHead}>{providerName} has finished</Text>
+      <Text style={styles.releaseSub}>Check the work, then release payment.</Text>
+
+      <View style={styles.releaseBreakdown}>
+        {isCapped ? (
+          <>
+            <LineItem label="Rate" value={rate} />
+            <View style={styles.releaseLine}>
+              <Text style={styles.releaseLineLabel}>Time worked</Text>
+              <Text style={styles.releaseLineValue}>{fmtMins(observed)}</Text>
+            </View>
+            <LineItem label="Amount held" value={held} />
+            <View style={styles.releaseFinalRow}>
+              <Text style={styles.releaseFinalLabel}>Final charge</Text>
+              <Text style={styles.releaseFinalValue}>ZMW {finalCharge.toFixed(2)}</Text>
+            </View>
+            {refund > 0 && (
+              <View style={styles.releaseRefundRow}>
+                <Ionicons name="arrow-undo-outline" size={15} color={palette.success} />
+                <Text style={styles.releaseRefundText}>
+                  ZMW {refund.toFixed(2)} back to your Mobile Money automatically
+                </Text>
+              </View>
+            )}
+          </>
+        ) : isDeposit ? (
+          <>
+            {booking.deposit_amount != null && <LineItem label="Deposit held" value={booking.deposit_amount} />}
+            {booking.balance_amount != null && <LineItem label="Balance to collect" value={booking.balance_amount} />}
+            <View style={styles.releaseFinalRow}>
+              <Text style={styles.releaseFinalLabel}>Total</Text>
+              <Text style={styles.releaseFinalValue}>ZMW {finalCharge.toFixed(2)}</Text>
+            </View>
+          </>
+        ) : (
+          <View style={styles.releaseFinalRow}>
+            <Text style={styles.releaseFinalLabel}>Agreed price</Text>
+            <Text style={styles.releaseFinalValue}>ZMW {finalCharge.toFixed(2)}</Text>
+          </View>
+        )}
+      </View>
+
+      {/* Evidence line — cite the timestamps the customer already saw live. */}
+      {isCapped && booking.job_started_at && booking.job_ended_at && (
+        <View style={styles.evidenceRow}>
+          <Ionicons name="shield-checkmark-outline" size={15} color={palette.textSecondary} />
+          <Text style={styles.evidenceText}>
+            Started {fmtTime(booking.job_started_at)} · finished {fmtTime(booking.job_ended_at)}. You watched
+            this timer live — you're only charged for the time actually worked.
+          </Text>
+        </View>
+      )}
+
+      {/* Auto-release protects the provider from an unresponsive customer. */}
+      {booking.auto_release_at && (
+        <Text style={styles.autoReleaseNote}>
+          If you don't respond, we'll release payment automatically — {autoConfirmCountdown(booking.auto_release_at)}.
+        </Text>
+      )}
     </View>
   );
 }
@@ -1090,12 +1400,14 @@ function ActionBar({
       </>
     ) : (
       <>
+        {/* First-time guidance (§ UX-6): explain escrow before the customer pays. */}
+        <PassiveNote icon="shield-checkmark-outline" text="Your money is held safely — it's only released to the provider after you confirm the job is done." />
         <Button
           mode="contained" style={styles.primaryBtn} contentStyle={styles.barBtnContent} labelStyle={styles.btnLabel}
           loading={busy} disabled={busy}
           onPress={onPay}
         >
-          Pay & hold funds · ZMW {agreedTotal.toFixed(0)}
+          Pay ZMW {agreedTotal.toFixed(0)}
         </Button>
         <Button
           mode="text" textColor={palette.danger}
@@ -1110,7 +1422,9 @@ function ActionBar({
     // ESCROW: a mobile-money prompt was sent — let the customer re-send if it lapsed.
     content = (
       <>
-        <PassiveNote icon="phone-portrait-outline" text="Check your phone — approve the mobile-money prompt to hold the funds." />
+        {/* § UX-5 — resend is now safe (TXN-2): the backend checks the existing
+            deposit and won't create a second charge. */}
+        <PassiveNote icon="phone-portrait-outline" text="A mobile-money prompt is on your phone — approve it to pay. Didn't get it? Resend below; you won't be charged twice." />
         <Button
           mode="contained" style={styles.primaryBtn} contentStyle={styles.barBtnContent} labelStyle={styles.btnLabel}
           loading={busy} disabled={busy}
@@ -1204,6 +1518,15 @@ function ActionBar({
       </View>
     );
   } else if (status === 'DELIVERED') {
+    // ESCROW: the amount released is the server's FINAL charge (observed-timer
+    // settlement for HOURLY_CAPPED, agreed price otherwise) — never a client sum.
+    const releaseAmount =
+      booking.service.pricing_model === 'HOURLY_CAPPED'
+        ? (booking.final_charge_zmw ?? booking.approved_cap_zmw ?? agreedTotal)
+        : agreedTotal;
+    const releaseLabel = isDirect
+      ? (customerPaid ? 'Confirm completion' : 'Confirm & mark paid')
+      : `Confirm & release ZMW ${releaseAmount.toFixed(0)}`;
     content = (
       <>
         <Button
@@ -1211,11 +1534,11 @@ function ActionBar({
           loading={busy} disabled={busy}
           onPress={onComplete}
         >
-          {isDirect && !customerPaid ? 'Confirm & mark paid' : 'Confirm completion'}
+          {releaseLabel}
         </Button>
         {!booking.dispute && (
           <Button mode="text" textColor={palette.danger} disabled={busy} onPress={onRaiseDispute}>
-            Raise a dispute
+            Something's not right
           </Button>
         )}
       </>
@@ -1336,9 +1659,17 @@ const styles = StyleSheet.create({
   pill: { alignSelf: 'flex-start', borderRadius: r.sm, paddingHorizontal: spacing.md, paddingVertical: 5, marginBottom: spacing.lg },
   pillText: { ...typography.label, fontSize: 13 },
 
+  // Live status banner
+  banner: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    borderRadius: r.md, padding: spacing.md, marginBottom: spacing.lg,
+  },
+  bannerTitle: { ...typography.label, fontSize: 16 },
+  bannerSub: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 13, marginTop: 1 },
+
   // Stepper
   stepper: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.md },
-  stepNode: { alignItems: 'center', width: 84 },
+  stepNode: { alignItems: 'center', width: 68 },
   stepCircle: {
     width: 28, height: 28, borderRadius: r.full,
     alignItems: 'center', justifyContent: 'center',
@@ -1348,7 +1679,7 @@ const styles = StyleSheet.create({
   stepCircleCurrent: { borderColor: palette.primary,     backgroundColor: palette.primaryLight },
   stepNum:           { ...typography.label, fontSize: 13, color: palette.textDisabled },
   stepNumCurrent:    { color: palette.primary },
-  stepLabel:         { ...typography.bodySmall, color: palette.textDisabled, fontSize: 12, marginTop: 4, textAlign: 'center' },
+  stepLabel:         { ...typography.bodySmall, color: palette.textDisabled, fontSize: 11, marginTop: 4, textAlign: 'center' },
   stepLabelActive:   { color: palette.textPrimary },
   stepConnector:     { flex: 1, height: 2, backgroundColor: palette.border, marginTop: -18 },
   stepConnectorDone: { backgroundColor: palette.success },
@@ -1387,6 +1718,20 @@ const styles = StyleSheet.create({
   },
   tierText: { ...typography.bodySmall, color: palette.primary, fontSize: 12 },
 
+  // Contact (masked call + WhatsApp)
+  contactRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
+  contactBtn: { flex: 1, borderRadius: r.sm, borderColor: palette.primary },
+  contactBtnContent: { height: 44 },
+  privacyCaption: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12, marginTop: spacing.xs },
+
+  // Teal payment card
+  payCard: {
+    backgroundColor: palette.primaryLight, borderRadius: r.md,
+    padding: spacing.md, marginTop: spacing.sm, gap: 2,
+  },
+  payCardHeadRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginBottom: spacing.xs },
+  payCardHead: { ...typography.label, color: palette.primary, fontSize: 14 },
+
   // Momo block
   momoBlock: {
     marginTop: spacing.md,
@@ -1413,6 +1758,10 @@ const styles = StyleSheet.create({
   lineItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
   lineLabel: { ...typography.body, color: palette.textPrimary, fontSize: 15, flex: 1 },
   lineValue: { ...typography.body, color: palette.textPrimary, fontSize: 15, fontFamily: 'DMSans_500Medium' },
+  discountLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
+  discountLabelWrap: { flexDirection: 'row', alignItems: 'center', gap: 4, flex: 1 },
+  discountLabel: { ...typography.body, color: palette.success, fontSize: 15, flexShrink: 1 },
+  discountValue: { ...typography.body, color: palette.success, fontSize: 15, fontFamily: 'DMSans_500Medium' },
   quoteNote: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, paddingVertical: 4 },
   quoteNoteText: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 14, flex: 1, lineHeight: 20 },
   paymentMode: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 13, marginTop: 4 },
@@ -1483,4 +1832,31 @@ const styles = StyleSheet.create({
   messageBtn:     { flex: 1, borderRadius: r.sm, borderColor: palette.primary },
   passive:        { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.xs },
   passiveText:    { ...typography.bodySmall, color: palette.textSecondary, flex: 1, fontSize: 14 },
+
+  // Confirm & release (Screen 4)
+  releaseCard: {
+    backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.secondary,
+    borderRadius: r.md, padding: spacing.lg, marginBottom: spacing.md,
+  },
+  releaseHead: { ...typography.heading3, color: palette.textPrimary, fontSize: 18 },
+  releaseSub:  { ...typography.bodySmall, color: palette.textSecondary, marginTop: 2 },
+  releaseBreakdown: { marginTop: spacing.md, gap: 2 },
+  releaseLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
+  releaseLineLabel: { ...typography.body, color: palette.textPrimary, fontSize: 15, flex: 1 },
+  releaseLineValue: { ...typography.body, color: palette.textPrimary, fontSize: 15, fontFamily: 'DMSans_500Medium' },
+  releaseFinalRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    marginTop: spacing.xs, paddingTop: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: palette.border,
+  },
+  releaseFinalLabel: { ...typography.label, color: palette.textPrimary, fontSize: 15 },
+  releaseFinalValue: { ...typography.label, color: palette.textPrimary, fontSize: 20 },
+  releaseRefundRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginTop: spacing.sm },
+  releaseRefundText: { ...typography.bodySmall, color: palette.success, fontSize: 14, flex: 1 },
+  evidenceRow: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: spacing.xs,
+    marginTop: spacing.md, backgroundColor: palette.background, borderRadius: r.sm, padding: spacing.sm,
+  },
+  evidenceText: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 13, flex: 1, lineHeight: 18 },
+  autoReleaseNote: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12, marginTop: spacing.sm },
 });

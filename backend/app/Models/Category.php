@@ -18,15 +18,34 @@ class Category extends Model
         'risk_tier',
         'commission_band',
         'commission_rates',
+        // Category-driven pricing-model guidance (admin-editable).
+        'default_pricing_model',
+        'recommended_pricing_models',
+        'pricing_rationale',
+        'pricing_mismatch_warning',
     ];
 
     protected function casts(): array
     {
         return [
-            'is_active'        => 'boolean',
-            'synonyms'         => 'array',
-            'commission_rates' => 'array',
+            'is_active'                  => 'boolean',
+            'synonyms'                   => 'array',
+            'commission_rates'          => 'array',
+            'recommended_pricing_models' => 'array',
         ];
+    }
+
+    /** Effective default pricing model — category value or the config fallback. */
+    public function defaultPricingModel(): string
+    {
+        return $this->default_pricing_model ?: (string) config('pricing.default_model', 'OUTCOME_FIXED');
+    }
+
+    /** Effective recommended set — category value or the config fallback. */
+    public function recommendedPricingModels(): array
+    {
+        $set = $this->recommended_pricing_models;
+        return is_array($set) && $set !== [] ? $set : (array) config('pricing.default_recommended', []);
     }
 
     public function parent()

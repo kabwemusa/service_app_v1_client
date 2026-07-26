@@ -27,11 +27,26 @@ class EnsureAccountActive
         $user = $request->user();
 
         if ($user) {
-            if (in_array($user->account_state, ['BANNED', 'SUSPENDED'], true)) {
+            // A ban is permanent — always reject.
+            if ($user->account_state === 'BANNED') {
                 throw new ApiException(
                     ErrorCode::UNAUTHENTICATED,
                     'Your account is no longer active. Please contact support.',
                 );
+            }
+
+            // A timed suspension auto-lifts once suspended_until has passed (ADM-2):
+            // nothing else consumed that column before, so a "7-day suspension" was
+            // effectively permanent. Now the account is restored on its next request.
+            if ($user->account_state === 'SUSPENDED') {
+                if ($user->suspended_until !== null && $user->suspended_until->isPast()) {
+                    $user->forceFill(['account_state' => 'ACTIVE', 'suspended_until' => null])->save();
+                } else {
+                    throw new ApiException(
+                        ErrorCode::UNAUTHENTICATED,
+                        'Your account is temporarily suspended. Please contact support.',
+                    );
+                }
             }
 
             if ($user->session_invalidated_at) {

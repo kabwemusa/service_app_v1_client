@@ -1,13 +1,14 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import React, { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, useColorScheme, View } from 'react-native';
+import { ScrollView, Share, StyleSheet, useColorScheme, View } from 'react-native';
 import { Text, TouchableRipple } from 'react-native-paper';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { storageUrl } from '../../api/client';
 import { EARNED_BADGE_META, VettingBadge } from '../../components/discovery/VettingBadge';
 import { ScreenHeader } from '../../components/ui/ScreenHeader';
 import { CardSkeleton } from '../../components/ui/SkeletonBlock';
+import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useAuthStore } from '../../store/authStore';
 import { useProfileStore } from '../../store/profileStore';
 import { palette, radius as r, spacing, typography } from '../../theme';
@@ -35,7 +36,11 @@ function img(u: string | null | undefined): string | null {
 }
 
 // ── Primitives ───────────────────────────────────────────────────────────────
-function Divider({ c }: { c: ThemeC }) { return <View style={[styles.divider, { backgroundColor: c.border }]} />; }
+// inset → aligns the rule with the row text (past the icon rail), so rows in a
+// group read as one list; full-width (default) separates groups.
+function Divider({ c, inset }: { c: ThemeC; inset?: boolean }) {
+  return <View style={[styles.divider, inset && styles.dividerInset, { backgroundColor: c.border }]} />;
+}
 
 function Row({ icon, label, value, sub, onPress, c, danger, warn }: {
   icon: IconName; label: string; value?: string; sub?: string; onPress?: () => void; c: ThemeC; danger?: boolean; warn?: boolean;
@@ -77,7 +82,8 @@ function TabBar({ c, active, onChange }: { c: ThemeC; active: TabKey; onChange: 
         return (
           <TouchableRipple key={t.key} onPress={() => onChange(t.key)} borderless
             accessibilityRole="tab" accessibilityState={{ selected: on }} accessibilityLabel={t.label} style={styles.tabTap}>
-            <View style={[styles.tab, on && { borderBottomColor: palette.primary }]}>
+            {/* Active tab is denoted by the underline sitting flush on the divider. */}
+            <View style={[styles.tab, { borderBottomColor: on ? palette.primary : 'transparent' }]}>
               <Text style={[styles.tabText, { color: on ? palette.primary : c.t2 }, on && styles.tabTextActive]}>{t.label}</Text>
             </View>
           </TouchableRipple>
@@ -93,12 +99,29 @@ export default function ProviderAccountScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
   const { profile, dashboard, loading, fetchProfile, fetchDashboard } = useProfileStore();
   const { user, logout, setActiveRole } = useAuthStore();
+  const { showSnackbar } = useSnackbar();
   const [tab, setTab] = useState<TabKey>('profile');
 
   useEffect(() => { fetchProfile(); fetchDashboard(); }, []);
 
-  const editProfile  = () => navigation.navigate('ProviderProfileEdit');
-  const soon = (what: string) => () => navigation.navigate('ProviderProfileEdit'); // editors out of scope → profile editor
+  // Cover-photo tap lands on the editor's Personal section (where the photo lives).
+  const editProfile = () => navigation.navigate('ProviderProfileEdit', { section: 'personal' });
+  // Each profile-editor entry deep-links to its own section (segmented control).
+  const editSection = (section: 'personal' | 'about' | 'highlights' | 'portfolio') => () =>
+    navigation.navigate('ProviderProfileEdit', { section });
+
+  // Invite a friend is an ACTION, not a page — present the OS share sheet.
+  const inviteFriend = async () => {
+    const code = dashboard?.referral_code;
+    const message = code
+      ? `I'm on Sebenza for local services. Sign up with my code ${code} and we both earn ZMW 20. https://sebenza.app`
+      : `I'm on Sebenza — find trusted local services or offer your own. https://sebenza.app`;
+    try {
+      await Share.share({ message });
+    } catch {
+      showSnackbar({ message: 'Could not open the share sheet. Please try again.' });
+    }
+  };
 
   if (loading && (!profile || !dashboard)) {
     return (
@@ -199,29 +222,37 @@ export default function ProviderAccountScreen({ navigation }: any) {
 
             <Divider c={c} />
             <Text style={[styles.groupLabel, { color: c.t2 }]}>Manage</Text>
-            <Row icon="document-text-outline" label="About & languages" sub={languages || 'Add your bio and languages'} onPress={editProfile} c={c} />
-            <Divider c={c} />
-            <Row icon="sparkles-outline" label="Highlights" sub="Pinned service, photos & badges" onPress={editProfile} c={c} />
-            <Divider c={c} />
-            <Row icon="images-outline" label="Portfolio" value={`${portfolioN}/12`} onPress={editProfile} c={c} />
-            <Divider c={c} />
+            <Row icon="document-text-outline" label="About & languages" sub={languages || 'Add your bio and languages'} onPress={editSection('about')} c={c} />
+            <Divider c={c} inset />
+            <Row icon="sparkles-outline" label="Highlights" sub="Pinned service, photos & badges" onPress={editSection('highlights')} c={c} />
+            <Divider c={c} inset />
+            <Row icon="images-outline" label="Portfolio" value={`${portfolioN}/12`} onPress={editSection('portfolio')} c={c} />
+            <Divider c={c} inset />
             <Row icon="construct-outline" label="Services" value={String(stats?.active_services ?? 0)} onPress={() => navigation.navigate('Services')} c={c} />
           </View>
         ) : (
           <View style={styles.section}>
             {/* Verification */}
             <Text style={[styles.groupLabel, { color: c.t2 }]}>Verification</Text>
-            <View style={styles.verifyHead}>
-              <Text style={[styles.verifyTier, { color: c.t1 }]}>{dashboard.tier.label}</Text>
-              <View style={styles.verifyLine}>
-                <Ionicons name={verified ? 'checkmark-circle' : 'ellipse-outline'} size={14} color={verified ? palette.success : c.t3} />
-                <Text style={[styles.verifySub, { color: c.t2 }]}>{verified ? 'Identity (ID) verified' : 'Identity not yet verified'}</Text>
+            {/* Current tier level — opens the tier ladder (Verification screen). */}
+            <TouchableRipple onPress={() => navigation.navigate('Kyc')} borderless
+              accessibilityRole="button" accessibilityLabel={`Current tier: ${dashboard.tier.label}`}>
+              <View style={styles.verifyHead}>
+                <View style={styles.verifyHeadRow}>
+                  <Text style={[styles.verifyTier, { color: c.t1 }]}>{dashboard.tier.label}</Text>
+                  <Ionicons name="chevron-forward" size={16} color={c.t3} />
+                </View>
+                <View style={styles.verifyLine}>
+                  <Ionicons name={verified ? 'checkmark-circle' : 'ellipse-outline'} size={14} color={verified ? palette.success : c.t3} />
+                  <Text style={[styles.verifySub, { color: c.t2 }]}>{verified ? 'Identity (ID) verified' : 'Identity not yet verified'}</Text>
+                </View>
               </View>
-            </View>
+            </TouchableRipple>
             {/* Always-present entry — the provider's home for identity docs. */}
             <Row icon="shield-checkmark-outline" label="Identity verification"
               sub={verified ? 'Manage your ID & clearances' : 'Verify your ID to unlock jobs'}
-              onPress={() => navigation.navigate('Kyc')} c={c} />
+              onPress={() => navigation.navigate('Kyc', { focus: 'identity' })} c={c} />
+            <Divider c={c} inset />
             {dashboard.next_tier ? (
               <Row icon="trophy-outline" label={`Reach ${dashboard.next_tier.label}`}
                 sub={dashboard.next_tier.requirements?.[0]} onPress={() => navigation.navigate('Kyc')} c={c} />
@@ -241,7 +272,7 @@ export default function ProviderAccountScreen({ navigation }: any) {
                   value={momoSet ? `${MOMO[profile.momo_provider ?? ''] ?? profile.momo_provider ?? ''} ${profile.momo_number}`.trim() : undefined}
                   sub={momoSet ? undefined : 'Add your mobile-money number so customers can pay you'}
                   warn={!momoSet}
-                  onPress={editProfile}
+                  onPress={() => navigation.navigate('Payout')}
                   c={c}
                 />
                 <Text style={[styles.privacyNote, { color: c.t3 }]}>
@@ -249,24 +280,28 @@ export default function ProviderAccountScreen({ navigation }: any) {
                 </Text>
               </>
             ) : (
-              <Row icon="card-outline" label="Payout details" sub="Bank or mobile-money account for escrow payouts" onPress={editProfile} c={c} />
+              <Row icon="card-outline" label="Payout details" sub="Bank or mobile-money account for escrow payouts" onPress={() => navigation.navigate('Payout')} c={c} />
             )}
 
             <Divider c={c} />
 
             {/* Settings */}
             <Text style={[styles.groupLabel, { color: c.t2 }]}>Settings</Text>
-            <Row icon="person-outline" label="Personal info" onPress={editProfile} c={c} />
-            <Divider c={c} />
-            <Row icon="notifications-outline" label="Notifications" onPress={soon('Notifications')} c={c} />
-            <Divider c={c} />
+            <Row icon="person-outline" label="Personal info" onPress={editSection('personal')} c={c} />
+            <Divider c={c} inset />
+            <Row icon="notifications-outline" label="Notifications" onPress={() => navigation.navigate('NotificationSettings')} c={c} />
+            <Divider c={c} inset />
             <Row icon="gift-outline" label="Invite a friend"
-              sub={dashboard.referral_code ? `Your code: ${dashboard.referral_code}` : 'Earn ZMW 20 per referral'} onPress={soon('Referrals')} c={c} />
-            <Divider c={c} />
+              sub={dashboard.referral_code ? `Your code: ${dashboard.referral_code}` : 'Earn ZMW 20 per referral'} onPress={inviteFriend} c={c} />
+            <Divider c={c} inset />
             <Row icon="swap-horizontal-outline" label="Switch to customer" onPress={() => setActiveRole('CUSTOMER')} c={c} />
-            <Divider c={c} />
-            <Row icon="help-circle-outline" label="Help & support" onPress={soon('Help')} c={c} />
-            <Divider c={c} />
+            <Divider c={c} inset />
+            <Row icon="help-circle-outline" label="Help & support" onPress={() => navigation.navigate('Help')} c={c} />
+            <Divider c={c} inset />
+            <Row icon="lock-closed-outline" label="Privacy & consent" sub="Manage consent & your data rights" onPress={() => navigation.navigate('PrivacyConsent')} c={c} />
+            <Divider c={c} inset />
+            <Row icon="document-text-outline" label="Legal & policies" sub="Terms, Privacy Policy & User Agreement" onPress={() => navigation.navigate('Legal')} c={c} />
+            <Divider c={c} inset />
             <Row icon="log-out-outline" label="Sign out" onPress={logout} c={c} danger />
           </View>
         )}
@@ -298,7 +333,8 @@ const styles = StyleSheet.create({
   // Tabs
   tabBar: { flexDirection: 'row', borderBottomWidth: StyleSheet.hairlineWidth, marginTop: spacing.md, paddingHorizontal: spacing.lg },
   tabTap: { flex: 1, borderRadius: r.sm },
-  tab: { minHeight: 44, alignItems: 'center', justifyContent: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
+  // -hairline pulls the 2px active underline down so it sits ON the divider.
+  tab: { minHeight: 44, alignItems: 'center', justifyContent: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent', marginBottom: -StyleSheet.hairlineWidth },
   tabText: { ...typography.body, fontSize: 15 },
   tabTextActive: { fontFamily: 'DMSans_500Medium' },
 
@@ -321,6 +357,7 @@ const styles = StyleSheet.create({
   previewText: { ...typography.label, fontSize: 14 },
 
   divider: { height: StyleSheet.hairlineWidth, marginVertical: spacing.sm },
+  dividerInset: { marginLeft: 38 + spacing.md }, // icon chip (38) + row gap (16) → aligns with row text
 
   // Rows
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, minHeight: 56, paddingVertical: spacing.xs },
@@ -329,7 +366,8 @@ const styles = StyleSheet.create({
   rowSub: { ...typography.bodySmall, fontSize: 12, marginTop: 1 },
   rowValue: { ...typography.bodySmall, fontSize: 13 },
 
-  verifyHead: { marginBottom: spacing.xs },
+  verifyHead: { marginBottom: spacing.xs, minHeight: 44, justifyContent: 'center' },
+  verifyHeadRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   verifyTier: { ...typography.heading3, fontSize: 18 },
   verifyLine: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2 },
   verifySub: { ...typography.bodySmall, fontSize: 13 },

@@ -36,9 +36,11 @@ class AdminSettingsService
         'payment_mode' => ['general', 'enum:DIRECT,ESCROW', 'ESCROW', 'Platform default payment mode', false],
         'accept_window_default_mins' => ['general', 'int', 15, 'Accept window — standard bookings (mins)', false],
         'accept_window_urgent_mins'  => ['general', 'int', 5, 'Accept window — urgent bookings (mins)', false],
-        'autoconfirm_hours'          => ['general', 'int', 24, 'Auto-confirm window after provider marks done (hours)', false],
-        'buyer_protection_rate'      => ['general', 'float', 0.02, 'Buyer protection fee rate', false],
-        'buyer_protection_max_zmw'   => ['general', 'float', 50.0, 'Buyer protection fee cap (ZMW)', false],
+        // live=true — wired into the runtime via App\Support\Settings (§ ADM-1):
+        // an edit here takes effect immediately (cache flushed on write).
+        'autoconfirm_hours'          => ['general', 'int', 24, 'Auto-confirm window after provider marks done (hours)', true],
+        'buyer_protection_rate'      => ['general', 'float', 0.02, 'Buyer protection fee rate', true],
+        'buyer_protection_max_zmw'   => ['general', 'float', 50.0, 'Buyer protection fee cap (ZMW)', true],
 
         // ── Dispatch ─────────────────────────────────────────────────────────
         'fairness_shortlist_share' => ['dispatch', 'float', 0.20, 'Fairness floor — % of shortlist reserved for new providers', false],
@@ -47,10 +49,11 @@ class AdminSettingsService
         'geo_ring2_km' => ['dispatch', 'float', 25, 'Ring 2 radius (km)', false],
         'geo_ring3_km' => ['dispatch', 'float', 100, 'Ring 3 radius (km) — beyond this is nationwide/remote', false],
         'cascade_depth_limit' => ['dispatch', 'int', 3, 'Max candidates before no-provider fallback', false],
-        'trust_weight_tier_1' => ['dispatch', 'weights', ['identity' => 0.15, 'reliability' => 0.30, 'financial' => 0.20, 'ratings' => 0.35], 'Trust score weights — Tier 1', false],
-        'trust_weight_tier_2' => ['dispatch', 'weights', ['identity' => 0.25, 'reliability' => 0.25, 'financial' => 0.20, 'ratings' => 0.30], 'Trust score weights — Tier 2', false],
-        'trust_weight_tier_3' => ['dispatch', 'weights', ['identity' => 0.40, 'reliability' => 0.25, 'financial' => 0.20, 'ratings' => 0.15], 'Trust score weights — Tier 3', false],
-        'trust_weight_tier_4' => ['dispatch', 'weights', ['identity' => 0.40, 'reliability' => 0.25, 'financial' => 0.20, 'ratings' => 0.15], 'Trust score weights — Tier 4', false],
+        // live=true — wired into RealTrustEngine::weightsForTier (§ CFG-2).
+        'trust_weight_tier_1' => ['dispatch', 'weights', ['identity' => 0.15, 'reliability' => 0.30, 'financial' => 0.20, 'ratings' => 0.35], 'Trust score weights — Tier 1', true],
+        'trust_weight_tier_2' => ['dispatch', 'weights', ['identity' => 0.25, 'reliability' => 0.25, 'financial' => 0.20, 'ratings' => 0.30], 'Trust score weights — Tier 2', true],
+        'trust_weight_tier_3' => ['dispatch', 'weights', ['identity' => 0.40, 'reliability' => 0.25, 'financial' => 0.20, 'ratings' => 0.15], 'Trust score weights — Tier 3', true],
+        'trust_weight_tier_4' => ['dispatch', 'weights', ['identity' => 0.40, 'reliability' => 0.25, 'financial' => 0.20, 'ratings' => 0.15], 'Trust score weights — Tier 4', true],
 
         // ── Verification ─────────────────────────────────────────────────────
         'verification_sla_hours' => ['verification', 'int', 24, 'Verification SLA target (hours)', false],
@@ -109,6 +112,10 @@ class AdminSettingsService
                 ['group' => $group, 'value' => $value, 'updated_by' => $actor->id, 'updated_at' => now()],
             ),
         );
+
+        // § ADM-1 — invalidate the read-through cache so wired settings take
+        // effect on the very next request.
+        \App\Support\Settings::flush();
 
         return $this->group($group);
     }

@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import { Image } from "expo-image";
 import React, { useCallback, useEffect, useState } from "react";
 import {
   Dimensions,
@@ -19,6 +20,7 @@ import { BookingSheet } from "../../components/booking/BookingSheet";
 import { LocationPickerSheet } from "../../components/location/LocationPickerSheet";
 import { HomeBannerCarousel } from "../../components/discovery/HomeBannerCarousel";
 import { ServiceDiscoveryCard } from "../../components/discovery/ServiceDiscoveryCard";
+import { storageUrl } from "../../api/client";
 import { ApiError } from "../../api/errors";
 import { BookAgainCard, bookingsApi, MyProvider } from "../../api/bookings";
 import { searchApi, SearchResult } from "../../api/search";
@@ -27,6 +29,8 @@ import { useSnackbar } from "../../providers/SnackbarProvider";
 import { useAuthStore } from "../../store/authStore";
 import { useCategoryStore } from "../../store/categoryStore";
 import { useLocationStore } from "../../store/locationStore";
+import { useRecentSearchStore } from "../../store/recentSearchStore";
+import { useRealtimeStore } from "../../store/realtimeStore";
 import { palette, radius as r, spacing } from "../../theme";
 import { fontFamily } from "../../theme/typography";
 
@@ -83,6 +87,8 @@ function toBookableService(r: SearchResult): Service {
     scope_prompts: [],
     needs_pricing_review: false,
     payment_mode: r.payment_mode,
+    delivery_type: r.delivery_type,
+    is_remote: r.is_remote,
     duration_estimate_mins: null,
     status: "ACTIVE",
     is_pinned: false,
@@ -121,9 +127,11 @@ function toBookableService(r: SearchResult): Service {
 export default function HomeScreen({ navigation }: any) {
   const { categories, fetchCategories, loading: cLoading } = useCategoryStore();
   const { primaryLocation, setPrimary } = useLocationStore();
+  const { recents, hydrate: hydrateRecents } = useRecentSearchStore();
   const { showError, showSnackbar } = useSnackbar();
   const user = useAuthStore((s) => s.user);
   const activeRole = useAuthStore((s) => s.activeRole);
+  const placementRevision = useRealtimeStore((s) => s.placementRevision);
   const insets = useSafeAreaInsets();
 
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -131,11 +139,14 @@ export default function HomeScreen({ navigation }: any) {
   const [isFallback, setIsFallback] = useState(false);
   const [myProviders, setMyProviders] = useState<MyProvider[]>([]);
   const [bookAgain, setBookAgain] = useState<BookAgainCard | null>(null);
+  const [failedAvatarIds, setFailedAvatarIds] = useState<Set<string>>(new Set());
+  const [bookAgainAvatarFailed, setBookAgainAvatarFailed] = useState(false);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [bookingService, setBookingService] = useState<Service | null>(null);
 
   useEffect(() => {
     fetchCategories();
+    hydrateRecents();
   }, []);
 
   // Fetch "Your providers" + "Book again" from completed history — silent fail
@@ -173,7 +184,9 @@ export default function HomeScreen({ navigation }: any) {
 
   useEffect(() => {
     runDiscovery();
-  }, [primaryLocation]);
+    // A live campaign change (launch/pause/end/budget-exhausted) re-runs
+    // discovery so search-result promo badges refresh in real time.
+  }, [primaryLocation, placementRevision]);
 
   const handleCategoryPress = (categoryId: number) => {
     navigation.navigate("BrowseMain", { categoryId });
@@ -274,12 +287,81 @@ export default function HomeScreen({ navigation }: any) {
         {/* ── Greeting + headline ────────────────────────────────────── */}
         <Text style={styles.greeting}>{getGreeting()}</Text>
         <Text style={styles.headline}>Find trusted help{"\n"}near you</Text>
+
+        {/* ── Search box — PRIMARY entry point (natural-language matcher) ─ */}
+        {/* Big tap target → opens the search screen (live type-ahead + submit
+            runs the full match pipeline). First, most prominent element. */}
+        <TouchableRipple
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            navigation.navigate("Search");
+          }}
+          style={styles.searchBox}
+          borderless
+          accessibilityRole="search"
+          accessibilityLabel="What do you need help with?"
+        >
+          <View style={styles.searchBoxInner}>
+            <Ionicons name="search" size={20} color={palette.primary} />
+            <Text style={styles.searchBoxPlaceholder}>
+              What do you need help with?
+            </Text>
+          </View>
+        </TouchableRipple>
+
+        {/* Quick chips — recent searches first, then a few popular categories */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.quickChipsRow}
+          keyboardShouldPersistTaps="handled"
+        >
+          {recents.slice(0, 3).map((rec) => (
+            <TouchableOpacity
+              key={`recent-${rec.query}`}
+              style={styles.quickChip}
+              onPress={() => navigation.navigate("BrowseMain", { q: rec.query })}
+              accessibilityRole="button"
+              accessibilityLabel={`Recent search: ${rec.query}`}
+            >
+              <Ionicons
+                name="time-outline"
+                size={13}
+                color={palette.textSecondary}
+              />
+              <Text style={styles.quickChipTxt} numberOfLines={1}>
+                {rec.query}
+              </Text>
+            </TouchableOpacity>
+          ))}
+          {categories.slice(0, 6).map((cat) => (
+            <TouchableOpacity
+              key={`pop-${cat.id}`}
+              style={styles.quickChip}
+              onPress={() =>
+                navigation.navigate("BrowseMain", { categoryId: cat.id })
+              }
+              accessibilityRole="button"
+              accessibilityLabel={cat.name}
+            >
+              <Ionicons
+                name={(cat.icon as any) ?? "grid-outline"}
+                size={13}
+                color={palette.primary}
+              />
+              <Text style={styles.quickChipTxt} numberOfLines={1}>
+                {cat.name}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+
         <View style={styles.horizontalDivider} />
         {/* ── Promo carousel (data-driven, collapses when empty) ─────── */}
         {/* Negative margins cancel the parent's paddingHorizontal so slides
             run edge-to-edge; content inside each slide is re-padded. */}
         <View style={styles.carouselWrap}>
-          <HomeBannerCarousel onAction={handleBannerAction} />
+          <HomeBannerCarousel onAction={handleBannerAction} refreshKey={placementRevision} />
         </View>
         <View style={styles.horizontalDivider} />
         {/* ── Categories ─────────────────────────────────────────────── */}
@@ -361,11 +443,22 @@ export default function HomeScreen({ navigation }: any) {
                   }
                   activeOpacity={0.75}
                 >
-                  <View style={styles.providerChipAvatar}>
-                    <Text style={styles.providerChipInitial}>
-                      {(p.display_name || "?")[0].toUpperCase()}
-                    </Text>
-                  </View>
+                  {p.avatar_url && !failedAvatarIds.has(p.id) ? (
+                    <Image
+                      source={{ uri: storageUrl(p.avatar_url) }}
+                      style={styles.providerChipAvatar}
+                      contentFit="cover"
+                      onError={() =>
+                        setFailedAvatarIds((prev) => new Set(prev).add(p.id))
+                      }
+                    />
+                  ) : (
+                    <View style={styles.providerChipAvatar}>
+                      <Text style={styles.providerChipInitial}>
+                        {(p.display_name || "?")[0].toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
                   <Text style={styles.providerChipName} numberOfLines={2}>
                     {p.display_name}
                   </Text>
@@ -397,11 +490,20 @@ export default function HomeScreen({ navigation }: any) {
               }`}
             >
               <View style={styles.bookAgainInner}>
-                <View style={styles.bookAgainAvatar}>
-                  <Text style={styles.bookAgainInitial}>
-                    {(bookAgain.provider.display_name || "?")[0].toUpperCase()}
-                  </Text>
-                </View>
+                {bookAgain.provider.avatar_url && !bookAgainAvatarFailed ? (
+                  <Image
+                    source={{ uri: storageUrl(bookAgain.provider.avatar_url) }}
+                    style={styles.bookAgainAvatar}
+                    contentFit="cover"
+                    onError={() => setBookAgainAvatarFailed(true)}
+                  />
+                ) : (
+                  <View style={styles.bookAgainAvatar}>
+                    <Text style={styles.bookAgainInitial}>
+                      {(bookAgain.provider.display_name || "?")[0].toUpperCase()}
+                    </Text>
+                  </View>
+                )}
                 <View style={styles.bookAgainBody}>
                   <Text style={styles.bookAgainTitle} numberOfLines={1}>
                     {bookAgain.service.title}
@@ -594,6 +696,7 @@ export default function HomeScreen({ navigation }: any) {
         basePrice={bookingService?.base_price ?? 0}
         pricingModel={bookingService?.pricing_model}
         paymentMode={bookingService?.payment_mode}
+        isRemote={bookingService?.is_remote ?? false}
         availabilityMatrix={bookingService?.provider?.availability_matrix}
         categoryId={bookingService?.category?.id}
         providerName={bookingService?.provider?.display_name}
@@ -662,6 +765,52 @@ const styles = StyleSheet.create({
     lineHeight: 28,
     color: palette.textPrimary,
     marginBottom: spacing.md,
+  },
+
+  // ── Search box (primary entry) ────────────────────────────────
+  searchBox: {
+    borderRadius: r.full,
+    backgroundColor: palette.surface,
+    borderWidth: 1.5,
+    borderColor: palette.primary,
+    marginTop: spacing.xs,
+    marginBottom: spacing.sm,
+    overflow: "hidden",
+  },
+  searchBoxInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    height: 54,
+  },
+  searchBoxPlaceholder: {
+    fontFamily: fontFamily.regular,
+    fontSize: 15,
+    color: palette.textSecondary,
+    flex: 1,
+  },
+  quickChipsRow: {
+    gap: spacing.xs,
+    paddingVertical: spacing.xs,
+    paddingRight: spacing.lg,
+  },
+  quickChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderRadius: r.full,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs + 1,
+    maxWidth: 180,
+  },
+  quickChipTxt: {
+    fontFamily: fontFamily.regular,
+    fontSize: 12,
+    color: palette.textPrimary,
   },
 
   // ── Carousel ──────────────────────────────────────────────────

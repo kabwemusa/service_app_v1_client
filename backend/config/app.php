@@ -15,6 +15,12 @@ return [
 
     'name' => env('APP_NAME', 'Sebenza'),
 
+    // § CFG — pepper for hashing sensitive identifiers (NRC/doc numbers, contact
+    // hashes). Read here (at cache time) so it is honoured under config:cache;
+    // callers must read config('app.kyc_hash_pepper'), never env() at runtime.
+    // MUST be set to a strong random value in production.
+    'kyc_hash_pepper' => env('KYC_HASH_PEPPER', 'default-pepper'),
+
     /*
     |--------------------------------------------------------------------------
     | Application Environment

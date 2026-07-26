@@ -28,6 +28,13 @@ Schedule::command(PaymentExpiryWorker::class)->everyMinute()->withoutOverlapping
 // Retry failed PAY_OUT transactions per the exponential backoff schedule
 Schedule::command(PayoutRetryWorker::class)->everyMinute()->withoutOverlapping();
 
+// § ERR-2 — retry money-path calls (refunds/payouts/balance collections) that
+// failed after local state was committed, so a lost log line can't lose money.
+Schedule::command(\App\Console\Commands\ReconcilePaymentsWorker::class)->everyMinute()->withoutOverlapping();
+
+// § DB-8 — prune passive observability log tables past their retention (nightly).
+Schedule::command(\App\Console\Commands\PruneObservabilityLogs::class)->dailyAt('04:00')->withoutOverlapping();
+
 // Provider went dark: cancel + refund FUNDS_HELD bookings whose scheduled
 // window ended a grace period ago without the job starting
 Schedule::command(\App\Console\Commands\NoShowExpiryWorker::class)->everyFifteenMinutes()->withoutOverlapping();

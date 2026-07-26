@@ -72,16 +72,25 @@ class ProviderOnboardingController extends Controller
     /** POST /provider/onboarding/identity — NRC front + selfie + MoMo (universal base / Tier 1). */
     public function identity(Request $request): JsonResponse
     {
+        if ($request->has('nrc_number')) {
+            $request->merge(['nrc_number' => preg_replace('/\s+/', '', (string) $request->input('nrc_number'))]);
+        }
+
         $data = $request->validate([
             'nrc_front'     => ['required', 'image', 'mimes:jpeg,jpg,png,webp', 'max:8192'],
+            // § CTR-1 — NRC number mandatory at Tier 1 (canonical 123456/78/1).
+            'nrc_number'    => ['required', 'string', 'regex:/^\d{6}\/\d{2}\/\d$/'],
             'selfie'        => ['required', 'image', 'mimes:jpeg,jpg,png,webp', 'max:8192'],
             'momo_number'   => ['required', 'string', 'max:20'],
             'momo_provider' => ['sometimes', 'string', 'in:MTN,AIRTEL,ZAMTEL'],
+        ], [
+            'nrc_number.regex' => 'Enter your NRC in the format 123456/78/1.',
         ]);
 
         $this->onboarding->submitIdentity(
             $request->user(),
             $request->file('nrc_front'),
+            $data['nrc_number'],
             $request->file('selfie'),
             $data['momo_number'],
             $data['momo_provider'] ?? 'MTN',
@@ -104,9 +113,24 @@ class ProviderOnboardingController extends Controller
             'availability.*.day_of_week'   => ['required_with:availability', 'integer', 'between:0,6'],
             'availability.*.start_time'    => ['required_with:availability', 'string'],
             'availability.*.end_time'      => ['required_with:availability', 'string'],
+            // Selection-guidance telemetry (not persisted) — see StoreServiceRequest.
+            'pricing_warning_shown'        => ['sometimes', 'boolean'],
+            'pricing_warning_overridden'   => ['sometimes', 'boolean'],
         ]);
 
         $this->onboarding->saveService($request->user(), $data);
+
+        // Log the pricing-model choice + whether the mismatch nudge was
+        // shown/overridden, for tuning category defaults.
+        if ($request->has('pricing_model')) {
+            \Illuminate\Support\Facades\Log::info('service.pricing_choice', [
+                'op'                 => 'onboarding',
+                'provider_id'        => $request->user()?->getKey(),
+                'chosen_model'       => $data['pricing_model'] ?? null,
+                'warning_shown'      => $request->boolean('pricing_warning_shown'),
+                'warning_overridden' => $request->boolean('pricing_warning_overridden'),
+            ]);
+        }
 
         return ApiResponse::success($this->onboarding->state($request->user()), 'Service saved.', 201);
     }

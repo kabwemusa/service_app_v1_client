@@ -9,7 +9,8 @@ export const palette = {
   danger:          '#B91C1C',
   dangerLight:     '#FEE2E2',
   surface:         '#FFFFFF',
-  background:      '#FBF7F8',
+  // Page background is white so content sits on white (was a pale maroon tint).
+  background:      '#FFFFFF',
   border:          '#EDD5DE',
   textPrimary:     '#1A0A12',
   textSecondary:   '#7B4A5C',

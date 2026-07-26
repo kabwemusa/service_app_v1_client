@@ -14,6 +14,11 @@ export interface SearchResult {
   pricing_model: PricingModel;
   base_price:    number | null;
   payment_mode:  'DIRECT' | 'ESCROW';
+  // Delivery: IN_PERSON (geo applies) | REMOTE (online, nationwide).
+  delivery_type:  'IN_PERSON' | 'REMOTE';
+  is_remote:      boolean;
+  // Provider-set service location — "Online" when remote, else base-location label.
+  location_label: string | null;
   latitude:      number;
   longitude:     number;
   distance_km:   number | null;
@@ -26,9 +31,17 @@ export interface SearchResult {
    */
   placement:           'organic' | 'promoted';
   completed_job_count: number;
+  /**
+   * Growth & Promotions badge (server-resolved for the current user) or null.
+   * Cosmetic only — a promo badges a service, it does NOT re-rank it (that is
+   * the separate `placement` field).
+   */
+  promo: { label: string; campaign_id: string } | null;
   provider: {
     id:                     string;
     display_name:           string;
+    /** Public profile photo — null until the provider uploads one. */
+    avatar_url:             string | null;
     r_raw:                  number;
     r_bayes:                number;
     v_reviews:              number;
@@ -115,4 +128,63 @@ export const searchApi = {
     api.get<SuggestResult>('/search/suggest', {
       params: { q, ...(lat != null && lng != null ? { lat, lng } : {}) },
     }),
+};
+
+// ── Natural-language matcher ───────────────────────────────────────────────────
+// POST /match runs the full layered pipeline (exact → synonym → semantic → LLM).
+// Type-ahead uses the cheap `suggest` above and NEVER calls the LLM; the LLM only
+// runs here, on submit, for genuinely ambiguous queries.
+
+export type MatchStatus =
+  | 'matched'            // real ranked services returned in `data`
+  | 'matched_no_supply'  // real match, but no local providers cover it yet
+  | 'clarify'            // ambiguous — ask with `candidates` (2–3 real options)
+  | 'empty';             // nothing matches — honest empty + `closest_categories`
+
+export interface MatchCandidate {
+  ref:         string;
+  type:        'category' | 'service';
+  id:          string | number;
+  label:       string;
+  subtitle:    string;
+  category_id: number | null;
+}
+
+export interface MatchResponse {
+  status:             MatchStatus;
+  layer:              string | null;
+  confidence:         number;
+  used_llm:           boolean;
+  /** Reference this when reporting the outcome (booked/refined) for tuning. */
+  log_id:             string | null;
+  query:              string;
+  resolved_category:  { id: number } | null;
+  candidates:         MatchCandidate[];
+  closest_categories: { id: number; name: string }[];
+  data:               SearchResult[];
+  total:              number;
+  fallback:           boolean;
+  impression_id?:     string | null;
+}
+
+export interface MatchParams {
+  query:  string;
+  lat?:   number;
+  lng?:   number;
+  region?: string;
+  page?:  number;
+}
+
+export const matchApi = {
+  match: (params: MatchParams) => api.post<MatchResponse>('/match', params),
+
+  /** Feed the tuning dataset (privacy-safe: no PII). Best-effort, fire-and-forget. */
+  recordOutcome: (
+    logId: string,
+    outcome: 'booked' | 'refined' | 'abandoned',
+    bookedServiceId?: string,
+  ) =>
+    api
+      .post(`/match/${logId}/outcome`, { outcome, booked_service_id: bookedServiceId })
+      .catch(() => {}),
 };

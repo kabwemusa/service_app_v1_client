@@ -21,6 +21,8 @@ class StoreServiceRequest extends FormRequest
             'category_id'             => ['required', 'integer', 'exists:categories,id'],
             'title'                   => ['required', 'string', 'max:80'],
             'description'             => ['sometimes', 'nullable', 'string', 'max:1000'],
+            // How the service is delivered. REMOTE = online (nationwide, no geo).
+            'delivery_type'           => ['sometimes', 'string', Rule::in(array_keys(config('catalog.delivery_types')))],
             // Outcome-based pricing: OUTCOME_FIXED | PROVIDER_SCOPE | HOURLY_CAPPED | QUOTE_DEPOSIT.
             // Customers never input hours — the provider owns every price parameter here.
             'pricing_model'           => ['required', 'string', 'in:OUTCOME_FIXED,PROVIDER_SCOPE,HOURLY_CAPPED,QUOTE_DEPOSIT'],
@@ -53,6 +55,11 @@ class StoreServiceRequest extends FormRequest
             'duration_estimate_mins'  => ['nullable', 'integer', 'min:1', 'max:1440'],
             'status'                  => ['sometimes', 'string', 'in:DRAFT,ACTIVE,PAUSED,HIDDEN'],
             'is_pinned'               => ['sometimes', 'boolean'],
+            // Selection-guidance telemetry (not persisted on the service): did the
+            // provider see the category mismatch nudge, and did they override it?
+            // Logged for later tuning of category defaults.
+            'pricing_warning_shown'      => ['sometimes', 'boolean'],
+            'pricing_warning_overridden' => ['sometimes', 'boolean'],
             // Optional: defaults to the provider's base location when omitted
             // (one place to set "where you offer from"). Both required together.
             'latitude'                => ['nullable', 'numeric', 'between:-90,90', 'required_with:longitude'],

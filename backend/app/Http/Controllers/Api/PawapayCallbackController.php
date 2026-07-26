@@ -25,20 +25,41 @@ class PawapayCallbackController extends Controller
      *
      * PawaPay sends callbacks for deposits, payouts, and refunds.
      * Deposit callbacks drive the booking lifecycle forward.
+     *
+     * SECURITY: this endpoint is public (pawaPay is the caller), so its input is
+     * untrusted. Two independent defences:
+     *   1. An optional shared-secret token (PAWAPAY_CALLBACK_TOKEN) on the URL —
+     *      when configured it must match, blocking anonymous probes outright.
+     *   2. The status a callback claims is NEVER used to move money. Before acting
+     *      on any event we re-fetch the authoritative status from pawaPay's read
+     *      API (PaymentStatusVerifier); the posted status is used only for logging
+     *      and non-authoritative context (e.g. the failure reason to show a user).
+     * A forged callback therefore cannot fake a payment outcome.
      */
     public function handle(Request $request): JsonResponse
     {
+        if (! $this->tokenOk($request)) {
+            Log::warning('PawaPay callback: rejected — bad or missing callback token', [
+                'ip' => $request->ip(),
+            ]);
+            return response()->json(['error' => 'Forbidden'], 403);
+        }
+
         $payload = $request->all();
 
         Log::info('PawaPay callback received', $payload);
 
         if (isset($payload['depositId'])) {
+            // Replace the (untrusted) posted status with the authoritative one.
+            $payload['status'] = $this->authoritativeStatus('deposit', $payload['depositId'], $payload['status'] ?? 'UNKNOWN');
             $this->logEvent($payload, 'depositId', 'collection');
             $this->handleDepositCallback($payload);
         } elseif (isset($payload['payoutId'])) {
+            $payload['status'] = $this->authoritativeStatus('payout', $payload['payoutId'], $payload['status'] ?? 'UNKNOWN');
             $this->logEvent($payload, 'payoutId', 'payout');
             $this->handlePayoutCallback($payload);
         } elseif (isset($payload['refundId'])) {
+            $payload['status'] = $this->authoritativeStatus('refund', $payload['refundId'], $payload['status'] ?? 'UNKNOWN');
             $this->logEvent($payload, 'refundId', 'refund');
             $this->handleRefundCallback($payload);
         } else {
@@ -46,6 +67,51 @@ class PawapayCallbackController extends Controller
         }
 
         return response()->json(['received' => true]);
+    }
+
+    /**
+     * Constant-time comparison of an optional shared secret. When
+     * PAWAPAY_CALLBACK_TOKEN is unset the check is skipped (sandbox/local
+     * convenience) — but we warn in production so a misconfiguration is loud.
+     */
+    private function tokenOk(Request $request): bool
+    {
+        $expected = (string) config('pawapay.callback_token', '');
+
+        if ($expected === '') {
+            if (app()->isProduction()) {
+                Log::warning('PawaPay callback: PAWAPAY_CALLBACK_TOKEN is not set in production — relying on status re-fetch only.');
+            }
+            return true;
+        }
+
+        $provided = (string) ($request->query('token') ?? $request->header('X-Callback-Token', ''));
+
+        return $provided !== '' && hash_equals($expected, $provided);
+    }
+
+    /**
+     * Re-fetch the true status from pawaPay when the bound gateway supports it
+     * (the real, money-moving gateway does). Falls back to the posted status only
+     * for stub/test gateways, which are bound solely when no real funds move.
+     */
+    private function authoritativeStatus(string $kind, string $ref, string $postedStatus): string
+    {
+        $gateway = app(\App\Contracts\PaymentGateway::class);
+
+        if (! $gateway instanceof \App\Contracts\PaymentStatusVerifier) {
+            return $postedStatus;
+        }
+
+        $verified = $gateway->verifyStatus($kind, (string) $ref);
+
+        if ($verified !== $postedStatus) {
+            Log::info('PawaPay callback: status re-fetched', [
+                'kind' => $kind, 'ref' => $ref, 'posted' => $postedStatus, 'verified' => $verified,
+            ]);
+        }
+
+        return $verified;
     }
 
     /**
@@ -61,15 +127,23 @@ class PawapayCallbackController extends Controller
                 ?? $payload['recipient']['accountDetails']['phoneNumber']
                 ?? ($type === 'collection' ? $booking?->buyer?->phone : $booking?->provider?->providerProfile?->momo_number);
 
-            PawapayEvent::create([
-                'booking_id'     => $booking?->id,
-                'external_ref'   => $payload[$refKey],
-                'type'           => $type,
-                'pawapay_status' => $payload['status'] ?? 'UNKNOWN',
-                'mno'            => MnoResolver::forPhone($phone),
-                'amount'         => isset($payload['amount']) ? (float) $payload['amount'] : null,
-                'created_at'     => now(),
-            ]);
+            // CON-4: a redelivered callback carries the same (external_ref, status).
+            // firstOrCreate on that pair de-dupes WITHOUT throwing a unique
+            // violation — important because a thrown violation would poison a
+            // surrounding DB transaction (e.g. under test) even when caught.
+            PawapayEvent::firstOrCreate(
+                [
+                    'external_ref'   => $payload[$refKey],
+                    'pawapay_status' => $payload['status'] ?? 'UNKNOWN',
+                ],
+                [
+                    'booking_id' => $booking?->id,
+                    'type'       => $type,
+                    'mno'        => MnoResolver::forPhone($phone),
+                    'amount'     => isset($payload['amount']) ? (float) $payload['amount'] : null,
+                    'created_at' => now(),
+                ],
+            );
         } catch (\Throwable $e) {
             Log::warning('PawapayEvent: failed to persist', ['error' => $e->getMessage()]);
         }
@@ -202,9 +276,22 @@ class PawapayCallbackController extends Controller
             return;
         }
 
-        // Idempotency: PawaPay may re-deliver this callback. We only advance from
-        // PENDING_PAYMENT; any later state (FUNDS_HELD, IN_PROGRESS, …) is a no-op.
-        if ($booking->status !== 'PENDING_PAYMENT') {
+        // Funds are now custodied by the licensed gateway. QUOTE_DEPOSIT bookings
+        // (escrow_phase DEPOSIT) advance to DEPOSIT_HELD — only the deposit is
+        // held, the balance is collected at completion. Everything else FUNDS_HELD.
+        $heldState = $booking->escrow_phase === 'DEPOSIT' ? 'DEPOSIT_HELD' : 'FUNDS_HELD';
+
+        // Idempotency + concurrency (TXN-5): PawaPay may re-deliver this callback,
+        // and two redeliveries can race. A single conditional UPDATE advances the
+        // booking exactly once — only a still-PENDING_PAYMENT row is moved. A
+        // redelivery (or any later state) claims 0 rows and is a safe no-op. This
+        // is atomic without holding a row lock across the WhatsApp send below.
+        $advanced = \Illuminate\Support\Facades\DB::table('bookings')
+            ->where('id', $booking->id)
+            ->where('status', 'PENDING_PAYMENT')
+            ->update(['status' => $heldState, 'updated_at' => now()]);
+
+        if ($advanced === 0) {
             Log::info('PawaPay: deposit COMPLETED but booking not PENDING_PAYMENT, skipping (idempotent)', [
                 'bookingId' => $booking->id,
                 'status'    => $booking->status,
@@ -212,17 +299,37 @@ class PawapayCallbackController extends Controller
             return;
         }
 
-        // Funds are now custodied by the licensed gateway. QUOTE_DEPOSIT bookings
-        // (escrow_phase DEPOSIT) advance to DEPOSIT_HELD — only the deposit is
-        // held, the balance is collected at completion. Everything else FUNDS_HELD.
-        $heldState = $booking->escrow_phase === 'DEPOSIT' ? 'DEPOSIT_HELD' : 'FUNDS_HELD';
-        $booking->update(['status' => $heldState]);
+        $booking->status = $heldState; // reflect the committed state for downstream
+
+        // Growth & Promotions: the discount was decided and stamped on the
+        // booking at initiation (the customer was already charged the reduced
+        // amount). Now that funds have settled, record the campaign spend.
+        try {
+            app(\App\Services\Growth\CampaignDiscountService::class)->recordReserved($booking);
+        } catch (\Throwable $e) {
+            Log::warning('PawaPay: campaign spend record failed (non-fatal)', [
+                'bookingId' => $booking->id, 'error' => $e->getMessage(),
+            ]);
+        }
 
         Log::info("PawaPay: booking advanced to {$heldState}", [
             'bookingId'             => $booking->id,
             'depositId'             => $booking->escrow_hold_ref,
             'providerTransactionId' => $payload['providerTransactionId'] ?? null,
         ]);
+
+        // Funds now custodied → generate the Booking Agreement (both parties get
+        // the same document). Best-effort; never blocks the callback.
+        try {
+            app(\App\Services\BookingService::class)->issueAgreement(
+                $booking->fresh()->load(['service.category', 'service.inclusions', 'buyer', 'provider.providerProfile']),
+                \App\Services\BookingAgreementService::REASON_CONFIRMATION,
+            );
+        } catch (\Throwable $e) {
+            Log::warning('PawaPay: agreement generation failed', [
+                'bookingId' => $booking->id, 'error' => $e->getMessage(),
+            ]);
+        }
 
         $customerConvo = ConversationState::where('booking_id', $booking->id)
             ->where('state', 'FUNDING')
@@ -244,21 +351,43 @@ class PawapayCallbackController extends Controller
             'status'    => $booking->status,
         ]);
 
-        try {
-            $held   = $booking->escrow_phase === 'DEPOSIT'
-                ? (float) $booking->deposit_amount
-                : (float) ($booking->agreed_amount ?? $booking->amount);
-            $amount = $held + (float) $booking->buyer_protection_fee;
+        // Idempotent refund claim (TXN-3): only one caller may refund. If the
+        // booking was already refunded (at cancel time, or by a redelivered late
+        // callback) this claims 0 rows and we return without a second refund.
+        $claimed = \Illuminate\Support\Facades\DB::table('bookings')
+            ->where('id', $booking->id)
+            ->whereNull('refunded_at')
+            ->update(['refunded_at' => now()]);
 
-            app(\App\Contracts\PaymentGateway::class)->refund(
+        if ($claimed === 0) {
+            Log::info('PawaPay: late deposit for an already-refunded booking, skipping', [
+                'bookingId' => $booking->id,
+            ]);
+            return;
+        }
+
+        $held   = $booking->escrow_phase === 'DEPOSIT'
+            ? (float) $booking->deposit_amount
+            : (float) ($booking->agreed_amount ?? $booking->amount);
+        $amount = $held + (float) $booking->buyer_protection_fee;
+
+        try {
+            $ok = app(\App\Contracts\PaymentGateway::class)->refund(
                 $booking->escrow_hold_ref,
                 $booking->buyer?->phone ?? '',
                 $amount,
             );
+            if (! $ok) {
+                throw new \RuntimeException('Gateway refund returned failure.');
+            }
         } catch (\Throwable $e) {
-            Log::error('PawaPay: late-deposit refund failed — needs manual reconciliation', [
+            Log::error('PawaPay: late-deposit refund failed — queued for reconciliation', [
                 'bookingId' => $booking->id, 'error' => $e->getMessage(),
             ]);
+            app(\App\Services\PaymentReconciliationService::class)->record(
+                $booking, \App\Models\PaymentReconciliation::KIND_REFUND,
+                $amount, $booking->escrow_hold_ref, $booking->buyer?->phone, $e->getMessage(),
+            );
             return;
         }
 
@@ -274,15 +403,22 @@ class PawapayCallbackController extends Controller
 
     private function onDepositFailed(Booking $booking, array $payload): void
     {
-        if ($booking->status !== 'PENDING_PAYMENT') {
-            return;
-        }
-
         $reason = $payload['failureReason']['failureMessage']
             ?? $payload['failureReason']['failureCode']
             ?? 'Payment was not completed';
 
-        $booking->update(['status' => 'PAYMENT_FAILED']);
+        // Atomic (TXN-5): only a still-PENDING_PAYMENT booking is marked failed;
+        // a redelivery claims 0 rows and is a no-op.
+        $failed = \Illuminate\Support\Facades\DB::table('bookings')
+            ->where('id', $booking->id)
+            ->where('status', 'PENDING_PAYMENT')
+            ->update(['status' => 'PAYMENT_FAILED', 'updated_at' => now()]);
+
+        if ($failed === 0) {
+            return;
+        }
+
+        $booking->status = 'PAYMENT_FAILED'; // reflect for downstream
 
         Log::info('PawaPay: booking marked PAYMENT_FAILED', [
             'bookingId' => $booking->id,
@@ -340,15 +476,29 @@ class PawapayCallbackController extends Controller
                 'reason'    => $payload['failureReason'] ?? null,
             ]);
 
-            if ($booking && $booking->status === 'DISBURSED') {
-                $booking->update(['status' => 'COMPLETED', 'disbursed_at' => null]);
+            // Revert to COMPLETED and RELEASE the payout claim (TXN-1) so the
+            // due-payout batch can re-attempt. Atomic + idempotent.
+            if ($booking) {
+                \Illuminate\Support\Facades\DB::table('bookings')
+                    ->where('id', $booking->id)
+                    ->where('status', 'DISBURSED')
+                    ->update(['status' => 'COMPLETED', 'disbursed_at' => null, 'payout_claimed_at' => null, 'updated_at' => now()]);
             }
             return;
         }
 
-        if ($status === 'COMPLETED' && $booking && $booking->status !== 'DISBURSED') {
-            // Idempotent confirm (e.g. a slow async payout that wasn't optimistically marked).
-            $booking->update(['status' => 'DISBURSED', 'disbursed_at' => now()]);
+        if ($status === 'COMPLETED' && $booking) {
+            // Idempotent confirm (e.g. a slow async payout that wasn't optimistically
+            // marked). Only a not-yet-DISBURSED row is advanced; a redelivery no-ops.
+            $confirmed = \Illuminate\Support\Facades\DB::table('bookings')
+                ->where('id', $booking->id)
+                ->where('status', '!=', 'DISBURSED')
+                ->update(['status' => 'DISBURSED', 'disbursed_at' => now(), 'updated_at' => now()]);
+
+            if ($confirmed === 0) {
+                return;
+            }
+            $booking->status = 'DISBURSED';
 
             try {
                 app(\App\Services\NotificationDispatcher::class)->dispatch(

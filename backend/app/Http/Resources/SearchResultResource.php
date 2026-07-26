@@ -27,11 +27,19 @@ class SearchResultResource extends JsonResource
             'title'         => $this->title,
             'description'   => $this->description,
             'pricing_model' => $this->pricing_model,
+            // Remote (online) services → clients show "Online" instead of an area/distance.
+            'delivery_type' => $this->delivery_type ?? 'IN_PERSON',
+            'is_remote'     => ($this->delivery_type ?? 'IN_PERSON') === 'REMOTE',
+            // The location the provider set for this service — "Online" when remote,
+            // otherwise the provider's base-location label. Shown on the card.
+            'location_label' => ($this->delivery_type ?? 'IN_PERSON') === 'REMOTE'
+                ? config('catalog.online_location_label')
+                : ($this->base_location_label ?? null),
             'base_price'    => isset($this->base_price) ? (float) $this->base_price : null,
             // Platform payment mode a booking would be created under (drives CTA copy).
             'payment_mode'  => config('booking.payment_mode', 'DIRECT'),
-            'latitude'      => (float) $this->latitude,
-            'longitude'     => (float) $this->longitude,
+            // Provider coordinates are NOT exposed (§4 labels-only / § SEC-7): the
+            // client shows distance + location_label, never a precise home point.
             'distance_km'   => $this->distance_m !== null
                 ? round((float) $this->distance_m / 1000, 2)
                 : null,
@@ -41,9 +49,14 @@ class SearchResultResource extends JsonResource
             // from this field, never from heuristics.
             'placement'           => $this->placement ?? 'organic',
             'completed_job_count' => (int) ($this->completed_job_count ?? 0),
+            // Growth & Promotions badge ({label, campaign_id}) or null. Cosmetic
+            // only — the result's position is unchanged (see `placement`).
+            'promo'               => $this->promo ?? null,
             'provider' => [
                 'id'                     => $this->provider_id,
                 'display_name'           => $this->display_name ?? '',
+                // Public profile photo — never the KYC selfie (same convention as ServiceResource).
+                'avatar_url'             => $this->avatar_url,
                 'r_raw'                  => round((float) $this->r_raw, 2),
                 'r_bayes'                => round((float) ($this->r_bayes ?? 0), 3),
                 'v_reviews'              => (int) $this->v_reviews,
@@ -56,7 +69,8 @@ class SearchResultResource extends JsonResource
                 'base_location_label'    => $this->base_location_label,
             ],
             'photo_urls' => json_decode($this->photo_urls ?? '[]', true) ?: [],
-            'sort_score' => round((float) ($this->sort_score ?? 0), 4),
+            // sort_score (the internal ranking signal) is intentionally NOT
+            // exposed (§ SEC-7) — placement/promoted labels come from `placement`.
         ];
     }
 }

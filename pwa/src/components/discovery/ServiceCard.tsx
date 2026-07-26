@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { motion } from 'motion/react';
 import type { SearchResult } from '../../api/search';
 import { storageUrl } from '../../api/client';
 import { categoryImage, categoryColor } from '../../theme/imagery';
@@ -25,7 +26,16 @@ function priceText(model: string, price: number | null): string {
 
 const isQuoteFirst = (m: string) => m === 'PROVIDER_SCOPE' || m === 'QUOTE_DEPOSIT';
 
-export function ServiceCard({ result, onBook }: { result: SearchResult; onBook?: () => void }) {
+export function ServiceCard({
+  result,
+  onBook,
+  revealIndex,
+}: {
+  result: SearchResult;
+  onBook?: () => void;
+  /** When set, the card fades/rises in on scroll, staggered by its position. */
+  revealIndex?: number;
+}) {
   const { provider, category } = result;
   const photo = result.photo_urls?.[0] ? storageUrl(result.photo_urls[0]) : null;
   const fallbackImg = categoryImage(category?.name, category?.id ?? 0, 800);
@@ -34,8 +44,22 @@ export function ServiceCard({ result, onBook }: { result: SearchResult; onBook?:
   const jobs = result.completed_job_count ?? 0;
   const rating = provider?.v_reviews > 0 ? provider.r_bayes : null;
 
+  const revealProps = revealIndex != null
+    ? {
+        initial: { opacity: 0, y: 18 },
+        whileInView: { opacity: 1, y: 0 },
+        viewport: { once: true, margin: '0px 0px -8% 0px' },
+        transition: { duration: 0.45, delay: Math.min(revealIndex, 8) * 0.05, ease: [0.2, 0.7, 0.2, 1] as const },
+      }
+    : {};
+
   return (
-    <article className="sc-card">
+    <motion.article
+      className="sc-card"
+      whileHover={{ y: -4 }}
+      transition={{ type: 'spring', stiffness: 300, damping: 24 }}
+      {...revealProps}
+    >
       <Link to={`/service/${result.id}`} className="sc-link" aria-label={result.title}>
         {result.placement === 'promoted' && (
           <div className="sc-promoted"><span aria-hidden>⚡</span> Promoted</div>
@@ -76,7 +100,9 @@ export function ServiceCard({ result, onBook }: { result: SearchResult; onBook?:
               </>
             )}
           </div>
-          {provider?.base_location_label && (
+          {result.is_remote ? (
+            <div className="sc-loc"><span aria-hidden>🌐</span> Online</div>
+          ) : provider?.base_location_label && (
             <div className="sc-loc"><span aria-hidden>📍</span> {provider.base_location_label}</div>
           )}
         </div>
@@ -106,6 +132,6 @@ export function ServiceCard({ result, onBook }: { result: SearchResult; onBook?:
           </button>
         </>
       )}
-    </article>
+    </motion.article>
   );
 }

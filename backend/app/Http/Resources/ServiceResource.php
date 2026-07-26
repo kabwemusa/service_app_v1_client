@@ -16,6 +16,13 @@ class ServiceResource extends JsonResource
             'category'               => new CategoryResource($this->whenLoaded('category')),
             'title'                  => $this->title,
             'description'            => $this->description,
+            // Delivery: IN_PERSON (geo applies) | REMOTE (online, nationwide, no geo).
+            // Clients show `location_label` wherever an area/distance would appear.
+            'delivery_type'          => $this->delivery_type ?? 'IN_PERSON',
+            'is_remote'              => $this->delivery_type === 'REMOTE',
+            'location_label'         => $this->delivery_type === 'REMOTE'
+                ? config('catalog.online_location_label')
+                : ($this->provider?->providerProfile?->base_location_label ?? null),
             // Platform payment mode a new booking for this service would be created under
             // (DIRECT = pay provider directly, no escrow). Drives mode-aware CTA copy.
             'payment_mode'           => config('booking.payment_mode', 'DIRECT'),

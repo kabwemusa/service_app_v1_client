@@ -2,11 +2,20 @@
 
 namespace Database\Seeders;
 
+use App\Support\CategoryPricingDefaults;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 
 class CategorySeeder extends Seeder
 {
+    /**
+     * `synonyms` seed the natural-language matcher's Layer 1 (exact/synonym) and,
+     * because they're embedded into each category's semantic vector, Layer 2 too.
+     * They include Zambian/colloquial terms (geyser, borehole, nshima, slasher,
+     * plait, watchman…). This is the seed only — synonyms are admin-editable at
+     * runtime via the Categories admin (CategoryController), which re-embeds the
+     * category on save. Enriching them here is the cheapest accuracy gain.
+     */
     public function run(): void
     {
         $categories = [
@@ -16,7 +25,7 @@ class CategorySeeder extends Seeder
                 'icon'            => 'sparkles-outline',
                 'display_order'   => 1,
                 'commission_band' => 'standard',
-                'synonyms'        => ['house cleaning', 'home cleaning', 'deep clean', 'domestic cleaning', 'maid service'],
+                'synonyms'        => ['house cleaning', 'home cleaning', 'deep clean', 'domestic cleaning', 'maid service', 'scrubbing', 'mopping', 'spring clean', 'office cleaning', 'housekeeping', 'char'],
             ],
             [
                 'name'            => 'Plumbing',
@@ -24,7 +33,7 @@ class CategorySeeder extends Seeder
                 'icon'            => 'construct-outline',
                 'display_order'   => 2,
                 'commission_band' => 'standard',
-                'synonyms'        => ['pipes', 'leaking tap', 'burst pipe', 'drainage', 'water heater'],
+                'synonyms'        => ['pipes', 'leaking tap', 'leaks', 'leaking', 'burst pipe', 'drainage', 'blocked drain', 'water heater', 'geyser', 'geyser leaking', 'solar geyser', 'toilet', 'blocked toilet', 'borehole', 'water tank', 'tank', 'pipe fitting', 'sink', 'plumber'],
             ],
             [
                 'name'            => 'Electrical',
@@ -32,7 +41,7 @@ class CategorySeeder extends Seeder
                 'icon'            => 'flash-outline',
                 'display_order'   => 3,
                 'commission_band' => 'standard',
-                'synonyms'        => ['electrician', 'wiring', 'geyser', 'sockets', 'power'],
+                'synonyms'        => ['electrician', 'wiring', 'wiring fault', 'sockets', 'power', 'no power', 'generator', 'genset', 'solar', 'solar installation', 'prepaid meter', 'db board', 'electric fault', 'lights', 'geyser installation'],
             ],
             [
                 'name'            => 'Hair & Beauty',
@@ -40,7 +49,7 @@ class CategorySeeder extends Seeder
                 'icon'            => 'cut-outline',
                 'display_order'   => 4,
                 'commission_band' => 'standard',
-                'synonyms'        => ['haircut', 'braids', 'nails', 'makeup', 'salon', 'barber', 'locs', 'weave'],
+                'synonyms'        => ['haircut', 'braids', 'plait', 'plaiting', 'plait my hair', 'cornrows', 'nails', 'manicure', 'pedicure', 'makeup', 'salon', 'barber', 'locs', 'dreadlocks', 'weave', 'wig', 'facial', 'lashes', 'hairdressing', 'hairdresser'],
             ],
             [
                 'name'            => 'Tutoring',
@@ -80,7 +89,7 @@ class CategorySeeder extends Seeder
                 'icon'            => 'hardware-chip-outline',
                 'display_order'   => 9,
                 'commission_band' => 'standard',
-                'synonyms'        => ['computer repair', 'laptop fix', 'IT support', 'virus removal', 'network'],
+                'synonyms'        => ['computer repair', 'laptop fix', 'IT support', 'virus removal', 'network', 'phone repair', 'screen replacement', 'software install', 'wifi setup', 'printer setup', 'data recovery'],
             ],
             [
                 'name'            => 'Laundry',
@@ -96,7 +105,7 @@ class CategorySeeder extends Seeder
                 'icon'            => 'leaf-outline',
                 'display_order'   => 11,
                 'commission_band' => 'standard',
-                'synonyms'        => ['lawn mowing', 'landscaping', 'trimming', 'garden'],
+                'synonyms'        => ['lawn mowing', 'grass cutting', 'slasher', 'slashing', 'landscaping', 'trimming', 'tree cutting', 'tree felling', 'garden', 'yard work', 'hedge'],
             ],
             [
                 'name'            => 'Catering',
@@ -104,7 +113,7 @@ class CategorySeeder extends Seeder
                 'icon'            => 'restaurant-outline',
                 'display_order'   => 12,
                 'commission_band' => 'standard',
-                'synonyms'        => ['cooking', 'chef', 'food', 'events catering', 'party food'],
+                'synonyms'        => ['cooking', 'chef', 'food', 'events catering', 'party food', 'nshima', 'braai', 'wedding food', 'kitchen party', 'finger foods', 'cake'],
             ],
             [
                 'name'            => 'Transport',
@@ -112,7 +121,7 @@ class CategorySeeder extends Seeder
                 'icon'            => 'car-outline',
                 'display_order'   => 13,
                 'commission_band' => 'standard',
-                'synonyms'        => ['taxi', 'ride', 'driver', 'vehicle hire'],
+                'synonyms'        => ['taxi', 'ride', 'driver', 'vehicle hire', 'moving', 'house moving', 'truck hire', 'pickup truck', 'school run', 'car hire'],
             ],
             [
                 'name'            => 'Security',
@@ -120,11 +129,15 @@ class CategorySeeder extends Seeder
                 'icon'            => 'shield-outline',
                 'display_order'   => 14,
                 'commission_band' => 'standard',
-                'synonyms'        => ['guard', 'security guard', 'CCTV', 'alarm installation'],
+                'synonyms'        => ['guard', 'guards', 'security guard', 'watchman', 'CCTV', 'cameras', 'alarm installation', 'electric fence', 'gate motor'],
             ],
         ];
 
+        $pricing = CategoryPricingDefaults::map();
+
         foreach ($categories as $cat) {
+            $g = $pricing[$cat['slug']] ?? null;
+
             DB::table('categories')->updateOrInsert(
                 ['slug' => $cat['slug']],
                 [
@@ -137,6 +150,10 @@ class CategorySeeder extends Seeder
                     'commission_band'  => $cat['commission_band'],
                     'commission_rates' => json_encode(['1' => 0.18, '2' => 0.15, '3' => 0.13, '4' => 0.11]),
                     'synonyms'         => json_encode($cat['synonyms']),
+                    // Category-driven pricing-model guidance (admin-tunable later).
+                    'default_pricing_model'      => $g['default'] ?? null,
+                    'recommended_pricing_models' => $g ? json_encode($g['recommended']) : null,
+                    'pricing_mismatch_warning'   => $g['warning'] ?? null,
                     'parent_id'        => null,
                     'updated_at'       => now(),
                     'created_at'       => now(),

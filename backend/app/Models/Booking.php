@@ -43,6 +43,9 @@ class Booking extends Model
         'provider_marked_paid_at',
         'customer_marked_paid_at',
         'payout_eligible_at',
+        'payout_claimed_at',
+        'refunded_at',
+        'idempotency_key',
         'expires_at',
         'instant_payout_requested',
         'scheduled_start',
@@ -56,13 +59,26 @@ class Booking extends Model
         'notes',
         'selected_addon_ids',
         'scope_brief',
+        'scope_brief_attachments',
         'provider_quote',
         'actual_hours_logged',
         'actual_charge_zmw',
+        'job_started_at',
+        'job_ended_at',
+        'observed_minutes',
+        'final_charge_zmw',
+        'pause_events',
+        'cap_extension_zmw',
+        'cap_extension_ref',
+        'cap_extension_requested_at',
         'deposit_amount',
         'balance_amount',
         'balance_hold_ref',
         'escrow_phase',
+        // Growth & Promotions — the customer discount stamped at checkout.
+        'campaign_id',
+        'campaign_discount_zmw',
+        'promo_code',
     ];
 
     protected function casts(): array
@@ -72,6 +88,8 @@ class Booking extends Model
             'scheduled_end'            => 'datetime',
             'completed_at'             => 'datetime',
             'disbursed_at'             => 'datetime',
+            'payout_claimed_at'        => 'datetime',
+            'refunded_at'              => 'datetime',
             'payout_eligible_at'       => 'datetime',
             'payment_marked_at'        => 'datetime',
             'provider_marked_paid_at'  => 'datetime',
@@ -86,11 +104,20 @@ class Booking extends Model
             'instant_payout_requested' => 'boolean',
             'selected_addon_ids'       => 'array',
             'scope_brief'              => 'array',
+            'scope_brief_attachments'  => 'array',
             'provider_quote'           => 'array',
             'actual_hours_logged'      => 'float',
             'actual_charge_zmw'        => 'float',
+            'job_started_at'           => 'datetime',
+            'job_ended_at'             => 'datetime',
+            'observed_minutes'         => 'integer',
+            'final_charge_zmw'         => 'float',
+            'pause_events'             => 'array',
+            'cap_extension_zmw'        => 'float',
+            'cap_extension_requested_at' => 'datetime',
             'deposit_amount'           => 'float',
             'balance_amount'           => 'float',
+            'campaign_discount_zmw'    => 'float',
         ];
     }
 
@@ -131,5 +158,26 @@ class Booking extends Model
     public function review()
     {
         return $this->hasOne(\App\Models\Review::class);
+    }
+
+    public function statusUpdates()
+    {
+        return $this->hasMany(BookingStatusUpdate::class)->orderBy('created_at');
+    }
+
+    public function callSessions()
+    {
+        return $this->hasMany(BookingCallSession::class)->latest();
+    }
+
+    public function agreements()
+    {
+        return $this->hasMany(BookingAgreement::class)->orderByDesc('version');
+    }
+
+    /** The current (latest-version) Booking Agreement, if one exists. */
+    public function latestAgreement()
+    {
+        return $this->hasOne(BookingAgreement::class)->latestOfMany('version');
     }
 }

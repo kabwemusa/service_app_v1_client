@@ -146,29 +146,34 @@ class ServiceService
 
     public function create(User $provider, array $data): Service
     {
-        return DB::transaction(function () use ($provider, $data) {
+        $service = DB::transaction(function () use ($provider, $data) {
             $pricingModel = $data['pricing_model'];
+
+            $deliveryType = $data['delivery_type'] ?? 'IN_PERSON';
 
             $service = Service::create(array_merge([
                 'provider_id'            => $provider->id,
                 'category_id'            => $data['category_id'],
                 'title'                  => $data['title'],
                 'description'            => $data['description'] ?? null,
+                'delivery_type'          => $deliveryType,
                 'pricing_model'          => $pricingModel,
                 'duration_estimate_mins' => $data['duration_estimate_mins'] ?? null,
                 'status'                 => $data['status'] ?? 'DRAFT',
                 'is_pinned'              => $data['is_pinned'] ?? false,
             ], $this->pricingFields($pricingModel, $data)));
 
-            // Service location defaults to the provider's base location when the
-            // provider doesn't pin a specific spot (dedup — one place to set it),
-            // and can still be overridden per service.
-            $base = $provider->providerProfile;
-            $lat  = $data['latitude']  ?? $base?->base_location_lat;
-            $lng  = $data['longitude'] ?? $base?->base_location_lng;
+            // REMOTE (delivered online) services are nationwide — no location is
+            // captured and geo is bypassed downstream. IN_PERSON defaults to the
+            // provider's base location when they don't pin a specific spot.
+            if ($deliveryType !== 'REMOTE') {
+                $base = $provider->providerProfile;
+                $lat  = $data['latitude']  ?? $base?->base_location_lat;
+                $lng  = $data['longitude'] ?? $base?->base_location_lng;
 
-            if ($lat !== null && $lng !== null) {
-                $this->setLocation($service->id, (float) $lat, (float) $lng);
+                if ($lat !== null && $lng !== null) {
+                    $this->setLocation($service->id, (float) $lat, (float) $lng);
+                }
             }
 
             $this->replaceInclusions($service, $data['inclusions'] ?? null);
@@ -181,6 +186,13 @@ class ServiceService
 
             return $this->findOrFail($service->id);
         });
+
+        // Event-driven re-embed for the semantic matcher (only live listings).
+        if ($service->status === 'ACTIVE') {
+            \App\Jobs\EmbedCatalogItemJob::dispatch('service', (string) $service->id);
+        }
+
+        return $service;
     }
 
     public function update(User $provider, string $id, array $data): Service
@@ -195,7 +207,7 @@ class ServiceService
             throw new ForbiddenException('You do not own this service.');
         }
 
-        return DB::transaction(function () use ($provider, $service, $data) {
+        $updated = DB::transaction(function () use ($provider, $service, $data) {
             $pricingModel  = $data['pricing_model'] ?? $service->pricing_model;
             $statusChanged = array_key_exists('status', $data) && $data['status'] !== $service->status;
 
@@ -203,11 +215,20 @@ class ServiceService
                 'category_id'            => $data['category_id']            ?? null,
                 'title'                  => $data['title']                  ?? null,
                 'description'            => $data['description']            ?? null,
+                'delivery_type'          => $data['delivery_type']          ?? null,
                 'pricing_model'          => $data['pricing_model']          ?? null,
                 'duration_estimate_mins' => $data['duration_estimate_mins'] ?? null,
                 'status'                 => $data['status']                 ?? null,
                 'is_pinned'              => $data['is_pinned']              ?? null,
             ], fn ($v) => $v !== null));
+
+            // Switching to REMOTE clears any pinned location (nationwide, no geo).
+            if (($data['delivery_type'] ?? null) === 'REMOTE') {
+                DB::statement(
+                    'UPDATE services SET service_location = NULL, region_ward = NULL, region_city = NULL, region_province = NULL WHERE id = ?',
+                    [$service->id],
+                );
+            }
 
             // Pricing parameters travel with pricing_model — switching model clears
             // the fields the new model doesn't use, and any edit to the pricing
@@ -223,7 +244,7 @@ class ServiceService
             }
             $service->save();
 
-            if (isset($data['latitude'], $data['longitude'])) {
+            if (isset($data['latitude'], $data['longitude']) && ! $service->isRemote()) {
                 $this->setLocation($service->id, $data['latitude'], $data['longitude']);
             }
 
@@ -242,6 +263,13 @@ class ServiceService
 
             return $this->findOrFail($service->id);
         });
+
+        // Text/category/status may have changed — re-embed live listings.
+        if ($updated->status === 'ACTIVE') {
+            \App\Jobs\EmbedCatalogItemJob::dispatch('service', (string) $updated->id);
+        }
+
+        return $updated;
     }
 
     public function delete(User $provider, string $id): void

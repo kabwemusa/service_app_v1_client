@@ -104,6 +104,18 @@ class WhatsAppWebhookController extends Controller
 
         $conversation->update(['last_inbound_at' => now()]);
 
+        // ADM-3: a ban/suspension must cover the WhatsApp channel too — the HTTP
+        // guard (EnsureAccountActive) doesn't run here. A restricted user's inbound
+        // messages are not processed at all (the booking choke-point already
+        // blocks the money action; this blocks the whole conversation).
+        if ($this->isRestricted($conversation)) {
+            Log::info('WhatsApp: dropping inbound from a restricted account', [
+                'wa' => $from, 'user_id' => $conversation->user_id,
+            ]);
+            $this->logWebhook($messageId, $from, 'message', $parsed['type'] ?? null, 'blocked');
+            return;
+        }
+
         try {
             if ($conversation->state === 'DISPATCHING' && ($conversation->getContextValue('role') === 'provider')) {
                 $this->engine->handleProviderResponse($parsed, $conversation);
@@ -119,6 +131,35 @@ class WhatsAppWebhookController extends Controller
                 'trace' => $e->getTraceAsString(),
             ]);
             $this->logWebhook($messageId, $from, 'message', $parsed['type'] ?? null, 'failed', $e->getMessage());
+            $this->recordProcessingFailure();
+        }
+    }
+
+    /**
+     * § ERR-3 — a single bad deploy can silently kill the WhatsApp channel because
+     * every processing error is (correctly) caught and 200-ACKed to Meta. Count
+     * failures in a rolling one-minute window and raise a loud alert log when they
+     * cross a threshold, so monitoring can page on it instead of the channel dying
+     * quietly.
+     */
+    private function recordProcessingFailure(): void
+    {
+        try {
+            $window = now()->format('YmdHi'); // per-minute bucket
+            $key    = "wa_webhook_failures:{$window}";
+            $count  = (int) \Illuminate\Support\Facades\Cache::increment($key);
+            if ($count === 1) {
+                \Illuminate\Support\Facades\Cache::put($key, 1, now()->addMinutes(2));
+            }
+
+            $threshold = (int) config('whatsapp.failure_alert_threshold', 10);
+            if ($count === $threshold) {
+                Log::critical('WhatsApp webhook: processing failure rate threshold crossed', [
+                    'window' => $window, 'failures' => $count, 'threshold' => $threshold,
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // Never let the alarm itself break the ACK path.
         }
     }
 
@@ -154,7 +195,14 @@ class WhatsAppWebhookController extends Controller
         $secret = config('whatsapp.app_secret');
 
         if (! $secret) {
-            Log::warning('WhatsApp webhook: WHATSAPP_APP_SECRET not configured, skipping validation');
+            // Fail CLOSED in production: without the app secret we cannot prove a
+            // request came from Meta, and inbound messages drive real bookings.
+            // Only skip the check outside production (local/sandbox convenience).
+            if (app()->isProduction()) {
+                Log::error('WhatsApp webhook: WHATSAPP_APP_SECRET not configured in production — rejecting.');
+                return false;
+            }
+            Log::warning('WhatsApp webhook: WHATSAPP_APP_SECRET not configured, skipping validation (non-production).');
             return true;
         }
 
@@ -175,6 +223,30 @@ class WhatsAppWebhookController extends Controller
         )->wasRecentlyCreated;
     }
 
+    /**
+     * True when the conversation's bound account is banned, or suspended and the
+     * suspension has not yet expired. (An expired suspension is treated as active
+     * — it will auto-lift on the account's next HTTP request; here we simply let
+     * the conversation proceed.)
+     */
+    private function isRestricted(ConversationState $conversation): bool
+    {
+        if (! $conversation->user_id) {
+            return false;
+        }
+        $user = User::find($conversation->user_id);
+        if (! $user) {
+            return false;
+        }
+        if ($user->account_state === 'BANNED') {
+            return true;
+        }
+        if ($user->account_state === 'SUSPENDED') {
+            return $user->suspended_until === null || ! $user->suspended_until->isPast();
+        }
+        return false;
+    }
+
     private function resolveConversation(string $whatsappId, array $parsed): ConversationState
     {
         $conversation = ConversationState::firstOrCreate(
@@ -186,11 +258,12 @@ class WhatsAppWebhookController extends Controller
         );
 
         if (! $conversation->user_id) {
-            $phone = '+' . $whatsappId;
-            $user = User::where('phone', $phone)
-                ->orWhere('phone', $whatsappId)
-                ->orWhere('phone', 'LIKE', '%' . substr($whatsappId, -9))
-                ->first();
+            // WhatsApp ids are the full international number without '+', so the
+            // canonical E.164 is simply '+' prefixed. Match strictly (§ SEC-8):
+            // a trailing-digits LIKE could bind this conversation (and its
+            // bookings) to a different subscriber sharing the last nine digits.
+            $phone = \App\Support\PhoneNumber::normalize($whatsappId) ?? ('+' . $whatsappId);
+            $user = User::where('phone', $phone)->first();
 
             if (! $user) {
                 $contactName = $parsed['sender_name'] ?? null;

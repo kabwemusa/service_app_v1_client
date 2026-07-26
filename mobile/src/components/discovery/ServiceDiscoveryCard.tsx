@@ -46,13 +46,15 @@ export const ServiceDiscoveryCard = React.memo(function ServiceDiscoveryCard({ r
   const photos = photo_urls ?? [];
   const [photoIdx, setPhotoIdx] = useState(0);
   const [cardW, setCardW] = useState(0);
+  const [avatarFailed, setAvatarFailed] = useState(false);
 
   const isRisingStar = provider.v_reviews === 0 && (completed_job_count ?? 0) === 0;
   const initial      = (provider.display_name || '?')[0].toUpperCase();
   const tColor       = tierColor(provider.trust_tier);
   const tLabel       = tierLabel(provider.trust_tier);
   const jobCount     = completed_job_count ?? 0;
-  const location     = provider.base_location_label;
+  // Provider-set service location — "Online" for remote services, else base location.
+  const location     = result.location_label ?? provider.base_location_label;
 
   const onLayout = useCallback((e: { nativeEvent: { layout: { width: number } } }) => {
     setCardW(e.nativeEvent.layout.width);
@@ -132,7 +134,16 @@ export const ServiceDiscoveryCard = React.memo(function ServiceDiscoveryCard({ r
 
         {/* ── 2. Service info ──────────────────────────────────────── */}
         <View style={st.infoSection}>
-          <Text style={st.serviceName} numberOfLines={1}>{result.title}</Text>
+          <View style={st.titleRow}>
+            <Text style={st.serviceName} numberOfLines={1}>{result.title}</Text>
+            {/* Growth & Promotions badge — cosmetic; does not affect ranking. */}
+            {result.promo && (
+              <View style={st.promoPill}>
+                <Ionicons name="pricetag" size={10} color={palette.success} />
+                <Text style={st.promoText}>{result.promo.label}</Text>
+              </View>
+            )}
+          </View>
           <View style={st.infoRow}>
             <Text style={st.price}>{priceText(result.pricing_model, result.base_price)}</Text>
             {!isRisingStar && provider.v_reviews > 0 && (
@@ -161,9 +172,18 @@ export const ServiceDiscoveryCard = React.memo(function ServiceDiscoveryCard({ r
 
         {/* ── 3. Provider row ──────────────────────────────────────── */}
         <View style={st.providerRow}>
-          <View style={st.avatar}>
-            <Text style={st.avatarText}>{initial}</Text>
-          </View>
+          {provider.avatar_url && !avatarFailed ? (
+            <Image
+              source={{ uri: storageUrl(provider.avatar_url) }}
+              style={st.avatar}
+              contentFit="cover"
+              onError={() => setAvatarFailed(true)}
+            />
+          ) : (
+            <View style={st.avatar}>
+              <Text style={st.avatarText}>{initial}</Text>
+            </View>
+          )}
           <View style={st.providerInfo}>
             <View style={st.nameRow}>
               <Text style={st.providerName} numberOfLines={1}>{provider.display_name}</Text>
@@ -251,7 +271,18 @@ const st = StyleSheet.create({
 
   // Service info
   infoSection: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm + 2, gap: 4 },
-  serviceName: { fontFamily: fontFamily.semiBold, fontSize: 15, color: palette.textPrimary },
+  serviceName: { fontFamily: fontFamily.semiBold, fontSize: 15, color: palette.textPrimary, flexShrink: 1 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  promoPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: palette.successLight,
+    borderRadius: r.full,
+    paddingHorizontal: spacing.xs + 2,
+    paddingVertical: 2,
+  },
+  promoText: { fontFamily: fontFamily.medium, fontSize: 11, color: palette.success },
   infoRow: { flexDirection: 'row', alignItems: 'center', gap: 3, flexWrap: 'wrap' },
   price: { fontFamily: fontFamily.semiBold, fontSize: 13, color: palette.primary },
   infoDot: { width: 3, height: 3, borderRadius: 1.5, backgroundColor: palette.textDisabled, marginHorizontal: 2 },
@@ -269,6 +300,7 @@ const st = StyleSheet.create({
     backgroundColor: palette.primaryLight,
     borderWidth: HAIRLINE, borderColor: palette.border,
     alignItems: 'center', justifyContent: 'center',
+    overflow: 'hidden',
   },
   avatarText: { fontFamily: fontFamily.medium, fontSize: 14, color: palette.primary },
   providerInfo: { flex: 1, gap: 3 },

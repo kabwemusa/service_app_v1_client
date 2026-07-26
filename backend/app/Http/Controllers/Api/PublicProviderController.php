@@ -54,6 +54,7 @@ class PublicProviderController extends Controller
                 s.id,
                 s.title,
                 s.description,
+                s.delivery_type,
                 s.pricing_model,
                 s.base_price,
                 s.category_id,
@@ -123,14 +124,20 @@ class PublicProviderController extends Controller
                 'featured_badges'     => $featuredBadges,
             ],
             'profile'             => [
-                'kyc_status'           => $profile->kyc_status,
+                // Only what a customer needs to pick a slot. Internal signals
+                // (kyc_status, profile_completeness) are NOT exposed (§ SEC-7).
                 'availability_matrix'  => $profile->availability_matrix,
-                'profile_completeness' => $profile->profile_completeness,
             ],
             'services' => array_map(fn ($s) => [
                 'id'            => $s->id,
                 'title'         => $s->title,
                 'description'   => $s->description,
+                'delivery_type' => $s->delivery_type ?? 'IN_PERSON',
+                'is_remote'     => ($s->delivery_type ?? 'IN_PERSON') === 'REMOTE',
+                // "Online" for remote, else the provider's base location.
+                'location_label' => ($s->delivery_type ?? 'IN_PERSON') === 'REMOTE'
+                    ? config('catalog.online_location_label')
+                    : $profile->base_location_label,
                 'pricing_model' => $s->pricing_model,
                 'base_price'    => $s->base_price !== null ? (float) $s->base_price : null,
                 'category'      => ['id' => $s->category_id, 'name' => $s->category_name],
@@ -141,7 +148,9 @@ class PublicProviderController extends Controller
                 'rating'     => (float) $rev->rating,
                 'comment'    => $rev->comment,
                 'created_at' => $rev->created_at,
-                'reviewer'   => ['id' => $rev->reviewer_id, 'name' => $this->maskName($rev->reviewer_name)],
+                // Reviewer identity is masked to a first-name + initial; the raw
+                // user id is NOT exposed (§ SEC-7).
+                'reviewer'   => ['name' => $this->maskName($rev->reviewer_name)],
             ], $reviews),
         ], 'Provider profile retrieved.');
     }

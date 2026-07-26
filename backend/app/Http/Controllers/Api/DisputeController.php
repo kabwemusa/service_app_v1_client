@@ -29,7 +29,9 @@ class DisputeController extends Controller
             ->orderBy('opened_at')
             ->paginate(20);
 
-        return ApiResponse::success($disputes, 'Disputes retrieved.');
+        // Canonical pagination shape (§ API-1) — was a raw paginator with Laravel's
+        // default meta nested differently from every other list endpoint.
+        return ApiResponse::paginated($disputes, message: 'Disputes retrieved.');
     }
 
     /** GET /admin/disputes/{id} */
@@ -78,12 +80,15 @@ class DisputeController extends Controller
 
         // Only the party who raised the dispute can upload evidence
         if ($dispute->raised_by !== $request->user()->id) {
-            return response()->json(['message' => 'Forbidden.'], 403);
+            throw new \App\Exceptions\Api\ForbiddenException('You are not authorised to add evidence to this dispute.');
         }
 
         $existing = $dispute->evidence ?? [];
         if (count($existing) >= 10) {
-            return response()->json(['message' => 'Maximum 10 evidence files per dispute.'], 422);
+            throw new \App\Exceptions\Api\ApiException(
+                \App\Enums\ErrorCode::VALIDATION_ERROR,
+                'Maximum 10 evidence files per dispute.',
+            );
         }
 
         $keys = [];

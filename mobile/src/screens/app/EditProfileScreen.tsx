@@ -1,4 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
 import React, { useState } from 'react';
 import {
   KeyboardAvoidingView,
@@ -11,17 +13,27 @@ import {
 } from 'react-native';
 import { ActivityIndicator, Text } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { storageUrl } from '../../api/client';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useAuthStore } from '../../store/authStore';
 import { palette, radius as r, spacing, typography } from '../../theme';
 
+function initials(name: string, fallback?: string | null): string {
+  const source = name.trim() || fallback?.trim() || '';
+  const parts = source.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  const take = parts.length >= 2 ? [parts[0], parts[1]] : [parts[0]];
+  return take.map((p) => p[0]).join('').toUpperCase();
+}
+
 export default function EditProfileScreen({ navigation }: any) {
-  const { user, updateAccount, loading } = useAuthStore();
+  const { user, updateAccount, uploadAvatar, loading } = useAuthStore();
   const { showError, showSuccess } = useSnackbar();
 
-
   const [phone, setPhone] = useState(user?.phone ?? '');
-  const [name,  setName]  = useState((user as any)?.legal_name ?? '');
+  const [name,  setName]  = useState(user?.legal_name ?? '');
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   const handleSave = async () => {
     try {
@@ -33,6 +45,32 @@ export default function EditProfileScreen({ navigation }: any) {
       navigation.goBack();
     } catch (e: any) {
       showError(e?.message ?? 'Could not save changes. Please try again.');
+    }
+  };
+
+  const handleChangePhoto = async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (perm.status !== 'granted') { showError('Photo library permission is required.'); return; }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsMultipleSelection: false,
+      quality: 0.8,
+      allowsEditing: true,
+      aspect: [1, 1],
+    });
+    if (result.canceled || !result.assets[0]) return;
+
+    const asset = result.assets[0];
+    setUploadingPhoto(true);
+    setAvatarFailed(false);
+    try {
+      await uploadAvatar({ uri: asset.uri, name: `avatar_${Date.now()}.jpg`, mimeType: 'image/jpeg' });
+      showSuccess('Profile photo updated.');
+    } catch (e: any) {
+      showError(e?.message ?? 'Could not upload photo. Please try again.');
+    } finally {
+      setUploadingPhoto(false);
     }
   };
 
@@ -61,6 +99,37 @@ export default function EditProfileScreen({ navigation }: any) {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
+          {/* Profile photo */}
+          <View style={styles.avatarSection}>
+            <TouchableOpacity
+              onPress={handleChangePhoto}
+              disabled={uploadingPhoto}
+              style={styles.avatar}
+              accessibilityRole="button"
+              accessibilityLabel="Change profile photo"
+            >
+              {user?.avatar_url && !avatarFailed ? (
+                <Image
+                  source={{ uri: storageUrl(user.avatar_url) }}
+                  style={styles.avatarImg}
+                  contentFit="cover"
+                  onError={() => setAvatarFailed(true)}
+                />
+              ) : (
+                <Text style={styles.avatarText}>{initials(name, user?.email ?? user?.phone)}</Text>
+              )}
+              {uploadingPhoto && (
+                <View style={styles.avatarOverlay}>
+                  <ActivityIndicator size={22} color="#FFFFFF" />
+                </View>
+              )}
+              <View style={styles.avatarEditBadge}>
+                <Ionicons name="camera" size={14} color="#FFFFFF" />
+              </View>
+            </TouchableOpacity>
+            <Text style={styles.avatarHint}>Tap to change your photo</Text>
+          </View>
+
           <View style={styles.card}>
             {/* Phone number */}
             <View style={styles.field}>
@@ -136,6 +205,43 @@ const styles = StyleSheet.create({
     paddingBottom:     spacing.xl,
     gap:               spacing.lg,
   },
+
+  avatarSection: { alignItems: 'center', gap: spacing.xs },
+  avatar: {
+    width: 88,
+    height: 88,
+    borderRadius: r.full,
+    backgroundColor: palette.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  avatarImg: { width: '100%', height: '100%' },
+  avatarText: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 28,
+    color: palette.primary,
+  },
+  avatarOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarEditBadge: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: palette.primary,
+    borderWidth: 2,
+    borderColor: palette.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarHint: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12 },
 
   card: {
     backgroundColor: palette.surface,

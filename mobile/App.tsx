@@ -12,7 +12,7 @@ import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 import React, { useEffect, useRef } from "react";
-import { View } from "react-native";
+import { Text, View } from "react-native";
 import { PaperProvider } from "react-native-paper";
 import { SkeletonBlock } from "./src/components/ui/SkeletonBlock";
 import { SnackbarProvider } from "./src/providers/SnackbarProvider";
@@ -20,6 +20,11 @@ import LoginScreen from "./src/screens/auth/LoginScreen";
 import OtpScreen from "./src/screens/auth/OtpScreen";
 import RegisterScreen from "./src/screens/auth/RegisterScreen";
 import LocationOnboardingScreen from "./src/screens/onboarding/LocationOnboardingScreen";
+import ConsentGateScreen from "./src/screens/legal/ConsentGateScreen";
+import ConsentDeclinedScreen from "./src/screens/legal/ConsentDeclinedScreen";
+import LegalDocumentScreen from "./src/screens/legal/LegalDocumentScreen";
+import LegalIndexScreen from "./src/screens/legal/LegalIndexScreen";
+import PrivacyConsentScreen from "./src/screens/legal/PrivacyConsentScreen";
 import BookingDetailScreen from "./src/screens/app/BookingDetailScreen";
 import BookingScreen from "./src/screens/app/BookingScreen";
 import BookingsScreen from "./src/screens/app/BookingsScreen";
@@ -38,17 +43,21 @@ import AllReviewsScreen from "./src/screens/provider/AllReviewsScreen";
 import CreateServiceScreen from "./src/screens/provider/CreateServiceScreen";
 import EarningsScreen from "./src/screens/provider/EarningsScreen";
 import AvailabilityScreen from "./src/screens/provider/AvailabilityScreen";
+import HelpScreen from "./src/screens/provider/HelpScreen";
 import HubScreen from "./src/screens/provider/HubScreen";
 import IncomingRequestsScreen from "./src/screens/provider/IncomingRequestsScreen";
 import MyServicesScreen from "./src/screens/provider/MyServicesScreen";
 import ProviderAccountScreen from "./src/screens/provider/ProviderAccountScreen";
+import ProviderPayoutScreen from "./src/screens/provider/ProviderPayoutScreen";
 import ProviderBookingDetailScreen from "./src/screens/provider/ProviderBookingDetailScreen";
 import ProviderProfileEditScreen from "./src/screens/provider/ProviderProfileEditScreen";
 import ProviderProfileScreen from "./src/screens/provider/ProviderProfileScreen";
 import ProviderSetupScreen from "./src/screens/provider/ProviderSetupScreen";
 import ProviderSetupTimelineScreen from "./src/screens/provider/ProviderSetupTimelineScreen";
 import { usePushNotifications } from "./src/hooks/usePushNotifications";
+import { useRealtime } from "./src/hooks/useRealtime";
 import { useAuthStore } from "./src/store/authStore";
+import { useConsentStore } from "./src/store/consentStore";
 import { useLocationStore } from "./src/store/locationStore";
 import { useNotificationStore } from "./src/store/notificationStore";
 import { appTheme, palette, shadow, spacing } from "./src/theme";
@@ -60,6 +69,18 @@ import {
 // ── Stack navigators ──────────────────────────────────────────────────────────
 const AuthStack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
+const ConsentStack = createNativeStackNavigator();
+
+// Consent gate spine — shown after phone verification and BEFORE the app. Carries
+// the gate itself plus the full-document reader so "tap to read" works inside it.
+function ConsentStackNavigator() {
+  return (
+    <ConsentStack.Navigator screenOptions={{ headerShown: false }}>
+      <ConsentStack.Screen name="ConsentGate" component={ConsentGateScreen} />
+      <ConsentStack.Screen name="LegalDocument" component={LegalDocumentScreen} />
+    </ConsentStack.Navigator>
+  );
+}
 
 // Customer stacks
 const HomeStack = createNativeStackNavigator();
@@ -146,6 +167,10 @@ function CustomerProfileStackNavigator() {
         name="SavedLocations"
         component={SavedLocationsScreen}
       />
+      {/* Legal layer — readable any time; privacy/consent self-service. */}
+      <CustProfileStack.Screen name="Legal" component={LegalIndexScreen} />
+      <CustProfileStack.Screen name="LegalDocument" component={LegalDocumentScreen} />
+      <CustProfileStack.Screen name="PrivacyConsent" component={PrivacyConsentScreen} />
       <CustProfileStack.Screen name="Notifications" component={NotificationsScreen} />
       <CustProfileStack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
     </CustProfileStack.Navigator>
@@ -231,6 +256,10 @@ function ProviderProfileStackNavigator() {
       {/* Provider's own Profile + Account screen (customer keeps app/ProfileScreen). */}
       <ProvProfileStack.Screen name="ProfileMain" component={ProviderAccountScreen} />
       <ProvProfileStack.Screen name="ProviderProfileEdit" component={ProviderProfileEditScreen} />
+      {/* Getting paid — mobile-money wallet + link to earnings/payout history. */}
+      <ProvProfileStack.Screen name="Payout" component={ProviderPayoutScreen} />
+      {/* Help & support — a real destination, not a placeholder. */}
+      <ProvProfileStack.Screen name="Help" component={HelpScreen} />
       {/* Public profile, for "Preview as customer". */}
       <ProvProfileStack.Screen name="ProviderProfile" component={ProviderProfileScreen} />
       <ProvProfileStack.Screen name="AllReviews" component={AllReviewsScreen} />
@@ -239,6 +268,10 @@ function ProviderProfileStackNavigator() {
         name="SavedLocations"
         component={SavedLocationsScreen}
       />
+      {/* Legal layer — readable any time; privacy/consent self-service. */}
+      <ProvProfileStack.Screen name="Legal" component={LegalIndexScreen} />
+      <ProvProfileStack.Screen name="LegalDocument" component={LegalDocumentScreen} />
+      <ProvProfileStack.Screen name="PrivacyConsent" component={PrivacyConsentScreen} />
       <ProvProfileStack.Screen name="Notifications" component={NotificationsScreen} />
       <ProvProfileStack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
     </ProvProfileStack.Navigator>
@@ -246,6 +279,33 @@ function ProviderProfileStackNavigator() {
 }
 
 // ── Tab bars ──────────────────────────────────────────────────────────────────
+
+// Root (home) screen of each tab's nested stack. Tapping a tab resets it here,
+// so a tab always opens at its own home — and a deep-link (e.g. a notification
+// that pushed BookingDetail onto the Bookings stack) never leaves the tab stuck
+// on that detail screen the next time you tap the tab.
+const TAB_ROOT: Record<string, string> = {
+  Home: "HomeMain",
+  Search: "SearchMain",
+  Bookings: "BookingsMain",
+  Profile: "ProfileMain",
+  Hub: "HubMain",
+  Requests: "RequestsMain",
+  Services: "ServicesMain",
+  Earnings: "EarningsMain",
+};
+
+const tabResetListeners = ({ navigation, route }: any) => ({
+  tabPress: (e: any) => {
+    const root = TAB_ROOT[route.name];
+    if (!root) return;
+    // Take over the press: switch to the tab AND reset its stack to root in one
+    // transition (pops any pushed detail screens). Programmatic deep-links use
+    // navigation.navigate directly, not tabPress, so they're unaffected.
+    e.preventDefault();
+    navigation.navigate(route.name, { screen: root });
+  },
+});
 
 function AppTabs() {
   const insets = useSafeAreaInsets();
@@ -259,6 +319,8 @@ function AppTabs() {
 
   // OS-level push notifications (like WhatsApp)
   usePushNotifications();
+  // Live updates over Reverb (foreground WebSocket) — bell + booking screens.
+  useRealtime();
 
   useEffect(() => {
     fetchUnread();
@@ -373,21 +435,21 @@ function AppTabs() {
   if (isProvider) {
     return (
       <Tab.Navigator screenOptions={renderTabIcon(providerIcons)}>
-        <Tab.Screen name="Hub" component={HubStackNavigator} />
-        <Tab.Screen name="Requests" component={RequestsStackNavigator} />
-        <Tab.Screen name="Services" component={ServicesStackNavigator} />
-        <Tab.Screen name="Earnings" component={EarningsStackNavigator} />
-        <Tab.Screen name="Profile" component={ProviderProfileStackNavigator} />
+        <Tab.Screen name="Hub"      component={HubStackNavigator}             listeners={tabResetListeners} />
+        <Tab.Screen name="Requests" component={RequestsStackNavigator}        listeners={tabResetListeners} />
+        <Tab.Screen name="Services" component={ServicesStackNavigator}        listeners={tabResetListeners} />
+        <Tab.Screen name="Earnings" component={EarningsStackNavigator}        listeners={tabResetListeners} />
+        <Tab.Screen name="Profile"  component={ProviderProfileStackNavigator} listeners={tabResetListeners} />
       </Tab.Navigator>
     );
   }
 
   return (
     <Tab.Navigator screenOptions={renderTabIcon(customerIcons)}>
-      <Tab.Screen name="Home" component={HomeStackNavigator} />
-      <Tab.Screen name="Search" component={SearchStackNavigator} />
-      <Tab.Screen name="Bookings" component={BookingsStackNavigator} />
-      <Tab.Screen name="Profile" component={CustomerProfileStackNavigator} />
+      <Tab.Screen name="Home"     component={HomeStackNavigator}           listeners={tabResetListeners} />
+      <Tab.Screen name="Search"   component={SearchStackNavigator}         listeners={tabResetListeners} />
+      <Tab.Screen name="Bookings" component={BookingsStackNavigator}       listeners={tabResetListeners} />
+      <Tab.Screen name="Profile"  component={CustomerProfileStackNavigator} listeners={tabResetListeners} />
     </Tab.Navigator>
   );
 }
@@ -405,6 +467,14 @@ export default function App() {
 
   const { step, hydrate, logout } = useAuthStore();
   const { fetchPrimary, onboardingNeeded } = useLocationStore();
+  // Consent gate (Data Protection Act No. 3 of 2021) — must clear before the app.
+  const {
+    phase: consentPhase,
+    status: consentStatus,
+    error: consentError,
+    refresh: refreshConsent,
+    reset: resetConsent,
+  } = useConsentStore();
 
   useEffect(() => {
     hydrate();
@@ -412,11 +482,16 @@ export default function App() {
 
   useEffect(() => {
     if (step === "authenticated") {
+      // Fetch consent standing + primary location in parallel; both are gates.
+      refreshConsent();
       fetchPrimary().then(() => {
         if (useLocationStore.getState().error?.isSessionExpired) {
           logout();
         }
       });
+    } else {
+      // Signed out — clear consent state so the next account re-evaluates.
+      resetConsent();
     }
   }, [step]);
 
@@ -448,7 +523,45 @@ export default function App() {
           <NavigationContainer>
             <StatusBar style="dark" translucent backgroundColor="transparent" />
             {step === "authenticated" ? (
-              // null = fetchPrimary still in flight; true = no primary set yet
+              // ── Gate order: consent (legal) → location → app ──────────────
+              // The consent gate blocks everything until the required agreements
+              // are accepted (brief §A). A declining user is never partially
+              // onboarded — they see a respectful block, not the app.
+              consentPhase === "declined" ? (
+                <ConsentDeclinedScreen />
+              ) : consentPhase === "unknown" ? (
+                // Consent status still loading (or failed). Show a skeleton; if the
+                // fetch errored, offer a retry rather than a permanent spinner.
+                <View
+                  style={{
+                    flex: 1,
+                    backgroundColor: palette.background,
+                    padding: spacing.lg,
+                    justifyContent: "center",
+                    gap: spacing.sm,
+                  }}
+                >
+                  <SkeletonBlock width="50%" height={22} />
+                  <SkeletonBlock width="75%" height={14} />
+                  <View style={{ height: spacing.lg }} />
+                  <SkeletonBlock width="100%" height={52} radius={12} />
+                  {!!consentError && (
+                    <Text
+                      onPress={() => refreshConsent()}
+                      style={{
+                        marginTop: spacing.md,
+                        textAlign: "center",
+                        color: palette.primary,
+                        fontFamily: "DMSans_600SemiBold",
+                      }}
+                    >
+                      Couldn’t load — tap to retry
+                    </Text>
+                  )}
+                </View>
+              ) : consentStatus?.needs_consent ? (
+                <ConsentStackNavigator />
+              ) : // Consent cleared → location gate (null = still in flight)
               onboardingNeeded === null ? (
                 <View
                   style={{

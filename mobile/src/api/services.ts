@@ -69,6 +69,11 @@ export interface Service {
   category:    { id: number; name: string; icon_url: string | null } | null;
   title:       string;
   description: string | null;
+  // Delivery: IN_PERSON (geo applies) | REMOTE (online, nationwide, no geo).
+  delivery_type?:  'IN_PERSON' | 'REMOTE';
+  is_remote?:      boolean;
+  // "Online" for remote services, else the provider's base-location label.
+  location_label?: string | null;
   // Outcome-based pricing. base_price is the browse "from" price:
   // outcome price (OUTCOME_FIXED) / spend cap (HOURLY_CAPPED) / null (quote-first).
   pricing_model:           PricingModel;
@@ -107,6 +112,8 @@ export interface ServicePayload {
   category_id:             number;
   title:                   string;
   description?:            string;
+  // Omit to default to IN_PERSON; REMOTE = delivered online (nationwide, no geo).
+  delivery_type?:          'IN_PERSON' | 'REMOTE';
   pricing_model:           PricingModel;
   base_price?:             number | null;
   hourly_rate?:            number | null;

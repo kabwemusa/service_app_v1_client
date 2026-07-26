@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { catalogApi, type Category } from '../../api/catalog';
+import { catalogApi, findCategoryById, type Category, type CategoryPricingGuidance, type PricingModelMeta } from '../../api/catalog';
 import { onboardingApi, type OnboardingState, type GoLiveResult } from '../../api/onboarding';
 import { Button, Card, Field, inputStyle, Pill } from '../../components/ui/ui';
 import { PhotoCapture } from '../../components/ui/PhotoCapture';
@@ -120,16 +120,21 @@ export function OfferStep({ onDone }: StepProps) {
 export function IdentityStep({ onDone }: StepProps) {
   const { t } = useTranslation();
   const [nrc, setNrc] = useState<File | null>(null);
+  const [nrcNumber, setNrcNumber] = useState('');
   const [selfie, setSelfie] = useState<File | null>(null);
   const [momo, setMomo] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Zambian NRC canonical format 123456/78/1 (spaces tolerated).
+  const nrcClean = nrcNumber.replace(/\s+/g, '');
+  const nrcValid = /^\d{6}\/\d{2}\/\d$/.test(nrcClean);
+
   const submit = async () => {
-    if (!nrc || !selfie || !momo) return;
+    if (!nrc || !selfie || !momo || !nrcValid) return;
     setBusy(true); setErr(null);
     try {
-      await onboardingApi.identity(nrc, selfie, momo);
+      await onboardingApi.identity(nrc, nrcClean, selfie, momo);
       onDone();
     } catch (e) {
       setErr((e as ApiError).message);
@@ -145,51 +150,93 @@ export function IdentityStep({ onDone }: StepProps) {
         <p className="t-small">🔒 {t('onboarding.identitySub')}</p>
       </Card>
       <PhotoCapture label={t('onboarding.nrcFront')} capture="environment" onSelect={setNrc} />
+      <Field label={t('onboarding.nrcNumber')}>
+        <input
+          value={nrcNumber}
+          onChange={(e) => setNrcNumber(e.target.value)}
+          inputMode="text"
+          style={inputStyle}
+          placeholder="123456/78/1"
+          aria-invalid={nrcNumber.length > 0 && !nrcValid}
+        />
+      </Field>
       <PhotoCapture label={t('onboarding.selfie')} capture="user" shape="circle" onSelect={setSelfie} />
       <Field label={t('onboarding.momoNumber')}>
         <input value={momo} onChange={(e) => setMomo(e.target.value)} inputMode="tel" style={inputStyle} placeholder="097 123 4567" />
       </Field>
       {err && <Card style={{ background: 'var(--warning-light)', border: 'none', marginBottom: 'var(--space-md)' }}><p className="t-small">{err}</p></Card>}
-      <Button onClick={submit} loading={busy} disabled={!nrc || !selfie || !momo}>{t('common.continue')}</Button>
+      <Button onClick={submit} loading={busy} disabled={!nrc || !selfie || !momo || !nrcValid}>{t('common.continue')}</Button>
     </div>
   );
 }
 
-// Outcome-based pricing — the provider owns every price parameter; customers
-// never input hours anywhere.
+// The four pricing models. USER-FACING labels/descriptions come from the server
+// (config('pricing.models'), via GET /pricing-models); this list only fixes the
+// enum + display ORDER and is a graceful fallback until the labels load.
 const PRICING_MODELS = [
-  { value: 'OUTCOME_FIXED',  label: 'Fixed price',      hint: 'One price for a defined outcome.' },
-  { value: 'HOURLY_CAPPED',  label: 'Hourly + cap',     hint: 'Your rate; a spend cap protects customers (set on the backend, editable later).' },
-  { value: 'PROVIDER_SCOPE', label: 'Quote after brief', hint: 'Customers describe the job; you send a fixed quote.' },
-  { value: 'QUOTE_DEPOSIT',  label: 'Quote + deposit',  hint: 'Big jobs: full quote, a deposit confirms, balance on completion.' },
+  { value: 'OUTCOME_FIXED',  label: 'Fixed price',                      hint: "One price for the finished job. You're paid for the result, not the hours." },
+  { value: 'HOURLY_CAPPED',  label: 'Time-based (for open-ended jobs)', hint: "For work where nobody can know the scope upfront — like tracing a fault. You're paid for the time actually worked, up to an agreed maximum." },
+  { value: 'PROVIDER_SCOPE', label: 'Price after you see the job',      hint: 'Customer describes the job; you send a price before they pay.' },
+  { value: 'QUOTE_DEPOSIT',  label: 'Quote with deposit',              hint: 'For big jobs — a deposit confirms the booking, the balance is paid on completion.' },
 ] as const;
 
-export function ServiceStep({ onDone }: StepProps) {
+export function ServiceStep({ state, onDone }: StepProps) {
   const { t } = useTranslation();
   const [title, setTitle] = useState('');
   const [price, setPrice] = useState('');
   const [model, setModel] = useState<string>('OUTCOME_FIXED');
   const [days, setDays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [busy, setBusy] = useState(false);
+  // Config-sourced labels + this category's guidance (ONE source, no hardcoding).
+  const [labels, setLabels] = useState<PricingModelMeta[]>([]);
+  const [guidance, setGuidance] = useState<CategoryPricingGuidance | null>(null);
+  const [mismatch, setMismatch] = useState<{ warning: string; recommended: string } | null>(null);
+  const modelTouched = useRef(false);
+
+  useEffect(() => {
+    catalogApi.pricingModels().then((r) => setLabels(r.models)).catch(() => {});
+    catalogApi.categories().then((tree) => {
+      const g = findCategoryById(tree, state.collected.category_id)?.pricing_guidance ?? null;
+      setGuidance(g);
+      // Pre-select the category's recommended model unless the provider picked one.
+      if (g?.default_model && !modelTouched.current) setModel(g.default_model);
+    }).catch(() => {});
+  }, [state.collected.category_id]);
+
+  const meta = (value: string) => {
+    const m = labels.find((x) => x.value === value);
+    const fb = PRICING_MODELS.find((x) => x.value === value);
+    return { label: m?.label ?? fb?.label ?? value, hint: m?.description ?? fb?.hint ?? '', rationale: m?.rationale ?? '' };
+  };
 
   const toggleDay = (d: number) => setDays((arr) => (arr.includes(d) ? arr.filter((x) => x !== d) : [...arr, d]));
+  const chooseModel = (v: string) => { modelTouched.current = true; setModel(v); };
 
   const needsPrice = model === 'OUTCOME_FIXED' || model === 'HOURLY_CAPPED';
+  const isMismatch = !!guidance && guidance.recommended.length > 0 && !guidance.recommended.includes(model);
 
-  const submit = async () => {
+  const persist = async (opts: { warningShown: boolean; warningOverridden: boolean }) => {
     setBusy(true);
     await onboardingApi.service({
       title,
       price: price ? Number(price) : undefined,
       pricing_model: model,
       availability: days.map((d) => ({ day_of_week: d, start_time: '08:00', end_time: '17:00' })),
+      pricing_warning_shown: opts.warningShown,
+      pricing_warning_overridden: opts.warningOverridden,
     });
     setBusy(false);
     onDone();
   };
 
+  const submit = async () => {
+    // Non-blocking category mismatch nudge — guide, don't block.
+    if (isMismatch && guidance) { setMismatch({ warning: guidance.mismatch_warning, recommended: guidance.default_model }); return; }
+    await persist({ warningShown: false, warningOverridden: false });
+  };
+
   const DOW = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
-  const selected = PRICING_MODELS.find((m) => m.value === model)!;
+  const rationale = guidance && guidance.default_model === model && guidance.rationale ? guidance.rationale : meta(model).rationale;
 
   return (
     <div>
@@ -199,28 +246,44 @@ export function ServiceStep({ onDone }: StepProps) {
       </Field>
       <Field label="How do you price this?">
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {PRICING_MODELS.map((m) => (
-            <button
-              key={m.value}
-              onClick={() => setModel(m.value)}
-              style={{
-                padding: '8px 12px', borderRadius: 'var(--radius-full)', border: '1px solid var(--border)', fontWeight: 600, fontSize: 13,
-                background: model === m.value ? 'var(--primary)' : 'var(--surface)',
-                color: model === m.value ? '#fff' : 'var(--text-primary)',
-              }}
-            >
-              {m.label}
-            </button>
-          ))}
+          {PRICING_MODELS.map((m) => {
+            const on = model === m.value;
+            const isDefault = guidance?.default_model === m.value;
+            return (
+              <button
+                key={m.value}
+                onClick={() => chooseModel(m.value)}
+                style={{
+                  padding: '8px 12px', borderRadius: 'var(--radius-full)', border: '1px solid var(--border)', fontWeight: 600, fontSize: 13,
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  background: on ? 'var(--primary)' : 'var(--surface)',
+                  color: on ? '#fff' : 'var(--text-primary)',
+                }}
+              >
+                {meta(m.value).label}
+                {isDefault && (
+                  <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: on ? 'rgba(255,255,255,0.25)' : 'var(--primary-light)', color: on ? '#fff' : 'var(--primary)' }}>
+                    Recommended
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
-        <p className="t-small t-muted" style={{ marginTop: 6 }}>{selected.hint}</p>
+        <p className="t-small t-muted" style={{ marginTop: 6 }}>{meta(model).hint}</p>
+        {!!rationale && (
+          <div style={{ display: 'flex', gap: 6, marginTop: 8, padding: 'var(--space-sm)', borderRadius: 'var(--radius-sm)', background: 'var(--primary-light)' }}>
+            <span aria-hidden>💡</span>
+            <p className="t-small" style={{ color: 'var(--primary)', margin: 0 }}>{rationale}</p>
+          </div>
+        )}
       </Field>
       {needsPrice && (
         <Field label={model === 'HOURLY_CAPPED' ? 'Hourly rate (ZMW)' : t('onboarding.price')}>
           <input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" style={inputStyle} placeholder={model === 'HOURLY_CAPPED' ? '80' : '150'} />
           {model === 'HOURLY_CAPPED' && Number(price) > 0 && (
             <p className="t-small t-muted" style={{ marginTop: 4 }}>
-              Customer sees your hourly rate with a protective spend cap. The exact cap is set on the backend and you can fine-tune it later.
+              Customer sees your rate with a protective spend cap. The exact cap is set on the backend and you can fine-tune it later.
             </p>
           )}
         </Field>
@@ -243,6 +306,36 @@ export function ServiceStep({ onDone }: StepProps) {
         </div>
       </Field>
       <Button onClick={submit} loading={busy} disabled={!title || (needsPrice && !price)}>{t('common.continue')}</Button>
+
+      {/* Non-blocking category mismatch nudge — guide, don't block. */}
+      {mismatch && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 60 }}
+          onClick={() => setMismatch(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: 'var(--surface)', borderTopLeftRadius: 'var(--radius-md)', borderTopRightRadius: 'var(--radius-md)', padding: 'var(--space-lg)', width: '100%', maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 'var(--space-sm)' }}
+          >
+            <span aria-hidden style={{ fontSize: 24 }}>💡</span>
+            <h3 className="t-h3" style={{ margin: 0 }}>A quick suggestion</h3>
+            <p className="t-body" style={{ color: 'var(--text-secondary)', margin: 0 }}>{mismatch.warning}</p>
+            <Button
+              onClick={() => { modelTouched.current = true; setModel(mismatch.recommended); setMismatch(null); }}
+            >
+              Use {meta(mismatch.recommended).label}
+            </Button>
+            <button
+              onClick={() => { setMismatch(null); persist({ warningShown: true, warningOverridden: true }); }}
+              style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', fontWeight: 600, padding: '10px', cursor: 'pointer' }}
+            >
+              Use {meta(model).label} anyway
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

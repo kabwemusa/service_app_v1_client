@@ -29,14 +29,15 @@ class CommissionService
 
     public function __construct()
     {
-        $this->vatRate               = (float) env('PLATFORM_VAT_RATE',         0.16);
-        $this->processorFeePct       = (float) env('MOMO_PROCESSOR_FEE_PCT',    0.015);
-        $this->buyerProtectionRate   = (float) env('BUYER_PROTECTION_RATE',     0.02);
-        $this->buyerProtectionMaxZmw = (float) env('BUYER_PROTECTION_MAX_ZMW',  50.0);
-        $this->defaultTier1Rate      = (float) env('DEFAULT_COMMISSION_TIER1',  0.18);
-        $this->defaultTier2Rate      = (float) env('DEFAULT_COMMISSION_TIER2',  0.15);
-        $this->defaultTier3Rate      = (float) env('DEFAULT_COMMISSION_TIER3',  0.13);
-        $this->defaultTier4Rate      = (float) env('DEFAULT_COMMISSION_TIER4',  0.11);
+        // § CFG-1/CFG-3 — read from config (cached), never env() at runtime.
+        $this->vatRate               = (float) config('commission.vat_rate', 0.16);
+        $this->processorFeePct       = (float) config('commission.processor_fee_pct', 0.015);
+        $this->buyerProtectionRate   = (float) config('commission.buyer_protection_rate', 0.02);
+        $this->buyerProtectionMaxZmw = (float) config('commission.buyer_protection_max_zmw', 50.0);
+        $this->defaultTier1Rate      = (float) config('commission.tier_rates.1', 0.18);
+        $this->defaultTier2Rate      = (float) config('commission.tier_rates.2', 0.15);
+        $this->defaultTier3Rate      = (float) config('commission.tier_rates.3', 0.13);
+        $this->defaultTier4Rate      = (float) config('commission.tier_rates.4', 0.11);
     }
 
     /**
@@ -123,7 +124,12 @@ class CommissionService
      */
     public function buyerProtectionFee(float $gross, ?string $buyerId = null, ?string $providerId = null): float
     {
-        $fee = min($this->buyerProtectionMaxZmw, round($gross * $this->buyerProtectionRate, 2));
+        // § ADM-1 — read live from platform settings (admin-editable), falling
+        // back to the env/config defaults captured at construction.
+        $rate = \App\Support\Settings::float('buyer_protection_rate', $this->buyerProtectionRate);
+        $max  = \App\Support\Settings::float('buyer_protection_max_zmw', $this->buyerProtectionMaxZmw);
+
+        $fee = min($max, round($gross * $rate, 2));
 
         if ($buyerId !== null && $providerId !== null) {
             $taper = config('payment.repeat_taper');
@@ -156,16 +162,31 @@ class CommissionService
      * Which booking number this would be for the (buyer, provider) pair —
      * prior COMPLETED bookings + 1.
      */
+    // § DB-5 — per-request memoization. incomingRequests (and any batch that
+    // prices many bookings for one provider) previously issued a subscription +
+    // pair-count + category query PER ROW. These caches collapse repeated keys to
+    // one query each. Safe under php-fpm (a fresh instance per request).
+    private array $pairCache = [];
+    private array $subCache  = [];
+    private array $tierRateCache = [];
+
     public function pairBookingNumber(string $buyerId, string $providerId): int
     {
+        $key = $buyerId . ':' . $providerId;
+        if (array_key_exists($key, $this->pairCache)) {
+            return $this->pairCache[$key];
+        }
+
         try {
-            return 1 + Booking::where('buyer_id', $buyerId)
+            $n = 1 + Booking::where('buyer_id', $buyerId)
                 ->where('provider_id', $providerId)
                 ->where('status', 'COMPLETED')
                 ->count();
         } catch (\Throwable) {
-            return 1;
+            $n = 1;
         }
+
+        return $this->pairCache[$key] = $n;
     }
 
     /**
@@ -213,6 +234,15 @@ class CommissionService
 
     private function tierRate(int $categoryId, int $tier): float
     {
+        $key = $categoryId . ':' . $tier;
+        if (array_key_exists($key, $this->tierRateCache)) {
+            return $this->tierRateCache[$key];
+        }
+        return $this->tierRateCache[$key] = $this->computeTierRate($categoryId, $tier);
+    }
+
+    private function computeTierRate(int $categoryId, int $tier): float
+    {
         try {
             $category = \App\Models\Category::find($categoryId);
             if ($category && $category->commission_rates) {
@@ -238,6 +268,14 @@ class CommissionService
 
     private function subscriptionDiscount(string $providerId): float
     {
+        if (array_key_exists($providerId, $this->subCache)) {
+            return $this->subCache[$providerId];
+        }
+        return $this->subCache[$providerId] = $this->computeSubscriptionDiscount($providerId);
+    }
+
+    private function computeSubscriptionDiscount(string $providerId): float
+    {
         try {
             $sub = Subscription::where('provider_id', $providerId)
                 ->where('status', 'ACTIVE')
@@ -247,8 +285,8 @@ class CommissionService
             if (! $sub) return 0.0;
 
             return match($sub->plan) {
-                'PRO'   => (float) env('SUBSCRIPTION_PRO_DISCOUNT',   0.02),
-                'ELITE' => (float) env('SUBSCRIPTION_ELITE_DISCOUNT',  0.04),
+                'PRO'   => (float) config('commission.subscription_discounts.PRO',   0.02),
+                'ELITE' => (float) config('commission.subscription_discounts.ELITE', 0.04),
                 default => 0.0,
             };
         } catch (\Throwable) {

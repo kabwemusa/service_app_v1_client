@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
-import Constants from 'expo-constants';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import { useNavigation } from '@react-navigation/native';
@@ -8,9 +8,13 @@ import { notificationsApi } from '../api/notifications';
 import { useNotificationStore } from '../store/notificationStore';
 import { useAuthStore } from '../store/authStore';
 
-// Expo Go (SDK 53+) does not support remote push. Detect it so we can skip
-// registration without crashing — push still works in development builds.
-const isExpoGo = Constants.appOwnership === 'expo';
+// Expo Go (SDK 53+) removed remote push — calling getExpoPushTokenAsync there
+// logs a hard ERROR. Detect Expo Go via `executionEnvironment` (StoreClient);
+// `appOwnership` is deprecated and unreliable on SDK 53/54, so a stale check
+// let the token fetch run and surface that error. Push still works in dev builds.
+const isExpoGo =
+  Constants.executionEnvironment === ExecutionEnvironment.StoreClient ||
+  Constants.appOwnership === 'expo';
 
 // Configure how notifications appear when the app is foregrounded.
 try {

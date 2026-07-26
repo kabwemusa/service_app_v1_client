@@ -24,13 +24,15 @@ class AuthService
     private const USER_REFRESH_SET_PREFIX = 'refresh_tokens_by_user:';
     private const OTP_RATE_PREFIX    = 'otp_rate:';
     private const OTP_COOLDOWN_PREFIX = 'otp_cd:';
+    private const OTP_ATTEMPT_PREFIX = 'otp_attempts:';
 
-    /** Seconds a caller must wait between OTP sends to the same number. */
-    private const RESEND_COOLDOWN_SECONDS = 60;
-
-    /** Max OTP sends per number within the rolling window before a hard block. */
-    private const MAX_SENDS_PER_WINDOW = 5;
-    private const RATE_WINDOW_SECONDS  = 3600;
+    // OTP throttling — tunable via config/auth.php (§ CFG-4). The literals here
+    // are only the fallback defaults if the config key is absent.
+    private function resendCooldownSeconds(): int { return (int) config('auth.otp.resend_cooldown_seconds', 60); }
+    private function maxSendsPerWindow(): int     { return (int) config('auth.otp.max_sends_per_window', 5); }
+    private function rateWindowSeconds(): int      { return (int) config('auth.otp.rate_window_seconds', 3600); }
+    /** Max wrong OTP guesses for one issued code before it is burned (brute-force cap). */
+    private function maxOtpAttempts(): int         { return (int) config('auth.otp.max_attempts', 5); }
 
     public function __construct(private readonly SmsGateway $sms) {}
 
@@ -79,9 +81,8 @@ class AuthService
 
         $this->guardOtpRate($phone);
 
-        $existed = User::where('phone', $phone)
-            ->orWhere('phone', 'LIKE', '%' . substr($phone, -9))
-            ->exists();
+        // Strict E.164 match (§ SEC-8) — no trailing-digits LIKE.
+        $existed = User::where('phone', $phone)->exists();
 
         $user = User::findOrCreateByPhone($phone, $intent);
 
@@ -89,7 +90,7 @@ class AuthService
 
         return [
             'phone'        => $user->phone,
-            'resend_after' => self::RESEND_COOLDOWN_SECONDS,
+            'resend_after' => $this->resendCooldownSeconds(),
             'is_new'       => ! $existed,
         ];
     }
@@ -114,13 +115,17 @@ class AuthService
         if ($storedOtp === null) {
             throw OtpException::expired();
         }
+
+        $this->guardOtpAttempts($phone, $key);
+
         if (! hash_equals((string) $storedOtp, $otp)) {
             throw OtpException::invalid();
         }
 
-        $user = User::where('phone', $phone)
-            ->orWhere('phone', 'LIKE', '%' . substr($phone, -9))
-            ->firstOrFail();
+        // Correct code — clear the attempt counter for this number.
+        Redis::del(self::OTP_ATTEMPT_PREFIX . $phone);
+
+        $user = User::where('phone', $phone)->firstOrFail();
 
         $user->update([
             'phone_verified_at' => $user->phone_verified_at ?? now(),
@@ -162,9 +167,13 @@ class AuthService
             throw OtpException::expired();
         }
 
-        if ($storedOtp !== $otp) {
+        $this->guardOtpAttempts((string) $user->id, $key);
+
+        if (! hash_equals((string) $storedOtp, $otp)) {
             throw OtpException::invalid();
         }
+
+        Redis::del(self::OTP_ATTEMPT_PREFIX . $user->id);
 
         $now = now();
         $update = ['is_verified' => true];
@@ -234,6 +243,18 @@ class AuthService
 
     public function resendOtp(User $user): void
     {
+        // Same per-identifier cooldown as the phone-OTP path, so the legacy
+        // resend endpoint can't be used to pump SMS/email at a target.
+        $cooldownKey = self::OTP_COOLDOWN_PREFIX . $user->id;
+        if (Redis::exists($cooldownKey)) {
+            $ttl = (int) Redis::ttl($cooldownKey);
+            throw new ApiException(
+                ErrorCode::RATE_LIMITED,
+                "Please wait {$ttl}s before requesting another code.",
+            );
+        }
+        Redis::setex($cooldownKey, $this->resendCooldownSeconds(), '1');
+
         $this->sendOtp($user);
     }
 
@@ -260,6 +281,13 @@ class AuthService
 
     private function issueTokenPair(User $user): array
     {
+        // SEC-15: don't mint tokens for a restricted account. A ban is rejected
+        // outright; a timed suspension auto-lifts once it has expired (ADM-2),
+        // otherwise it is rejected. This stops a banned user obtaining a fresh
+        // token at login instead of relying on EnsureAccountActive to block it
+        // on the next request (and stops the SMS/token spend).
+        $this->assertLoginAllowed($user);
+
         $accessToken  = JWTAuth::fromUser($user);
         $refreshToken = $this->storeRefreshToken($user->id);
 
@@ -268,6 +296,27 @@ class AuthService
             'refresh_token' => $refreshToken,
             'user'          => $user,
         ];
+    }
+
+    private function assertLoginAllowed(User $user): void
+    {
+        if ($user->account_state === 'BANNED') {
+            throw new ApiException(
+                ErrorCode::ACCOUNT_RESTRICTED,
+                'Your account is no longer active. Please contact support.',
+            );
+        }
+
+        if ($user->account_state === 'SUSPENDED') {
+            if ($user->suspended_until !== null && $user->suspended_until->isPast()) {
+                $user->forceFill(['account_state' => 'ACTIVE', 'suspended_until' => null])->save();
+            } else {
+                throw new ApiException(
+                    ErrorCode::ACCOUNT_RESTRICTED,
+                    'Your account is temporarily suspended. Please contact support.',
+                );
+            }
+        }
     }
 
     private function storeRefreshToken(string $userId): string
@@ -300,12 +349,38 @@ class AuthService
         $rateKey = self::OTP_RATE_PREFIX . $phone;
         $count   = (int) Redis::incr($rateKey);
         if ($count === 1) {
-            Redis::expire($rateKey, self::RATE_WINDOW_SECONDS);
+            Redis::expire($rateKey, $this->rateWindowSeconds());
         }
-        if ($count > self::MAX_SENDS_PER_WINDOW) {
+        if ($count > $this->maxSendsPerWindow()) {
             throw new ApiException(
                 ErrorCode::RATE_LIMITED,
                 'Too many code requests. Please try again later.',
+            );
+        }
+    }
+
+    /**
+     * Burn the code after too many wrong guesses. Increments a per-identifier
+     * counter that lives exactly as long as the code; on exceeding the cap we
+     * delete the code (forcing a fresh request) and return RATE_LIMITED so the
+     * response is indistinguishable from other throttle paths.
+     */
+    private function guardOtpAttempts(string $identifier, string $otpKey): void
+    {
+        $attemptKey = self::OTP_ATTEMPT_PREFIX . $identifier;
+        $attempts   = (int) Redis::incr($attemptKey);
+
+        if ($attempts === 1) {
+            // Match the code's own TTL so the window resets with each new code.
+            Redis::expire($attemptKey, (int) config('app.otp_expiry_minutes', 10) * 60);
+        }
+
+        if ($attempts > $this->maxOtpAttempts()) {
+            Redis::del($otpKey);
+            Redis::del($attemptKey);
+            throw new ApiException(
+                ErrorCode::RATE_LIMITED,
+                'Too many incorrect codes. Request a new code and try again.',
             );
         }
     }
@@ -317,7 +392,7 @@ class AuthService
         $expiry = (int) config('app.otp_expiry_minutes', 10);
 
         Redis::setex(self::OTP_KEY_PREFIX . $phone, $expiry * 60, $otp);
-        Redis::setex(self::OTP_COOLDOWN_PREFIX . $phone, self::RESEND_COOLDOWN_SECONDS, '1');
+        Redis::setex(self::OTP_COOLDOWN_PREFIX . $phone, $this->resendCooldownSeconds(), '1');
 
         $this->sms->send($phone, "Your Sebenza code is {$otp}. It expires in {$expiry} minutes.");
     }
@@ -341,6 +416,10 @@ class AuthService
             });
         }
 
-        // TODO: SMS via Africa's Talking when $user->phone is set
+        // Deliver over SMS when the account is keyed on a phone (email may be
+        // null for phone-only signups — without this they'd never get a code).
+        if ($user->phone) {
+            $this->sms->send($user->phone, "Your Sebenza code is {$otp}. It expires in {$expiry} minutes.");
+        }
     }
 }

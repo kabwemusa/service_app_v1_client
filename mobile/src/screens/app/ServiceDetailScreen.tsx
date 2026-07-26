@@ -519,6 +519,7 @@ export default function ServiceDetailScreen({ navigation, route }: any) {
         depositPercent={service.deposit_percent}
         scopePrompts={service.scope_prompts}
         paymentMode={service.payment_mode}
+        isRemote={service.is_remote ?? false}
         availabilityMatrix={service.provider?.availability_matrix}
         thumbUri={service.photos?.[0] ? storageUrl(service.photos[0].path) : undefined}
         categoryId={service.category?.id}

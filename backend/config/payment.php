@@ -28,6 +28,21 @@ return [
 
     'max_retries' => (int) env('PAYOUT_MAX_RETRIES', 3),
 
+    // § ERR-2 — money-path reconciliation retry (refunds / payouts / balance
+    // collections that failed after the local state was committed).
+    'reconciliation' => [
+        // Minutes to wait before the Nth retry (index = attempt number). After
+        // the last, the row is marked ABANDONED for manual handling.
+        'backoff_mins' => [
+            1 => (int) env('RECON_BACKOFF_1_MINS', 2),
+            2 => (int) env('RECON_BACKOFF_2_MINS', 10),
+            3 => (int) env('RECON_BACKOFF_3_MINS', 30),
+            4 => (int) env('RECON_BACKOFF_4_MINS', 120),
+            5 => (int) env('RECON_BACKOFF_5_MINS', 360),
+        ],
+        'max_attempts' => (int) env('RECON_MAX_ATTEMPTS', 5),
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | Repeat-pair commission taper (v3.2 §5)

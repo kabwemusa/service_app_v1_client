@@ -8,7 +8,7 @@ import {
   IoPeopleOutline, IoCalendarOutline, IoBriefcaseOutline, IoPricetagOutline, IoStarOutline,
   IoMegaphoneOutline, IoImageOutline as ImageIcon,
   IoCashOutline, IoCardOutline, IoLogoWhatsapp,
-  IoBarChartOutline, IoSettingsOutline,
+  IoBarChartOutline, IoSettingsOutline, IoDocumentTextOutline,
   IoChevronForwardOutline, IoSyncOutline,
 } from 'react-icons/io5'
 import { cn } from '@/lib/utils'
@@ -67,7 +67,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Growth',
     icon: IoMegaphoneOutline,
     items: [
-      { label: 'Promotions', href: '/promotions', icon: IoMegaphoneOutline, capability: 'read:promotions' },
+      { label: 'Growth & Promotions', href: '/promotions', icon: IoMegaphoneOutline, capability: 'read:promotions', queueModule: 'promotions' },
       { label: 'Banners',    href: '/banners',    icon: ImageIcon, capability: 'read:banners' },
     ],
   },
@@ -85,6 +85,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: 'WhatsApp Ops', href: '/whatsapp', icon: IoLogoWhatsapp,   capability: 'platform.ops' },
       { label: 'Insights',     href: '/insights', icon: IoBarChartOutline, capability: 'read:insights' },
+      { label: 'Legal',        href: '/legal',    icon: IoDocumentTextOutline, capability: 'legal.manage' },
       { label: 'Settings',     href: '/settings', icon: IoSettingsOutline,  capability: 'read:settings' },
     ],
   },

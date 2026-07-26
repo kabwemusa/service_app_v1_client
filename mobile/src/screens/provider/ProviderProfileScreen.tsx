@@ -61,6 +61,8 @@ function publicServiceToCard(svc: PublicService, profile: PublicProviderProfile)
     category:      { id: svc.category.id, name: svc.category.name, icon: null },
     photoPath:     null,
     distance_km:   null,
+    is_remote:      svc.is_remote,
+    location_label: svc.location_label ?? profile.base_location_label,
     placement:     'organic',
     completed_job_count: null,
     provider: {
@@ -430,6 +432,7 @@ export default function ProviderProfileScreen({ route, navigation }: any) {
         basePrice={bookingFor?.base_price ?? 0}
         pricingModel={bookingFor?.pricing_model}
         paymentMode="DIRECT"
+        isRemote={bookingFor?.is_remote ?? false}
         availabilityMatrix={profile.profile.availability_matrix}
         categoryId={bookingFor?.category.id}
         providerName={profile.display_name}

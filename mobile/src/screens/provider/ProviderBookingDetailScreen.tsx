@@ -1,12 +1,13 @@
 import { Ionicons } from "@expo/vector-icons";
+import { Image } from "expo-image";
 import React, { useEffect, useState } from "react";
 import {
-  Alert,
   Linking,
   Platform,
   ScrollView,
   StyleSheet,
   TextInput,
+  TouchableOpacity,
   View,
 } from "react-native";
 import { Button, Menu, Text, TouchableRipple } from "react-native-paper";
@@ -14,6 +15,7 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
+import { storageUrl } from "../../api/client";
 import {
   Booking,
   BookingStatus,
@@ -23,9 +25,13 @@ import {
 import { ApiError } from "../../api/errors";
 import { SafetyCategory, safetyReportsApi } from "../../api/safetyReports";
 import { CardSkeleton } from "../../components/ui/SkeletonBlock";
+import { ConfirmDialog, ConfirmDialogConfig } from "../../components/ui/ConfirmDialog";
 import { useSnackbar } from "../../providers/SnackbarProvider";
 import { useBookingStore } from "../../store/bookingStore";
+import { useRealtimeStore } from "../../store/realtimeStore";
 import { ScreenHeader } from "../../components/ui/ScreenHeader";
+import { BookingCommsSection } from "../../components/booking/BookingCommsSection";
+import { JobTimerCard } from "../../components/booking/JobTimerCard";
 import { palette, radius as r, spacing, typography } from "../../theme";
 
 // ── Display maps ─────────────────────────────────────────────────────────────
@@ -225,6 +231,8 @@ function openDirections(lat: number, lng: number) {
   Linking.openURL(url).catch(() => Linking.openURL(web));
 }
 
+const WHATSAPP_NUMBER = (process.env.EXPO_PUBLIC_WHATSAPP_NUMBER ?? "").replace(/[^0-9]/g, "");
+
 const CLOSED_FOR_PAYMENT: BookingStatus[] = [
   "CANCELLED",
   "DECLINED",
@@ -251,6 +259,7 @@ export default function ProviderBookingDetailScreen({
     decline,
     start,
     deliver,
+    requestCapExtension,
     cancel,
     markPaid,
     submitting,
@@ -262,6 +271,7 @@ export default function ProviderBookingDetailScreen({
   const [loading, setLoading] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+  const [dialog, setDialog] = useState<ConfirmDialogConfig | null>(null);
 
   // Quote entry — scoped quotes (PROVIDER_SCOPE / QUOTE_DEPOSIT) also carry
   // an estimated duration + note so the customer sees a complete offer.
@@ -269,10 +279,6 @@ export default function ProviderBookingDetailScreen({
   const [quotePrice, setQuotePrice] = useState("");
   const [quoteHours, setQuoteHours] = useState("");
   const [quoteNote, setQuoteNote] = useState("");
-
-  // HOURLY_CAPPED — actual time logged at completion (0.5-hr steps).
-  const [showHours, setShowHours] = useState(false);
-  const [actualHours, setActualHours] = useState("");
 
   // Safety report (§11.3)
   const [showSafety, setShowSafety] = useState(false);
@@ -291,6 +297,15 @@ export default function ProviderBookingDetailScreen({
       clearError();
     }
   }, [error]);
+
+  // Live refresh when a realtime event lands for THIS booking (customer paid,
+  // cancelled, disputed…) — refetch instantly instead of requiring a reload.
+  const rtRevision = useRealtimeStore((s) => s.bookingRevision);
+  const rtLastBooking = useRealtimeStore((s) => s.lastBookingId);
+  useEffect(() => {
+    if (bookingId && rtLastBooking === bookingId) loadBooking();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rtRevision]);
 
   async function loadBooking() {
     if (!bookingId) return;
@@ -320,17 +335,22 @@ export default function ProviderBookingDetailScreen({
     message: string,
     action: () => Promise<Booking>
   ) {
-    Alert.alert(title, message, [
-      { text: "Cancel", style: "cancel" },
-      { text: "Confirm", onPress: () => runAction(action) },
-    ]);
+    setDialog({
+      title,
+      message,
+      confirmLabel: "Confirm",
+      onConfirm: () => { setDialog(null); runAction(action); },
+    });
   }
 
   function notYetAvailable(feature: string) {
-    Alert.alert(
-      feature,
-      "In-app messaging is coming soon. For now, arrange contact through your usual channel."
-    );
+    setDialog({
+      title: feature,
+      message: "In-app messaging is coming soon. For now, arrange contact through your usual channel.",
+      hideCancel: true,
+      confirmLabel: "Got it",
+      onConfirm: () => setDialog(null),
+    });
   }
 
   async function submitQuote() {
@@ -350,22 +370,6 @@ export default function ProviderBookingDetailScreen({
     setQuotePrice("");
     setQuoteHours("");
     setQuoteNote("");
-  }
-
-  async function submitActualHours() {
-    const hours = Number(actualHours);
-    if (!Number.isFinite(hours) || hours <= 0 || (hours * 10) % 5 !== 0) {
-      showError("Enter the time in half-hour steps, e.g. 1, 1.5, 2.");
-      return;
-    }
-    const cap = booking?.service.cap_hours;
-    if (cap != null && hours > cap) {
-      showError(`Time can't exceed the booked cap of ${cap} hours.`);
-      return;
-    }
-    await runAction(() => deliver(booking!.id, hours));
-    setShowHours(false);
-    setActualHours("");
   }
 
   async function submitSafety() {
@@ -390,10 +394,13 @@ export default function ProviderBookingDetailScreen({
       setShowSafety(false);
       setSafetyText("");
       setTosAck(false);
-      Alert.alert(
-        "Report submitted",
-        "Our moderation team will review this within 1 hour."
-      );
+      setDialog({
+        title: "Report submitted",
+        message: "Our moderation team will review this within 1 hour.",
+        hideCancel: true,
+        confirmLabel: "Done",
+        onConfirm: () => setDialog(null),
+      });
     } catch (e) {
       showError(e instanceof ApiError ? e.message : "Failed to submit report.");
     } finally {
@@ -434,8 +441,81 @@ export default function ProviderBookingDetailScreen({
   const providerPaid = !!booking.provider_marked_paid_at;
   const customerPaid = !!booking.customer_marked_paid_at;
   const fullySettled = providerPaid && customerPaid;
+  // Mark Paid is a DIRECT-mode-only concept (the two-party "I paid" / "I
+  // received it" handshake for cash/manual MoMo transfers). ESCROW bookings
+  // are already settled through the payment hold — the backend rejects
+  // markPaid for them ("only available for legacy DIRECT bookings").
   const canMarkPaid =
-    !CLOSED_FOR_PAYMENT.includes(booking.status) && !providerPaid;
+    isDirect && !CLOSED_FOR_PAYMENT.includes(booking.status) && !providerPaid;
+
+  const isHourly = booking.service.pricing_model === "HOURLY_CAPPED";
+
+  // "Finish" — HOURLY_CAPPED stops the observed timer; the elapsed time is
+  // computed server-side from the start/stop timestamps (no hours are entered),
+  // billed only for time worked and capped at the customer's approved amount.
+  function handleFinish() {
+    if (isHourly) {
+      confirmAction(
+        "Finish job",
+        "Stop the timer and finish? We bill only the time worked (from when you started), rounded up to your increment and capped at the customer's approved amount.",
+        () => deliver(booking!.id)
+      );
+      return;
+    }
+    confirmAction(
+      "Mark as complete",
+      "Mark this job complete? The customer is asked to confirm; it auto-confirms after the confirmation window.",
+      () => deliver(booking!.id)
+    );
+  }
+
+  // "Need more time" — asks the customer to authorise a higher hold. The cap is
+  // never silently exceeded; the customer re-authorises via PawaPay.
+  function handleNeedMoreTime() {
+    confirmAction(
+      "Ask for more time",
+      `Let ${buyerName} know you need more time. They approve the extra amount before the cap is raised — nothing is charged beyond what they authorise.`,
+      () => requestCapExtension(booking!.id)
+    );
+  }
+
+  // Masked call — routes through the proxy; neither party sees the other's
+  // number. Available only inside the funded/active window (server-gated).
+  const callEnabled = !!booking.comms?.call_enabled;
+  async function startMaskedCall() {
+    if (busy) return;
+    setActionBusy(true);
+    try {
+      const res = await bookingsApi.call(booking!.id);
+      showSuccess(res.message);
+      if (res.mode === "reveal" && res.revealed_number) {
+        Linking.openURL(`tel:${res.revealed_number}`).catch(() => {});
+      }
+    } catch (e) {
+      showError(e instanceof ApiError ? e.message : "Could not start the call.");
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  // "On my way" nudge — one tap sends the structured update to the customer and
+  // lights up the "On the way" step on their screen.
+  const sentOnMyWay = ["ON_MY_WAY", "ARRIVED"].includes(booking.last_update?.type ?? "");
+  function sendOnMyWay() {
+    runAction(() => bookingsApi.statusUpdate(booking!.id, "ON_MY_WAY"));
+  }
+
+  function openWhatsApp() {
+    if (!WHATSAPP_NUMBER) {
+      notYetAvailable("Message customer");
+      return;
+    }
+    const ref = booking!.id.slice(0, 8).toUpperCase();
+    const text = encodeURIComponent(`Hi, about our booking (ref ${ref}).`);
+    Linking.openURL(`https://wa.me/${WHATSAPP_NUMBER}?text=${text}`).catch(() =>
+      showError("Could not open WhatsApp.")
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
@@ -478,19 +558,31 @@ export default function ProviderBookingDetailScreen({
         contentContainerStyle={[styles.scroll, { paddingBottom: spacing.xl }]}
         showsVerticalScrollIndicator={false}
       >
-        {/* Title + status */}
+        {/* Title + live status banner (amber while upcoming, with a nudge) */}
         <Text style={styles.title}>{booking.service.title}</Text>
-        <View
-          style={[styles.pill, { backgroundColor: meta.bg }]}
-          accessibilityLabel={`Status: ${meta.label}`}
-        >
-          <Text style={[styles.pillText, { color: meta.fg }]}>
-            {meta.label}
-          </Text>
-        </View>
+        <ProviderStatusBanner
+          booking={booking}
+          buyerName={buyerName}
+          busy={busy}
+          onSendOnMyWay={sentOnMyWay ? undefined : sendOnMyWay}
+        />
 
         {/* Stepper */}
         <Stepper steps={steps} />
+
+        {/* SCREEN 3 — live, mutually-visible job timer while in progress */}
+        {booking.status === "IN_PROGRESS" && (
+          <View style={styles.timerWrap}>
+            <JobTimerCard
+              booking={booking}
+              role="provider"
+              busy={busy}
+              firstName={buyerName}
+              onFinish={handleFinish}
+              onNeedMoreTime={isHourly ? handleNeedMoreTime : undefined}
+            />
+          </View>
+        )}
 
         <Divider />
 
@@ -517,12 +609,12 @@ export default function ProviderBookingDetailScreen({
         <View style={styles.contactRow}>
           <Button
             mode="outlined"
-            icon="message-outline"
+            icon="whatsapp"
             style={styles.contactBtn}
             contentStyle={styles.contactBtnContent}
             textColor={palette.primary}
-            onPress={() => notYetAvailable("Message customer")}
-            accessibilityLabel="Message customer"
+            onPress={openWhatsApp}
+            accessibilityLabel="Message customer on WhatsApp"
           >
             Message
           </Button>
@@ -531,13 +623,19 @@ export default function ProviderBookingDetailScreen({
             icon="phone-outline"
             style={styles.contactBtn}
             contentStyle={styles.contactBtnContent}
-            textColor={palette.primary}
-            onPress={() => notYetAvailable("Call customer")}
-            accessibilityLabel="Call customer"
+            textColor={callEnabled ? palette.primary : palette.textDisabled}
+            disabled={!callEnabled || busy}
+            onPress={startMaskedCall}
+            accessibilityLabel="Call customer through a private masked line"
           >
             Call
           </Button>
         </View>
+        {callEnabled && (
+          <Text style={styles.contactHint}>
+            Calls connect through a private line — your number stays hidden.
+          </Text>
+        )}
 
         <Divider />
 
@@ -609,20 +707,43 @@ export default function ProviderBookingDetailScreen({
           <View style={styles.payBlock}>
             <View style={styles.payHeadRow}>
               <Ionicons
-                name="lock-closed-outline"
+                name={["COMPLETED", "DISBURSED"].includes(booking.status) ? "checkmark-circle" : "lock-closed-outline"}
                 size={18}
-                color={palette.primary}
+                color={["COMPLETED", "DISBURSED"].includes(booking.status) ? palette.success : palette.primary}
               />
               <Text style={styles.payHead}>
                 {["COMPLETED", "DISBURSED"].includes(booking.status)
-                  ? "Funds released"
-                  : "Funds held in escrow"}
+                  ? "Payout released"
+                  : "You'll be paid when confirmed done"}
               </Text>
             </View>
+
+            {/* Server-computed earnings: job price − platform fee = net payout. */}
+            {booking.earnings ? (
+              <>
+                <View style={styles.earnRow}>
+                  <Text style={styles.earnLabel}>Job price</Text>
+                  <Text style={styles.earnValue}>ZMW {booking.earnings.gross.toFixed(2)}</Text>
+                </View>
+                <View style={styles.earnRow}>
+                  <Text style={styles.earnLabel}>
+                    Platform fee ({Math.round(booking.earnings.commission_rate * 100)}%)
+                  </Text>
+                  <Text style={styles.earnValue}>− ZMW {booking.earnings.platform_fee.toFixed(2)}</Text>
+                </View>
+                <View style={styles.earnNetRow}>
+                  <Text style={styles.earnNetLabel}>Your payout</Text>
+                  <Text style={styles.earnNetValue}>ZMW {booking.earnings.net_payout.toFixed(2)}</Text>
+                </View>
+              </>
+            ) : (
+              <LineItem label="Total" value={total} />
+            )}
+
             <Text style={styles.paySub}>
               {["COMPLETED", "DISBURSED"].includes(booking.status)
-                ? "Payment has been released to your account."
-                : "The customer’s payment is held securely and released when the job is confirmed complete."}
+                ? "Paid to your Mobile Money."
+                : "Held safely — paid to your Mobile Money once the customer confirms the job is done."}
             </Text>
           </View>
         )}
@@ -657,18 +778,20 @@ export default function ProviderBookingDetailScreen({
 
         <Divider />
 
-        {/* 4 — Location (label only, never coordinates) */}
-        <Text style={styles.sectionLabel}>Location</Text>
+        {/* 4 — Location (label only, never coordinates). Remote jobs show "Online". */}
+        <Text style={styles.sectionLabel}>{booking.is_remote ? 'Delivery' : 'Location'}</Text>
         <View style={styles.iconLine}>
           <Ionicons
-            name="location-outline"
+            name={booking.is_remote ? 'globe-outline' : 'location-outline'}
             size={16}
             color={palette.textSecondary}
           />
           <Text style={styles.iconLineText}>
-            {booking.delivery_location_label ??
-              booking.delivery_location_region ??
-              "Location shared on the map"}
+            {booking.is_remote
+              ? 'Delivered online — no travel needed'
+              : (booking.delivery_location_label ??
+                booking.delivery_location_region ??
+                "Location shared on the map")}
           </Text>
         </View>
         {hasCoords && (
@@ -681,9 +804,9 @@ export default function ProviderBookingDetailScreen({
             onPress={() =>
               openDirections(booking.delivery_lat!, booking.delivery_lng!)
             }
-            accessibilityLabel="Get directions to the customer location"
+            accessibilityLabel="Open directions to the customer location"
           >
-            Get directions
+            Go
           </Button>
         )}
 
@@ -700,6 +823,34 @@ export default function ProviderBookingDetailScreen({
                 <Text style={styles.notesText}>{qa.answer}</Text>
               </View>
             ))}
+            {!!booking.scope_brief_attachments?.length && (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.briefMediaRow}
+              >
+                {booking.scope_brief_attachments.map((att, i) => (
+                  <TouchableOpacity
+                    key={i}
+                    style={styles.briefMediaThumb}
+                    onPress={() => Linking.openURL(storageUrl(att.path))}
+                    accessibilityRole="button"
+                    accessibilityLabel={att.type === "video" ? "Open video the customer attached" : "Open photo the customer attached"}
+                  >
+                    <Image
+                      source={{ uri: storageUrl(att.path) }}
+                      style={styles.briefMediaImg}
+                      contentFit="cover"
+                    />
+                    {att.type === "video" && (
+                      <View style={styles.briefMediaPlayBadge}>
+                        <Ionicons name="play" size={14} color="#fff" />
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
           </>
         )}
 
@@ -808,6 +959,11 @@ export default function ProviderBookingDetailScreen({
             </Button>
           </View>
         )}
+
+        {/* Communication layer — masked call + status updates + agreement download */}
+        <View style={{ paddingHorizontal: spacing.md }}>
+          <BookingCommsSection booking={booking} onChanged={loadBooking} />
+        </View>
       </ScrollView>
 
       {/* Sticky, state-driven action bar */}
@@ -837,20 +993,7 @@ export default function ProviderBookingDetailScreen({
           )
         }
         onStart={() => runAction(() => start(booking.id))}
-        onComplete={() => {
-          // HOURLY_CAPPED: the provider logs the actual time worked (0.5-hr
-          // steps) — the final charge and the customer's refund derive from it.
-          if (booking.service.pricing_model === "HOURLY_CAPPED") {
-            setActualHours("");
-            setShowHours(true);
-            return;
-          }
-          confirmAction(
-            "Mark as complete",
-            "Mark this job complete? The customer is asked to confirm; it auto-confirms after the confirmation window.",
-            () => deliver(booking.id)
-          );
-        }}
+        onComplete={handleFinish}
         onMarkPaid={
           canMarkPaid
             ? () =>
@@ -936,58 +1079,7 @@ export default function ProviderBookingDetailScreen({
         </View>
       )}
 
-      {/* HOURLY_CAPPED — log actual time worked (0.5-hr steps, ≤ cap) */}
-      {showHours && (
-        <View style={styles.quoteOverlay}>
-          <View style={styles.quoteSheet}>
-            <Text style={styles.quoteTitle}>Log actual time</Text>
-            <Text style={styles.quoteSub}>
-              How long did the job take? Half-hour steps, up to the booked cap of{" "}
-              {booking.service.cap_hours ?? "—"} hours. The customer pays only for this
-              time — the unused hold is refunded automatically.
-            </Text>
-            <View style={styles.quoteInputRow}>
-              <Ionicons name="time-outline" size={16} color={palette.textSecondary} />
-              <TextInput
-                style={styles.quoteInput}
-                keyboardType="numeric"
-                autoFocus
-                value={actualHours}
-                onChangeText={(t) => setActualHours(t.replace(/[^0-9.]/g, ""))}
-                placeholder="e.g. 2.5"
-                placeholderTextColor={palette.textDisabled}
-              />
-            </View>
-            {Number(actualHours) > 0 && booking.service.hourly_rate != null && (
-              <Text style={styles.quoteSub}>
-                Charge: ZMW{" "}
-                {(
-                  Math.max(Number(actualHours), booking.service.minimum_hours ?? 0) *
-                  booking.service.hourly_rate
-                ).toFixed(0)}{" "}
-                ({booking.service.minimum_hours ?? 1}-hr minimum applies)
-              </Text>
-            )}
-            <View style={styles.quoteActions}>
-              <Button
-                mode="text"
-                textColor={palette.textSecondary}
-                onPress={() => setShowHours(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                mode="contained"
-                loading={busy}
-                disabled={busy || !(Number(actualHours) > 0)}
-                onPress={submitActualHours}
-              >
-                Log & mark complete
-              </Button>
-            </View>
-          </View>
-        </View>
-      )}
+      <ConfirmDialog dialog={dialog} busy={actionBusy} onDismiss={() => setDialog(null)} />
     </SafeAreaView>
   );
 }
@@ -1033,6 +1125,82 @@ function Header({
   ) : undefined;
 
   return <ScreenHeader title="Booking" back onBack={onBack} right={menuBtn} />;
+}
+
+// ── Provider status banner ───────────────────────────────────────────────────
+function timeUntil(iso: string): string {
+  const diff = new Date(iso).getTime() - Date.now();
+  if (diff <= 0) return "now";
+  const h = Math.floor(diff / 3_600_000);
+  const m = Math.floor((diff % 3_600_000) / 60_000);
+  if (h >= 24) return `in ${Math.round(h / 24)} day${h >= 48 ? "s" : ""}`;
+  return h > 0 ? `in ${h}h ${m}m` : `in ${m}m`;
+}
+
+function ProviderStatusBanner({
+  booking,
+  buyerName,
+  busy,
+  onSendOnMyWay,
+}: {
+  booking: Booking;
+  buyerName: string;
+  busy: boolean;
+  onSendOnMyWay?: () => void;
+}) {
+  const s = booking.status;
+  const upcoming = ["FUNDS_HELD", "DEPOSIT_HELD", "ACCEPTED"].includes(s);
+
+  let tone: { bg: string; fg: string } = { bg: palette.warningLight, fg: palette.warning };
+  let icon: keyof typeof Ionicons.glyphMap = "time-outline";
+  let title = STATUS_META[s].label;
+  let sub: string | null = null;
+
+  if (upcoming) {
+    tone = { bg: palette.warningLight, fg: palette.warning };
+    icon = "calendar-outline";
+    title = booking.scheduled_start ? `Starts ${timeUntil(booking.scheduled_start)}` : "Upcoming job";
+    sub = `Let ${buyerName} know you're on the way.`;
+  } else if (s === "IN_PROGRESS") {
+    tone = { bg: palette.primaryLight, fg: palette.primary };
+    icon = "construct-outline";
+    title = "Job in progress";
+    sub = "The timer is running — both of you can see it.";
+  } else if (s === "DELIVERED") {
+    tone = { bg: "#F7E9EF", fg: palette.secondary };
+    icon = "hourglass-outline";
+    title = `Waiting for ${buyerName} to confirm`;
+  } else if (s === "COMPLETED" || s === "DISBURSED") {
+    tone = { bg: palette.successLight, fg: palette.success };
+    icon = "checkmark-circle";
+    title = "Completed";
+  }
+
+  return (
+    <View style={[styles.banner, { backgroundColor: tone.bg }]} accessibilityLabel={`${title}${sub ? `. ${sub}` : ""}`}>
+      <View style={styles.bannerMain}>
+        <Ionicons name={icon} size={22} color={tone.fg} />
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.bannerTitle, { color: tone.fg }]}>{title}</Text>
+          {!!sub && <Text style={styles.bannerSub}>{sub}</Text>}
+        </View>
+      </View>
+      {upcoming && onSendOnMyWay && (
+        <Button
+          mode="contained"
+          compact
+          icon="navigation-variant-outline"
+          style={styles.bannerAction}
+          labelStyle={styles.bannerActionLabel}
+          loading={busy}
+          disabled={busy}
+          onPress={onSendOnMyWay}
+        >
+          I'm on my way
+        </Button>
+      )}
+    </View>
+  );
 }
 
 // ── Stepper ──────────────────────────────────────────────────────────────────
@@ -1256,19 +1424,8 @@ function ActionBar({
       </Button>
     );
   } else if (status === "IN_PROGRESS") {
-    content = (
-      <Button
-        mode="contained"
-        style={styles.primaryBtn}
-        contentStyle={styles.primaryBtnContent}
-        labelStyle={styles.btnLabel}
-        loading={busy}
-        disabled={busy}
-        onPress={onComplete}
-      >
-        Mark as complete
-      </Button>
-    );
+    // Finish / Need-more-time live on the JobTimerCard above — no bar CTA here.
+    content = null;
   } else if (status === "DELIVERED") {
     content = (
       <>
@@ -1442,6 +1599,14 @@ const styles = StyleSheet.create({
   },
   pillText: { ...typography.label, fontSize: 13 },
 
+  // Live status banner
+  banner: { borderRadius: r.md, padding: spacing.md, marginBottom: spacing.lg, gap: spacing.sm },
+  bannerMain: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  bannerTitle: { ...typography.label, fontSize: 16 },
+  bannerSub: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 13, marginTop: 1 },
+  bannerAction: { borderRadius: r.sm, alignSelf: "flex-start" },
+  bannerActionLabel: { ...typography.label, fontSize: 13 },
+
   // Stepper
   stepper: {
     flexDirection: "row",
@@ -1524,6 +1689,24 @@ const styles = StyleSheet.create({
   contactRow: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.md },
   contactBtn: { flex: 1, borderRadius: r.sm, borderColor: palette.primary },
   contactBtnContent: { height: 44 },
+  contactHint: { ...typography.bodySmall, color: palette.textSecondary, fontSize: 12, marginTop: spacing.xs },
+
+  // Timer card wrapper (in-progress)
+  timerWrap: { marginTop: spacing.md },
+
+  // Earnings breakdown (ESCROW)
+  earnRow: {
+    flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 3,
+  },
+  earnLabel: { ...typography.body, color: palette.textSecondary, fontSize: 14 },
+  earnValue: { ...typography.body, color: palette.textPrimary, fontSize: 14 },
+  earnNetRow: {
+    flexDirection: "row", justifyContent: "space-between", alignItems: "center",
+    marginTop: spacing.xs, paddingTop: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: palette.border,
+  },
+  earnNetLabel: { ...typography.label, color: palette.textPrimary, fontSize: 15 },
+  earnNetValue: { ...typography.label, color: palette.primary, fontSize: 18 },
 
   // Line items
   lineItem: {
@@ -1603,6 +1786,26 @@ const styles = StyleSheet.create({
     color: palette.textPrimary,
     fontSize: 15,
     lineHeight: 22,
+  },
+
+  // Customer's brief media (photos / short video)
+  briefMediaRow: { gap: spacing.sm, marginTop: spacing.xs },
+  briefMediaThumb: {
+    width: 72,
+    height: 72,
+    borderRadius: r.sm,
+    overflow: "hidden",
+    backgroundColor: palette.background,
+    borderWidth: 1,
+    borderColor: palette.border,
+  },
+  briefMediaImg: { width: "100%", height: "100%" },
+  briefMediaPlayBadge: {
+    position: "absolute",
+    top: 0, left: 0, right: 0, bottom: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.25)",
   },
 
   // Report

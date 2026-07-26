@@ -1,7 +1,5 @@
 import type { Metadata } from 'next'
-import { IoGridOutline, IoPeopleOutline, IoCalendarOutline, IoScaleOutline, IoWarningOutline } from 'react-icons/io5'
-import { MetricCard } from '@/components/ui/MetricCard'
-import { EmptyState } from '@/components/ui/EmptyState'
+import { DashboardMetrics } from '@/components/dashboard/DashboardMetrics'
 
 export const metadata: Metadata = { title: 'Dashboard' }
 
@@ -15,20 +13,7 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      {/* Metric cards — module fills with live data */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <MetricCard title="Active providers" value="—" icon={IoPeopleOutline} />
-        <MetricCard title="Bookings today" value="—" icon={IoCalendarOutline} />
-        <MetricCard title="Open disputes" value="—" icon={IoScaleOutline} />
-        <MetricCard title="Fraud flags (24h)" value="—" icon={IoWarningOutline} />
-      </div>
-
-      {/* Queue previews — modules fill these in */}
-      <EmptyState
-        title="Dashboard widgets"
-        description="Module implementations add KYC queue, dispute SLA, payout status and other live metric widgets here."
-        icon={IoGridOutline}
-      />
+      <DashboardMetrics />
     </div>
   )
 }

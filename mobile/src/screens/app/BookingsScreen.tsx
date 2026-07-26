@@ -21,7 +21,6 @@ import React, {
 } from 'react';
 import {
   AccessibilityInfo,
-  Alert,
   Animated,
   Linking,
   Modal,
@@ -42,9 +41,11 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Booking, BookingStatus } from '../../api/bookings';
 import { SafetyCategory, safetyReportsApi } from '../../api/safetyReports';
 import { VettingBadge } from '../../components/discovery/VettingBadge';
+import { ConfirmDialog, ConfirmDialogConfig } from '../../components/ui/ConfirmDialog';
 import { CardSkeleton } from '../../components/ui/SkeletonBlock';
 import { useSnackbar } from '../../providers/SnackbarProvider';
 import { useBookingStore } from '../../store/bookingStore';
+import { useRealtimeStore } from '../../store/realtimeStore';
 import { palette, radius as r, spacing, typography } from '../../theme';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -253,6 +254,7 @@ function useCountdown(isoDate: string | null | undefined): string {
 
 function EmergencySheet({ booking, onClose }: { booking: Booking; onClose: () => void }) {
   const [alerting, setAlerting] = useState(false);
+  const [dialog, setDialog] = useState<ConfirmDialogConfig | null>(null);
 
   const handleCall = () => Linking.openURL('tel:991');
 
@@ -266,17 +268,22 @@ function EmergencySheet({ booking, onClose }: { booking: Booking; onClose: () =>
         description:      'Emergency safety alert triggered during an in-progress booking.',
         tos_acknowledged: true,
       });
-      Alert.alert(
-        'Safety team alerted',
-        'Our on-call safety team has been notified and will contact you within minutes. If in immediate danger, call 991.',
-        [{ text: 'OK', onPress: onClose }],
-      );
+      setDialog({
+        title: 'Safety team alerted',
+        message: 'Our on-call safety team has been notified and will contact you within minutes. If in immediate danger, call 991.',
+        hideCancel: true,
+        confirmLabel: 'OK',
+        onConfirm: () => { setDialog(null); onClose(); },
+      });
     } catch {
-      Alert.alert(
-        'Could not reach safety team',
-        'Unable to connect. Please call 991 directly for immediate help.',
-        [{ text: 'OK' }],
-      );
+      setDialog({
+        title: 'Could not reach safety team',
+        message: 'Unable to connect. Please call 991 directly for immediate help.',
+        destructive: true,
+        hideCancel: true,
+        confirmLabel: 'OK',
+        onConfirm: () => setDialog(null),
+      });
     } finally {
       setAlerting(false);
     }
@@ -341,6 +348,7 @@ function EmergencySheet({ booking, onClose }: { booking: Booking; onClose: () =>
           </TouchableOpacity>
         </View>
       </View>
+      <ConfirmDialog dialog={dialog} onDismiss={() => setDialog(null)} />
     </Modal>
   );
 }
@@ -362,10 +370,17 @@ function ReportSheet({ booking, onClose }: { booking: Booking; onClose: () => vo
   const [category,    setCategory]    = useState<SafetyCategory>('OTHER');
   const [description, setDescription] = useState('');
   const [submitting,  setSubmitting]  = useState(false);
+  const [dialog, setDialog] = useState<ConfirmDialogConfig | null>(null);
 
   const handleSubmit = async () => {
     if (!description.trim()) {
-      Alert.alert('Description required', 'Please describe the issue briefly.');
+      setDialog({
+        title: 'Description required',
+        message: 'Please describe the issue briefly.',
+        hideCancel: true,
+        confirmLabel: 'OK',
+        onConfirm: () => setDialog(null),
+      });
       return;
     }
     setSubmitting(true);
@@ -377,13 +392,22 @@ function ReportSheet({ booking, onClose }: { booking: Booking; onClose: () => vo
         description:      description.trim(),
         tos_acknowledged: true,
       });
-      Alert.alert(
-        'Report submitted',
-        'Our team will review this promptly. A single credible report may result in the provider being restricted while we investigate.',
-        [{ text: 'OK', onPress: onClose }],
-      );
+      setDialog({
+        title: 'Report submitted',
+        message: 'Our team will review this promptly. A single credible report may result in the provider being restricted while we investigate.',
+        hideCancel: true,
+        confirmLabel: 'OK',
+        onConfirm: () => { setDialog(null); onClose(); },
+      });
     } catch {
-      Alert.alert('Submission failed', 'Could not submit the report. Please try again.');
+      setDialog({
+        title: 'Submission failed',
+        message: 'Could not submit the report. Please try again.',
+        destructive: true,
+        hideCancel: true,
+        confirmLabel: 'OK',
+        onConfirm: () => setDialog(null),
+      });
     } finally {
       setSubmitting(false);
     }
@@ -460,6 +484,7 @@ function ReportSheet({ booking, onClose }: { booking: Booking; onClose: () => vo
           </Button>
         </View>
       </View>
+      <ConfirmDialog dialog={dialog} onDismiss={() => setDialog(null)} />
     </Modal>
   );
 }
@@ -492,42 +517,41 @@ function BookingCard({
   const catIcon  = (booking.service.category_icon ?? 'briefcase-outline') as any;
   const remaining = useCountdown(status === 'DELIVERED' ? booking.auto_release_at : null);
   const isDirect  = mode === 'DIRECT';
+  const [dialog, setDialog] = useState<ConfirmDialogConfig | null>(null);
 
   const confirmComplete = () =>
-    Alert.alert(
-      'Confirm completion',
-      isDirect
+    setDialog({
+      title: 'Confirm completion',
+      message: isDirect
         ? `Confirm that ${provName} completed the work. This closes the booking.`
         : `This will release payment to ${provName}. You won't be able to dispute after confirming.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: isDirect ? 'Confirm done' : 'Confirm & release', onPress: () => onComplete(booking.id) },
-      ],
-    );
+      confirmLabel: isDirect ? 'Confirm done' : 'Confirm & release',
+      onConfirm: () => { setDialog(null); onComplete(booking.id); },
+    });
 
   const confirmCancel = () =>
-    Alert.alert(
-      'Cancel booking',
-      'Are you sure? Cancellation may affect your account rating.',
-      [
-        { text: 'Keep booking',   style: 'cancel'      },
-        { text: 'Cancel booking', style: 'destructive', onPress: () => onCancel(booking.id) },
-      ],
-    );
+    setDialog({
+      title: 'Cancel booking',
+      message: 'Are you sure? Cancellation may affect your account rating.',
+      destructive: true,
+      confirmLabel: 'Cancel booking',
+      cancelLabel: 'Keep booking',
+      onConfirm: () => { setDialog(null); onCancel(booking.id); },
+    });
 
   const confirmAcceptQuote = () => {
     const quoted = booking.agreed_amount;
-    Alert.alert(
-      'Accept this quote?',
-      `The provider has quoted ${quoted != null ? fmtAmount(quoted) : '—'} for this booking. Accept?`,
-      [
-        { text: 'Not now',      style: 'cancel' },
-        { text: 'Accept quote', onPress: () => onAcceptQuote(booking.id) },
-      ],
-    );
+    setDialog({
+      title: 'Accept this quote?',
+      message: `The provider has quoted ${quoted != null ? fmtAmount(quoted) : '—'} for this booking. Accept?`,
+      confirmLabel: 'Accept quote',
+      cancelLabel: 'Not now',
+      onConfirm: () => { setDialog(null); onAcceptQuote(booking.id); },
+    });
   };
 
   return (
+    <>
     <TouchableRipple
       style={styles.card}
       onPress={() => navigation.navigate('BookingDetail', { bookingId: booking.id })}
@@ -775,6 +799,8 @@ function BookingCard({
         )}
       </View>
     </TouchableRipple>
+    <ConfirmDialog dialog={dialog} onDismiss={() => setDialog(null)} />
+    </>
   );
 }
 
@@ -798,6 +824,10 @@ export default function BookingsScreen({ navigation }: any) {
   useFocusEffect(
     useCallback(() => { fetchBookings(true); }, [fetchBookings]),
   );
+
+  // Live: a realtime booking event refreshes the list without a manual reload.
+  const rtBookingRevision = useRealtimeStore((s) => s.bookingRevision);
+  useEffect(() => { if (rtBookingRevision > 0) fetchBookings(true); }, [rtBookingRevision]);
 
   useEffect(() => {
     if (error) { showError(error.message); clearError(); }

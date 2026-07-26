@@ -65,10 +65,11 @@ export const kycApi = {
   getStatus: () =>
     api.get<KycStatus>('/kyc/'),
 
-  /** Tier 1 — selfie + legal name */
-  submitTier1: (legalName: string, selfieUri: string) => {
+  /** Tier 1 — legal name + NRC number + selfie (NRC is mandatory, § CTR-1) */
+  submitTier1: (legalName: string, nrcNumber: string, selfieUri: string) => {
     const form = buildForm({
       legal_name: legalName,
+      nrc_number: nrcNumber,
       selfie: { uri: selfieUri, type: 'image/jpeg', name: 'selfie.jpg' },
     });
     return api.upload<SubmitDocumentResponse>('/kyc/tier1', form);

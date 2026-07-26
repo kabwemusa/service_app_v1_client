@@ -83,6 +83,7 @@ export default function KycScreen({ navigation, route }: any) {
 
   // Tier 1 capture
   const [legalName, setLegalName] = useState('');
+  const [nrcNumber, setNrcNumber] = useState('');
   const [idMode, setIdMode] = useState<IdMode>('two_side');
   const [nrcUri, setNrcUri] = useState<string | null>(null);       // front (two_side)
   const [nrcBackUri, setNrcBackUri] = useState<string | null>(null); // back (two_side)
@@ -176,13 +177,17 @@ export default function KycScreen({ navigation, route }: any) {
   const idBackUri = idMode === 'two_side' ? nrcBackUri : null;
   const idReady = idMode === 'two_side' ? !!nrcUri && !!nrcBackUri : !!copyUri;
 
+  // Zambian NRC canonical format: 123456/78/1 (spaces tolerated).
+  const nrcClean = nrcNumber.replace(/\s+/g, '');
+  const nrcValid = /^\d{6}\/\d{2}\/\d$/.test(nrcClean);
+
   const handleSubmitTier1 = async () => {
-    if (!idDocUri || !selfieUri || legalName.trim().length < 2 || !idReady) return;
+    if (!idDocUri || !selfieUri || legalName.trim().length < 2 || !idReady || !nrcValid) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    // Tier 1 base = selfie + legal name, then the NRC document pipeline. The
-    // document may be two photos (front + back) or one copy (photo or PDF); both
-    // write the provider_verifications the dispatch gate reads.
-    const okSelfie = await kyc.submitTier1(legalName.trim(), selfieUri);
+    // Tier 1 = legal name + NRC number (mandatory) + selfie, then the NRC document
+    // pipeline. The document may be two photos (front + back) or one copy (photo or
+    // PDF); both write the provider_verifications the dispatch gate reads.
+    const okSelfie = await kyc.submitTier1(legalName.trim(), nrcClean, selfieUri);
     if (!okSelfie) return showError(kyc.error?.message ?? 'Could not submit your selfie.');
     const okDoc = await kyc.submitDocument('NRC', idDocUri, selfieUri, idBackUri);
     if (!okDoc) return showError(kyc.error?.message ?? 'Could not submit your NRC.');
@@ -275,7 +280,7 @@ export default function KycScreen({ navigation, route }: any) {
 
   // ── Tier 1 capture (NRC + selfie) ───────────────────────────────────────────
   if (step === 'tier1') {
-    const canSubmit = idReady && !!selfieUri && legalName.trim().length >= 2;
+    const canSubmit = idReady && !!selfieUri && legalName.trim().length >= 2 && nrcValid;
     return (
       <SafeAreaView style={styles.safe}>
         <ScrollView contentContainerStyle={styles.scroll}>
@@ -292,6 +297,22 @@ export default function KycScreen({ navigation, route }: any) {
               style={styles.input}
               outlineStyle={styles.inputOutline}
               left={<TextInput.Icon icon="account-outline" />}
+            />
+          </View>
+
+          <View style={styles.card}>
+            <TextInput
+              mode="outlined"
+              label="NRC number"
+              placeholder="123456/78/1"
+              value={nrcNumber}
+              onChangeText={setNrcNumber}
+              autoCapitalize="none"
+              keyboardType="numbers-and-punctuation"
+              error={nrcNumber.length > 0 && !nrcValid}
+              style={styles.input}
+              outlineStyle={styles.inputOutline}
+              left={<TextInput.Icon icon="card-account-details-outline" />}
             />
           </View>
 

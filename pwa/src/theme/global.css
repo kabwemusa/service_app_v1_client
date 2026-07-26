@@ -122,11 +122,13 @@ img { max-width: 100%; display: block; }
 @keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 
-/* Browse results — responsive card grid (1 col on phones, more on wider screens). */
+/* Browse results — the grid lives inside the 480px .app-shell, so it must size
+   to the CONTAINER, not the viewport. auto-fill + minmax keeps it a single
+   full-width card column in the phone-width shell (and would adapt only if the
+   shell itself ever widened). Previously viewport media queries crammed 2–3
+   columns into the 480px shell on desktop. */
 .browse-grid {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: var(--space-md);
 }
-@media (min-width: 560px) { .browse-grid { grid-template-columns: repeat(2, 1fr); } }
-@media (min-width: 900px) { .browse-grid { grid-template-columns: repeat(3, 1fr); } }

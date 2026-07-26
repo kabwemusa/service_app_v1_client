@@ -97,8 +97,10 @@ class AdminBookingService
 
     public function detail(string $bookingId): array
     {
-        $booking = Booking::with(['buyer', 'provider.providerProfile', 'service.category', 'commission', 'dispute', 'review'])
-            ->find($bookingId);
+        $booking = Booking::with([
+            'buyer', 'provider.providerProfile', 'service.category', 'commission', 'dispute', 'review',
+            'statusUpdates', 'callSessions', 'agreements',
+        ])->find($bookingId);
 
         if (!$booking) {
             throw new NotFoundException('Booking');
@@ -136,6 +138,8 @@ class AdminBookingService
 
             'delivery_location_label' => $booking->delivery_location_label,
             'delivery_location_region' => $booking->delivery_location_region,
+            // Remote (online) services carry no location — show "Online" in the panel.
+            'is_remote'               => (bool) $booking->service?->isRemote(),
 
             'timeline' => [
                 'created_at'               => $this->iso($booking->created_at),
@@ -149,6 +153,19 @@ class AdminBookingService
                 'disbursed_at'             => $this->iso($booking->disbursed_at),
                 'expires_at'               => $this->iso($booking->expires_at),
             ],
+
+            // HOURLY_CAPPED observed timer — an auditable record for disputes:
+            // the actual server start/finish timestamps and any pauses, not
+            // conflicting claims about how long the job took.
+            'observed_timer' => $booking->service?->pricing_model === 'HOURLY_CAPPED' ? [
+                'job_started_at'   => $this->iso($booking->job_started_at),
+                'job_ended_at'     => $this->iso($booking->job_ended_at),
+                'observed_minutes' => $booking->observed_minutes !== null ? (int) $booking->observed_minutes : null,
+                'final_charge_zmw' => $booking->final_charge_zmw !== null ? (float) $booking->final_charge_zmw : null,
+                'approved_cap_zmw' => (float) ($booking->agreed_amount ?? $booking->amount ?? 0),
+                'cap_extension_zmw' => $booking->cap_extension_zmw !== null ? (float) $booking->cap_extension_zmw : null,
+                'pause_events'     => $booking->pause_events ?? [],
+            ] : null,
 
             'commission' => $booking->commission ? [
                 'gross_amount'      => (float) $booking->commission->gross_amount,
@@ -171,6 +188,36 @@ class AdminBookingService
                 'rating'  => (float) $booking->review->rating,
                 'removed' => $booking->review->removed_at !== null,
             ] : null,
+
+            // Communication layer — masked calls + structured status updates, in
+            // one chronological feed for dispute resolution. PII-free: no phone
+            // numbers, no call content (calls log metadata only).
+            'communication_timeline' => $booking->statusUpdates->map(fn ($u) => [
+                'kind'       => 'status_update',
+                'type'       => $u->type,
+                'actor_role' => $u->actor_role,
+                'body'       => $u->body,
+                'at'         => $this->iso($u->created_at),
+            ])->concat($booking->callSessions->map(fn ($c) => [
+                'kind'             => 'call',
+                'initiator_role'   => $c->initiator_role,
+                'provider'         => $c->provider,
+                'status'           => $c->status,
+                'duration_seconds' => $c->duration_seconds,
+                'at'               => $this->iso($c->created_at),
+                'answered_at'      => $this->iso($c->answered_at),
+                'ended_at'         => $this->iso($c->ended_at),
+            ]))->sortBy('at')->values()->all(),
+
+            // Booking Agreement versions (metadata only — the document itself is
+            // party-only, downloaded via the authenticated booking routes).
+            'agreements' => $booking->agreements->map(fn ($a) => [
+                'version'      => $a->version,
+                'reason'       => $a->reason,
+                'format'       => $a->format,
+                'generated_at' => $this->iso($a->generated_at),
+                'terms_version' => $a->terms_version,
+            ])->values()->all(),
 
             'escrow_events' => $pawapayEvents->map(fn ($e) => [
                 'id'             => $e->id,

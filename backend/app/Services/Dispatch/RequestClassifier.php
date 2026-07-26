@@ -11,6 +11,7 @@ class RequestClassifier
     {
         $service  = Service::with('category')->find($serviceId);
         $riskTier = (int) ($service?->category?->risk_tier ?? 1);
+        $isRemote = (bool) $service?->isRemote();
 
         $start    = Carbon::parse($scheduledStart, 'Africa/Lusaka');
         $hoursOut = max(0, now()->diffInHours($start, false));
@@ -24,7 +25,9 @@ class RequestClassifier
             $mode = 'instant';
         }
 
-        $geoMode = $riskTier === 1 ? 'nationwide' : 'rings';
+        // Remote (online) services dispatch nationwide regardless of category —
+        // no rings, no distance.
+        $geoMode = ($isRemote || $riskTier === 1) ? 'nationwide' : 'rings';
 
         return [
             'risk_tier'    => $riskTier,

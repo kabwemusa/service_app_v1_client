@@ -39,7 +39,7 @@ final class IdentifierHash
 
     private static function hash(string $normalized): string
     {
-        $pepper = config('app.kyc_hash_pepper', env('KYC_HASH_PEPPER', 'default-pepper'));
+        $pepper = config('app.kyc_hash_pepper', 'default-pepper');
 
         return hash('sha256', $normalized . $pepper);
     }

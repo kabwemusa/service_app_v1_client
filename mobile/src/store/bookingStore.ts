@@ -46,8 +46,13 @@ interface BookingState {
 
   // Shared actions
   start:          (id: string) => Promise<Booking>;
-  /** actualHours — HOURLY_CAPPED providers log actual time (0.5-hr steps). */
-  deliver:        (id: string, actualHours?: number) => Promise<Booking>;
+  /** HOURLY_CAPPED "Finish": elapsed time is computed server-side — no hours input. */
+  deliver:        (id: string) => Promise<Booking>;
+  // HOURLY_CAPPED observed timer — pause/resume + the customer-authorised cap raise.
+  pauseTimer:          (id: string) => Promise<Booking>;
+  resumeTimer:         (id: string) => Promise<Booking>;
+  requestCapExtension: (id: string) => Promise<Booking>;
+  approveCapExtension: (id: string, additionalHours: number, momoNumber?: string) => Promise<Booking>;
   complete:       (id: string) => Promise<Booking>;
   dispute:        (id: string, params: OpenDisputeParams) => Promise<Booking>;
   cancel:         (id: string) => Promise<Booking>;
@@ -274,10 +279,70 @@ export const useBookingStore = create<BookingState>((set, get) => ({
     }
   },
 
-  deliver: async (id, actualHours) => {
+  deliver: async (id) => {
     set({ submitting: true, error: null });
     try {
-      const booking = await bookingsApi.deliver(id, actualHours);
+      const booking = await bookingsApi.deliver(id);
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
+      return booking;
+    } catch (e) {
+      const err = toApiError(e);
+      set({ error: err });
+      throw err;
+    } finally {
+      set({ submitting: false });
+    }
+  },
+
+  pauseTimer: async (id) => {
+    set({ submitting: true, error: null });
+    try {
+      const booking = await bookingsApi.pauseTimer(id);
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
+      return booking;
+    } catch (e) {
+      const err = toApiError(e);
+      set({ error: err });
+      throw err;
+    } finally {
+      set({ submitting: false });
+    }
+  },
+
+  resumeTimer: async (id) => {
+    set({ submitting: true, error: null });
+    try {
+      const booking = await bookingsApi.resumeTimer(id);
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
+      return booking;
+    } catch (e) {
+      const err = toApiError(e);
+      set({ error: err });
+      throw err;
+    } finally {
+      set({ submitting: false });
+    }
+  },
+
+  requestCapExtension: async (id) => {
+    set({ submitting: true, error: null });
+    try {
+      const booking = await bookingsApi.requestCapExtension(id);
+      set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
+      return booking;
+    } catch (e) {
+      const err = toApiError(e);
+      set({ error: err });
+      throw err;
+    } finally {
+      set({ submitting: false });
+    }
+  },
+
+  approveCapExtension: async (id, additionalHours, momoNumber) => {
+    set({ submitting: true, error: null });
+    try {
+      const booking = await bookingsApi.approveCapExtension(id, additionalHours, momoNumber);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
       return booking;
     } catch (e) {

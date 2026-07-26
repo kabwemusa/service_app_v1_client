@@ -142,6 +142,7 @@ class ProviderOnboardingTest extends TestCase
     {
         $this->postJson('/api/provider/onboarding/identity', [
             'nrc_front'   => UploadedFile::fake()->image('nrc.jpg'),
+            'nrc_number'  => '123456/78/1',
             'selfie'      => UploadedFile::fake()->image('selfie.jpg'),
             'momo_number' => '+260971234567',
             'momo_provider' => 'MTN',

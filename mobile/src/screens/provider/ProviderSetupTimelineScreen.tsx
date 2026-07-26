@@ -12,6 +12,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Card, Divider } from '../../components/ui/Card';
 import { ScreenHeader } from '../../components/ui/ScreenHeader';
 import { CardSkeleton } from '../../components/ui/SkeletonBlock';
+import { useAuthStore } from '../../store/authStore';
 import { useProfileStore } from '../../store/profileStore';
 import { palette, radius as r, spacing, typography } from '../../theme';
 
@@ -47,7 +48,7 @@ interface Milestone {
 
 const MILESTONES: Milestone[] = [
   { key: 'account',  num: 1, icon: 'call-outline',           title: 'Create account',   sub: 'Phone number verified' },
-  { key: 'profile',  num: 2, icon: 'person-circle-outline',  title: 'Your profile',     sub: 'Name, photo, area & languages', route: { name: 'ProviderProfileEdit', step: 2 } },
+  { key: 'profile',  num: 2, icon: 'person-circle-outline',  title: 'Your profile',     sub: 'Name, photo, bio & languages', route: { name: 'ProviderProfileEdit', step: 2 } },
   { key: 'service',  num: 3, icon: 'construct-outline',      title: 'Add your service', sub: 'Category, price & availability', route: { name: 'CreateService', step: 3 } },
   { key: 'identity', num: 4, icon: 'shield-checkmark-outline', title: 'Verify identity', sub: 'NRC + selfie · Tier 1',        route: { name: 'Kyc', step: 4 } },
   { key: 'payment',  num: 5, icon: 'cash-outline',           title: 'Payment details',  sub: 'Mobile-money payout number',    route: { name: 'ProviderSetup', step: 5 } },
@@ -56,6 +57,10 @@ const MILESTONES: Milestone[] = [
 
 export default function ProviderSetupTimelineScreen({ navigation }: any) {
   const { profile, dashboard, loading, fetchProfile, fetchDashboard } = useProfileStore();
+  const authUser = useAuthStore((s) => s.user);
+  // Reflect the real verification channel (phone → SMS, email → email), not a
+  // hardcoded "phone" that misleads email-registered providers.
+  const accountSub = authUser?.phone ? 'Phone number verified' : 'Email verified';
   const insets = useSafeAreaInsets();
   const scheme = useColorScheme();
   const c = scheme === 'dark' ? DARK : LIGHT;
@@ -72,11 +77,16 @@ export default function ProviderSetupTimelineScreen({ navigation }: any) {
   const listing = dashboard?.listing;
   const stepDone = (key: string) => listing?.steps.find((s) => s.key === key)?.done ?? false;
 
-  // Milestone completion — derived purely from existing store data; the three
-  // server gates (mirrored here) plus the MoMo fields already on the profile.
+  // Milestone completion — derived purely from existing store data.
+  // NOTE: `profile` is NOT the `profile_strength` search gate (completeness ≥ 40).
+  // That score only reaches 40 via KYC + MoMo + services (later steps), so tying
+  // this milestone to it made "Your profile" impossible to finish — a provider who
+  // filled name/photo/bio/languages sat at ~20 forever. It reflects the fields the
+  // profile editor actually collects instead: name + bio.
+  const profileDone = !!profile?.display_name?.trim() && !!profile?.bio?.trim();
   const done: Record<MilestoneKey, boolean> = {
     account: true, // authenticated providers have a verified phone by definition
-    profile: stepDone('profile_strength'),
+    profile: profileDone,
     service: stepDone('active_service'),
     identity: stepDone('verify_identity') || (profile?.trust_tier ?? 0) >= 1,
     payment: !!profile?.momo_number && !!profile?.momo_provider,
@@ -173,10 +183,11 @@ export default function ProviderSetupTimelineScreen({ navigation }: any) {
           {MILESTONES.map((m, i) => {
             const state = stateFor(m.key);
             const last = i === MILESTONES.length - 1;
+            const shown = m.key === 'account' ? { ...m, sub: accountSub } : m;
             return (
               <TimelineRow
                 key={m.key}
-                m={m}
+                m={shown}
                 state={state}
                 last={last}
                 connectorDone={done[m.key]}

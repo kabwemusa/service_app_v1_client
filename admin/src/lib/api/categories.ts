@@ -20,6 +20,23 @@ export const COMMISSION_BANDS = [
 
 export type CommissionBandValue = (typeof COMMISSION_BANDS)[number]['value']
 
+// ── Pricing models (labels mirror config/pricing.php — the provider/customer
+// surfaces read them from GET /pricing-models; this static list is only the
+// admin control for choosing a category's guidance). ──────────────────────────
+export const PRICING_MODELS = [
+  { value: 'OUTCOME_FIXED',  label: 'Fixed price' },
+  { value: 'PROVIDER_SCOPE', label: 'Price after you see the job' },
+  { value: 'HOURLY_CAPPED',  label: 'Time-based (open-ended)' },
+  { value: 'QUOTE_DEPOSIT',  label: 'Quote with deposit' },
+] as const
+
+export type PricingModelValue = (typeof PRICING_MODELS)[number]['value']
+
+export function pricingModelLabel(value: string | null | undefined): string {
+  if (!value) return '—'
+  return PRICING_MODELS.find((m) => m.value === value)?.label ?? value
+}
+
 export function bandLabel(value: string | null | undefined): string {
   if (!value) return '—'
   return COMMISSION_BANDS.find((b) => b.value === value)?.label ?? value
@@ -47,6 +64,11 @@ export interface AdminCategory {
   display_order: number
   commission_band: string | null
   commission_rates: Record<string, number> | null
+  // Category-driven pricing-model guidance (admin-editable).
+  default_pricing_model: string | null
+  recommended_pricing_models: string[] | null
+  pricing_rationale: string | null
+  pricing_mismatch_warning: string | null
   children: AdminCategory[]
 }
 
@@ -60,6 +82,10 @@ export interface CategoryPayload {
   is_active?: boolean
   commission_band?: string | null
   commission_rates?: Record<string, number>
+  default_pricing_model?: string | null
+  recommended_pricing_models?: string[] | null
+  pricing_rationale?: string | null
+  pricing_mismatch_warning?: string | null
   reason: string
 }
 

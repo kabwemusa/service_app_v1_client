@@ -96,7 +96,7 @@ export function PaymentConfirmDialog({
                 <Text style={styles.numberText}>{formatPhoneDisplay(accountPhone)}</Text>
               </View>
               <Text style={styles.helper}>
-                We'll send a Mobile Money prompt to this number. Approve it on your phone to hold the funds.
+                We'll send a Mobile Money prompt to this number. Approve it on your phone to pay.
               </Text>
 
               <TouchableRipple

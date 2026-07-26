@@ -1,61 +1,120 @@
 import { Ionicons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
-import React from "react";
+import { Image } from "expo-image";
+import React, { useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
-import {
-  Divider,
-  SegmentedButtons,
-  Text,
-  TouchableRipple,
-} from "react-native-paper";
+import { Text, TouchableRipple } from "react-native-paper";
 import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
+import { storageUrl } from "../../api/client";
+import { ScreenHeader } from "../../components/ui/ScreenHeader";
+import { useSnackbar } from "../../providers/SnackbarProvider";
 import { useAuthStore } from "../../store/authStore";
 import { palette, radius as r, spacing, typography } from "../../theme";
 
-interface MenuItemProps {
-  icon: React.ComponentProps<typeof Ionicons>["name"];
-  label: string;
-  onPress: () => void;
-  danger?: boolean;
+type IconName = React.ComponentProps<typeof Ionicons>["name"];
+
+function initials(value?: string | null): string {
+  if (!value) return "";
+  const local = value.split("@")[0];
+  const parts = local.split(/[.\s_-]+/).filter(Boolean);
+  const take = parts.length >= 2 ? [parts[0], parts[1]] : [local];
+  return take.map((p) => p[0]).join("").slice(0, 2).toUpperCase();
 }
 
-function MenuItem({ icon, label, onPress, danger }: MenuItemProps) {
+// ── Row primitive (mirrors ProviderAccountScreen for a consistent language) ──
+function Row({
+  icon,
+  label,
+  sub,
+  value,
+  onPress,
+  danger,
+}: {
+  icon: IconName;
+  label: string;
+  sub?: string;
+  value?: string;
+  onPress?: () => void;
+  danger?: boolean;
+}) {
   return (
-    <TouchableRipple onPress={onPress} borderless style={styles.menuItem}>
-      <View style={styles.menuItemInner}>
-        <Ionicons
-          name={icon}
-          size={20}
-          color={danger ? palette.danger : palette.textSecondary}
-        />
-        <Text style={[styles.menuLabel, danger && styles.menuLabelDanger]}>
-          {label}
-        </Text>
-        <Ionicons
-          name="chevron-forward"
-          size={16}
-          color={palette.textDisabled}
-        />
+    <TouchableRipple
+      onPress={onPress}
+      borderless
+      accessibilityRole="button"
+      accessibilityLabel={value ? `${label}: ${value}` : label}
+    >
+      <View style={styles.row}>
+        <View
+          style={[
+            styles.iconChip,
+            { backgroundColor: danger ? palette.dangerLight : palette.primaryLight },
+          ]}
+        >
+          <Ionicons
+            name={icon}
+            size={18}
+            color={danger ? palette.danger : palette.primary}
+          />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text
+            style={[styles.rowLabel, danger && { color: palette.danger }]}
+            numberOfLines={1}
+          >
+            {label}
+          </Text>
+          {sub && (
+            <Text style={styles.rowSub} numberOfLines={2}>
+              {sub}
+            </Text>
+          )}
+        </View>
+        {value && (
+          <Text style={styles.rowValue} numberOfLines={1}>
+            {value}
+          </Text>
+        )}
+        {onPress && (
+          <Ionicons name="chevron-forward" size={16} color={palette.textDisabled} />
+        )}
       </View>
     </TouchableRipple>
   );
 }
 
+function Divider({ inset }: { inset?: boolean }) {
+  return <View style={[styles.divider, inset && styles.dividerInset]} />;
+}
+
 export default function ProfileScreen({ navigation }: any) {
   const { logout, user, activeRole, setActiveRole } = useAuthStore();
+  const { showSnackbar } = useSnackbar();
   const insets = useSafeAreaInsets();
 
-  // v3 §2.1 — `role: 'PROVIDER'` accounts can both buy and sell on the same
-  // account; `activeRole` is purely a UI-mode toggle (brief §3) that decides
-  // which 5-tab layout renders. `role` itself never changes here.
+  // v3 §2.1 — a PROVIDER-role account can both buy and sell on one account;
+  // `activeRole` is purely a UI-mode toggle. `role` itself never changes here.
   const canSwitchRoles = user?.role === "PROVIDER";
-  const isProviderMode = canSwitchRoles && activeRole === "PROVIDER";
+
+  // Display name takes over from the raw identifier everywhere identity shows.
+  const legalName = user?.legal_name?.trim() || null;
+  const identity = legalName ?? user?.email ?? user?.phone ?? "Your account";
+  const roleLabel = canSwitchRoles ? "Customer & provider" : "Customer";
+  const contactLine = legalName ? user?.email ?? user?.phone ?? null : null;
+  const subLine = [contactLine, roleLabel].filter(Boolean).join(" · ");
+  const avatarInitials = initials(legalName ?? user?.email ?? user?.phone);
+  const [avatarFailed, setAvatarFailed] = useState(false);
+
+  const soon = (what: string) => () =>
+    showSnackbar({
+      message: `${what} is coming soon — we'll let you know when it launches.`,
+    });
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
+      <ScreenHeader title="Profile" />
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[
@@ -63,101 +122,111 @@ export default function ProfileScreen({ navigation }: any) {
           { paddingBottom: insets.bottom + 104 },
         ]}
       >
-        <LinearGradient
-          colors={[palette.primary, palette.primaryLight]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.hero}
-        >
-          <View style={styles.avatar}>
-            <Ionicons name="person-outline" size={36} color="#FFFFFF" />
-          </View>
-          <Text style={styles.nameText}>Your Account</Text>
-          <Text style={styles.roleText}>
-            {canSwitchRoles
-              ? `Customer & Provider · ${
-                  isProviderMode ? "Provider mode" : "Customer mode"
-                }`
-              : "Customer"}
-          </Text>
-          {!!user?.email && <Text style={styles.emailText}>{user.email}</Text>}
-        </LinearGradient>
-
-        {/* Brief §3 — role switch lives in the account menu; tab bar swaps to match. */}
-        {canSwitchRoles && (
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>Browsing as</Text>
-            <View style={[styles.card, styles.switchCard]}>
-              <SegmentedButtons
-                value={activeRole}
-                onValueChange={(value) =>
-                  setActiveRole(value as "CUSTOMER" | "PROVIDER")
-                }
-                buttons={[
-                  {
-                    value: "CUSTOMER",
-                    label: "Customer",
-                    icon: "account-outline",
-                  },
-                  {
-                    value: "PROVIDER",
-                    label: "Provider",
-                    icon: "briefcase-outline",
-                  },
-                ]}
+        {/* ── Header: avatar + identity ── */}
+        <View style={styles.header}>
+          <TouchableRipple
+            onPress={() => navigation.navigate("EditProfile")}
+            borderless
+            style={styles.avatar}
+            accessibilityRole="button"
+            accessibilityLabel="Edit profile photo"
+          >
+            {user?.avatar_url && !avatarFailed ? (
+              <Image
+                source={{ uri: storageUrl(user.avatar_url) }}
+                style={styles.avatarImg}
+                contentFit="cover"
+                onError={() => setAvatarFailed(true)}
               />
-              <Text style={styles.switchHint}>
-                {isProviderMode
-                  ? "Showing your business tools — Hub, requests, services, and earnings."
-                  : "Showing the customer experience — browse, book, and manage your bookings."}
-              </Text>
-            </View>
+            ) : avatarInitials ? (
+              <Text style={styles.avatarText}>{avatarInitials}</Text>
+            ) : (
+              <Ionicons name="person" size={30} color={palette.primary} />
+            )}
+          </TouchableRipple>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.name} numberOfLines={1}>
+              {identity}
+            </Text>
+            <Text style={styles.roleSub} numberOfLines={1}>
+              {subLine}
+            </Text>
           </View>
-        )}
+        </View>
 
+        {/* ── Account ── */}
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Account</Text>
+          <Text style={styles.groupLabel}>Account</Text>
           <View style={styles.card}>
-            <MenuItem
+            <Row
               icon="person-circle-outline"
-              label="Edit Profile"
+              label="Edit profile"
+              sub="Name & phone number"
               onPress={() => navigation.navigate("EditProfile")}
             />
-            <Divider />
-            <MenuItem
+            <Divider inset />
+            <Row
               icon="location-outline"
-              label="Saved Places"
+              label="Saved places"
+              sub="Home, work & other locations"
               onPress={() => navigation.navigate("SavedLocations")}
             />
             {canSwitchRoles && (
               <>
-                <Divider />
-                <MenuItem
+                <Divider inset />
+                <Row
                   icon="shield-checkmark-outline"
-                  label="Identity Verification"
+                  label="Identity verification"
+                  sub="Manage your ID & clearances"
                   onPress={() => navigation.navigate("Kyc")}
                 />
               </>
             )}
-            <Divider />
-            <MenuItem
+          </View>
+        </View>
+
+        {/* ── Settings ── */}
+        <View style={styles.section}>
+          <Text style={styles.groupLabel}>Settings</Text>
+          <View style={styles.card}>
+            <Row
               icon="notifications-outline"
               label="Notifications"
-              onPress={() => {}}
+              onPress={() => navigation.navigate("NotificationSettings")}
             />
-            <Divider />
-            <MenuItem
+            <Divider inset />
+            <Row
               icon="help-circle-outline"
-              label="Help & Support"
-              onPress={() => {}}
+              label="Help & support"
+              onPress={soon("Help & support")}
             />
-            <Divider />
-            <MenuItem
-              icon="log-out-outline"
-              label="Log Out"
-              onPress={logout}
-              danger
+            <Divider inset />
+            <Row
+              icon="lock-closed-outline"
+              label="Privacy & consent"
+              sub="Manage consent & your data rights"
+              onPress={() => navigation.navigate("PrivacyConsent")}
             />
+            <Divider inset />
+            <Row
+              icon="document-text-outline"
+              label="Legal & policies"
+              sub="Terms, Privacy Policy & User Agreement"
+              onPress={() => navigation.navigate("Legal")}
+            />
+            {canSwitchRoles && (
+              <>
+                <Divider inset />
+                <Row
+                  icon="swap-horizontal-outline"
+                  label="Switch to provider"
+                  sub="Show your Hub, jobs, services & earnings"
+                  onPress={() => setActiveRole("PROVIDER")}
+                />
+              </>
+            )}
+            <Divider inset />
+            <Row icon="log-out-outline" label="Sign out" onPress={logout} danger />
           </View>
         </View>
 
@@ -171,69 +240,78 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: palette.background },
   scroll: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
 
-  hero: {
-    borderRadius: r.sm,
-    paddingVertical: spacing.xl,
-    paddingHorizontal: spacing.lg,
+  // Header
+  header: {
+    flexDirection: "row",
     alignItems: "center",
+    gap: spacing.md,
     marginBottom: spacing.lg,
-
   },
   avatar: {
-    width: 78,
-    height: 78,
+    width: 64,
+    height: 64,
     borderRadius: r.full,
-    backgroundColor: "#FFFFFF33",
-    borderWidth: 1,
-    borderColor: "#FFFFFF40",
+    backgroundColor: palette.primaryLight,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: spacing.sm,
+    overflow: "hidden",
   },
-  nameText: {
-    ...typography.heading3,
-    color: "#FFFFFF",
-    marginBottom: 2,
+  avatarImg: {
+    width: "100%",
+    height: "100%",
   },
-  roleText: {
+  avatarText: {
+    fontFamily: "DMSans_600SemiBold",
+    fontSize: 22,
+    color: palette.primary,
+  },
+  name: { ...typography.heading3, fontSize: 19, color: palette.textPrimary },
+  roleSub: {
     ...typography.bodySmall,
-    color: "#E9F5FF",
-  },
-  emailText: {
-    ...typography.bodySmall,
-    color: "#D9EAFF",
+    fontSize: 13,
+    color: palette.textSecondary,
     marginTop: 2,
   },
 
+  // Sections
   section: { marginBottom: spacing.lg },
-  sectionLabel: {
+  groupLabel: {
     ...typography.label,
+    fontSize: 13,
     color: palette.textSecondary,
     marginBottom: spacing.sm,
   },
   card: {
     backgroundColor: palette.surface,
     borderRadius: r.sm,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: palette.border,
     overflow: "hidden",
+    paddingHorizontal: spacing.md,
   },
-  switchCard: { padding: spacing.md, gap: spacing.sm },
-  switchHint: {
-    ...typography.bodySmall,
-    color: palette.textSecondary,
-    fontSize: 12.5,
-    lineHeight: 17,
-  },
-  menuItem: {},
-  menuItemInner: {
+
+  // Rows
+  row: {
     flexDirection: "row",
     alignItems: "center",
-    padding: spacing.md,
     gap: spacing.md,
+    minHeight: 56,
+    paddingVertical: spacing.xs,
   },
-  menuLabel: { ...typography.body, color: palette.textPrimary, flex: 1 },
-  menuLabelDanger: { color: palette.danger },
+  iconChip: {
+    width: 38,
+    height: 38,
+    borderRadius: r.sm,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rowLabel: { ...typography.body, fontSize: 16, color: palette.textPrimary },
+  rowSub: { ...typography.bodySmall, fontSize: 12, color: palette.textSecondary, marginTop: 1 },
+  rowValue: { ...typography.bodySmall, fontSize: 13, color: palette.textSecondary },
+
+  divider: { height: StyleSheet.hairlineWidth, backgroundColor: palette.border },
+  dividerInset: { marginLeft: 38 + spacing.md }, // icon chip + gap → aligns with row text
+
   version: {
     ...typography.bodySmall,
     color: palette.textDisabled,
