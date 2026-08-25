@@ -60,11 +60,11 @@ class AdminSettingsService
 
         // ── Alerts (recorded routing config — no dispatcher reads this yet) ──
         'alert_no_provider_rate_pct' => ['alerts', 'float', 15.0, 'No-provider rate threshold (%)', false],
-        'alert_pawapay_mismatch_count' => ['alerts', 'int', 5, 'PawaPay mismatch count threshold', false],
+        'alert_payment_mismatch_count' => ['alerts', 'int', 5, 'Payment reconciliation mismatch count threshold', false],
         'alert_cascade_depth_threshold' => ['alerts', 'int', 2, 'Cascade depth threshold', false],
         'alert_emergency_routing' => ['alerts', 'routing', ['roles' => ['trust_safety', 'super_admin'], 'channels' => ['in_app', 'email']], 'Emergency safety alert routing', false],
         'alert_no_provider_routing' => ['alerts', 'routing', ['roles' => ['analyst', 'super_admin'], 'channels' => ['in_app']], 'No-provider rate alert routing', false],
-        'alert_pawapay_mismatch_routing' => ['alerts', 'routing', ['roles' => ['finance', 'super_admin'], 'channels' => ['in_app', 'email']], 'PawaPay mismatch alert routing', false],
+        'alert_payment_mismatch_routing' => ['alerts', 'routing', ['roles' => ['finance', 'super_admin'], 'channels' => ['in_app', 'email']], 'Payment reconciliation mismatch alert routing', false],
     ];
 
     public function __construct(private readonly AuditedMutationService $audit) {}

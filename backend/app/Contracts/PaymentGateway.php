@@ -44,16 +44,22 @@ interface PaymentGateway
     /**
      * Refund held funds back to the customer.
      *
-     * @param  string  $holdRef    Gateway hold reference
+     * Not every processor can reverse the original collection — Lipila, for one,
+     * sends the money back as a fresh outbound disbursement with its own reference.
+     * Callers must therefore persist the returned reference (bookings.refund_ref)
+     * so the asynchronous outcome can be reconciled to the booking.
+     *
+     * @param  string  $holdRef    Gateway hold reference being reversed
      * @param  string  $payerPhone Customer's phone
      * @param  float   $amount     Amount to refund (full or partial)
-     * @return bool
+     * @return string|null  Gateway refund reference if the refund was initiated
+     *                      successfully, null on failure.
      */
     public function refund(
         string $holdRef,
         string $payerPhone,
         float  $amount,
-    ): bool;
+    ): ?string;
 
     /**
      * Query the status of a hold/transaction.

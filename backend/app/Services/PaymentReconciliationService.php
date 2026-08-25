@@ -128,11 +128,20 @@ class PaymentReconciliationService
     private function attempt(PaymentReconciliation $item, Booking $booking): bool
     {
         return match ($item->kind) {
-            PaymentReconciliation::KIND_REFUND => $this->gateway->refund(
-                (string) $item->hold_ref,
-                (string) $item->phone,
-                (float) $item->amount,
-            ),
+            // A refund is its own outbound transfer with its own reference —
+            // persist it so the async outcome reconciles back to the booking.
+            PaymentReconciliation::KIND_REFUND => (function () use ($item, $booking) {
+                $refundRef = $this->gateway->refund(
+                    (string) $item->hold_ref,
+                    (string) $item->phone,
+                    (float) $item->amount,
+                );
+                if ($refundRef === null) {
+                    return false;
+                }
+                $booking->update(['refund_ref' => $refundRef]);
+                return true;
+            })(),
 
             // Re-run the guarded disbursement; success is the booking landing DISBURSED.
             PaymentReconciliation::KIND_PAYOUT => (function () use ($booking) {

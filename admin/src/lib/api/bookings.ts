@@ -26,7 +26,7 @@ export interface EscrowEvent {
   id: string
   external_ref: string
   type: 'collection' | 'payout' | 'refund'
-  pawapay_status: string
+  provider_status: string
   mno: string | null
   amount: number | null
   created_at: string

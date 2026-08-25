@@ -32,6 +32,16 @@ Schedule::command(PayoutRetryWorker::class)->everyMinute()->withoutOverlapping()
 // failed after local state was committed, so a lost log line can't lose money.
 Schedule::command(\App\Console\Commands\ReconcilePaymentsWorker::class)->everyMinute()->withoutOverlapping();
 
+// Poll the gateway for outcomes whose CALLBACK never arrived. ReconcilePayments
+// above retries calls that failed on OUR side; this covers the opposite failure —
+// the call succeeded, the money moved, and the notification was lost. Without it
+// a missed callback strands a paid booking at PENDING_PAYMENT until the expiry
+// worker cancels it. Runs on a slower cadence than the workers above because it
+// costs an outbound API call per outstanding reference.
+Schedule::command(\App\Console\Commands\LipilaPollPending::class)
+    ->everyTwoMinutes()
+    ->withoutOverlapping();
+
 // § DB-8 — prune passive observability log tables past their retention (nightly).
 Schedule::command(\App\Console\Commands\PruneObservabilityLogs::class)->dailyAt('04:00')->withoutOverlapping();
 

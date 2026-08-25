@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "mobile",
+    "name": "Sebenza",
     "slug": "mobile",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -16,7 +16,8 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "We use your location to set your service area accurately."
-      }
+      },
+      "bundleIdentifier": "zm.co.sebenza.app"
     },
     "android": {
       "adaptiveIcon": {
@@ -25,11 +26,15 @@
       },
       "permissions": [
         "ACCESS_COARSE_LOCATION",
-        "ACCESS_FINE_LOCATION"
+        "ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
       ],
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "softwareKeyboardLayoutMode": "resize"
+      "softwareKeyboardLayoutMode": "resize",
+      "package": "zm.co.sebenza.app",
+      "googleServicesFile": "./google-services.json"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -51,6 +56,12 @@
           "sounds": []
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "b9cff60f-ebc7-4581-9c56-aeb24d080a21"
+      }
+    },
+    "owner": "micheal101"
   }
 }

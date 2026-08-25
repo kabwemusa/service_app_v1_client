@@ -14,6 +14,15 @@ interface BookingState {
   total:       number;
   loading:     boolean;
   submitting:  boolean;
+  /**
+   * Id of the booking whose action is in flight, or null.
+   *
+   * `submitting` alone is a single global flag, which is fine on the
+   * single-booking screens but wrong in a LIST: tapping "Pay now" on one row lit
+   * the spinner on every row and disabled every other row's actions. List
+   * screens must key their busy state on this instead.
+   */
+  submittingId: string | null;
   error:       ApiError | null;
 
   // §6.8 — provider incoming requests (separate slice)
@@ -66,9 +75,10 @@ const initialState = {
   page:       1,
   lastPage:   1,
   total:      0,
-  loading:    false,
-  submitting: false,
-  error:      null,
+  loading:      false,
+  submitting:   false,
+  submittingId: null,
+  error:        null,
 
   incomingRequests: null,
   incomingLoading:  false,
@@ -145,7 +155,7 @@ export const useBookingStore = create<BookingState>((set, get) => ({
   },
 
   pay: async (id, momoNumber) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.pay(id, momoNumber);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -155,12 +165,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   accept: async (id) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.accept(id);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -170,12 +180,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   quote: async (id, quotedAmount, extras) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.quote(id, quotedAmount, extras);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -185,12 +195,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   decline: async (id) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.decline(id);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -200,12 +210,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   acceptQuote: async (id) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.acceptQuote(id);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -215,12 +225,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   markPaid: async (id) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.markPaid(id);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -230,12 +240,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   approveQuote: async (id, momoNumber) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.approveQuote(id, momoNumber);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -245,12 +255,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   declineQuote: async (id) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.declineQuote(id);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -260,12 +270,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   start: async (id) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.start(id);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -275,12 +285,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   deliver: async (id) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.deliver(id);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -290,12 +300,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   pauseTimer: async (id) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.pauseTimer(id);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -305,12 +315,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   resumeTimer: async (id) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.resumeTimer(id);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -320,12 +330,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   requestCapExtension: async (id) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.requestCapExtension(id);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -335,12 +345,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   approveCapExtension: async (id, additionalHours, momoNumber) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.approveCapExtension(id, additionalHours, momoNumber);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -350,12 +360,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   complete: async (id) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.complete(id);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -365,12 +375,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   dispute: async (id, params) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const { booking } = await bookingsApi.dispute(id, params);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -380,12 +390,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   cancel: async (id) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.cancel(id);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -395,12 +405,12 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 
   review: async (id, rating, comment) => {
-    set({ submitting: true, error: null });
+    set({ submitting: true, submittingId: id, error: null });
     try {
       const booking = await bookingsApi.review(id, rating, comment);
       set((s: any) => ({ bookings: upsert(s.bookings, booking) }));
@@ -410,7 +420,7 @@ export const useBookingStore = create<BookingState>((set, get) => ({
       set({ error: err });
       throw err;
     } finally {
-      set({ submitting: false });
+      set({ submitting: false, submittingId: null });
     }
   },
 }));

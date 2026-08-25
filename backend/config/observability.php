@@ -4,7 +4,7 @@
 |--------------------------------------------------------------------------
 | Observability log retention (§ DB-8)
 |--------------------------------------------------------------------------
-| Passive log tables (WhatsApp webhook logs, PawaPay events) grow unbounded.
+| Passive log tables (WhatsApp webhook logs, payment events) grow unbounded.
 | Rows older than this many days are pruned nightly by PruneObservabilityLogs.
 */
 

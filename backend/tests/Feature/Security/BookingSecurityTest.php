@@ -35,7 +35,7 @@ class BookingSecurityTest extends TestCase
         $this->app->bind(PaymentGateway::class, fn () => new class implements PaymentGateway {
             public function holdFunds(string $p, float $a, string $b, float $c, float $d): string { return 'HOLD-' . Str::uuid(); }
             public function releaseFunds(string $h, string $p, float $a, string $b): ?string { return 'PAY-' . Str::uuid(); }
-            public function refund(string $h, string $p, float $a): bool { return true; }
+            public function refund(string $h, string $p, float $a): ?string { return 'REF-' . Str::uuid(); }
             public function status(string $h): array { return ['status' => 'HELD', 'amount' => 0.0, 'created_at' => now()->toIso8601String()]; }
         });
     }

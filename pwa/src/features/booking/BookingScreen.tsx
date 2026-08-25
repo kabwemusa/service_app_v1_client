@@ -46,7 +46,7 @@ export function BookingScreen() {
   const [agreementErr, setAgreementErr] = useState<string | null>(null);
 
   // Open the Booking Agreement PDF via a short-lived signed link. On the async
-  // (PawaPay) path the document may still be generating when this screen shows —
+  // (Lipila) path the document may still be generating when this screen shows —
   // surface a gentle "ready shortly" message rather than an error.
   async function openAgreement() {
     if (!bookingId || agreementBusy) return;
@@ -111,7 +111,9 @@ export function BookingScreen() {
   // ── Totals (display) ──
   const svcCost = (isCapped ? (svc?.cap_amount ?? svc?.base_price) : svc?.base_price) ?? 0;
   const addonSum = (svc?.addons ?? []).filter((a) => selectedAddons.has(a.id)).reduce((s, a) => s + a.price, 0);
-  const prot = !isDirect && !isQuote ? Math.min((svcCost + addonSum) * 0.02, 50) : 0;
+  // Buyer-protection fee REMOVED — see the note in the app's BookingSheet. Kept
+  // as a zero so the row (driven by `prot > 0`) and the total stay consistent.
+  const prot = 0;
   const total = svcCost + addonSum + prot;
 
   const briefComplete = !isQuote
@@ -388,9 +390,9 @@ export function BookingScreen() {
                   <span className="bk-fee-amt">K{a.price.toFixed(0)}</span>
                 </div>
               ))}
-              {!isDirect && (
+              {!isDirect && prot > 0 && (
                 <div className="bk-fee-row">
-                  <span className="bk-fee-lbl">Buyer protection (2%)</span>
+                  <span className="bk-fee-lbl">Buyer protection</span>
                   <span className="bk-fee-amt">K{prot.toFixed(0)}</span>
                 </div>
               )}

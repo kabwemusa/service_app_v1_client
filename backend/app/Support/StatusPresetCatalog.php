@@ -43,10 +43,6 @@ final class StatusPresetCatalog
                 $entry['requires']  = 'duration';
                 $entry['durations'] = array_values($durations);
             }
-            if (($p['requires'] ?? null) === 'note') {
-                $entry['requires']   = 'note';
-                $entry['max_length'] = (int) config('communication.note_max_length', 200);
-            }
             if ($drives) {
                 $entry['drives'] = $drives;
             }

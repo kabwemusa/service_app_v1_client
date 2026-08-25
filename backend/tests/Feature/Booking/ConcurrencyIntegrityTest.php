@@ -5,7 +5,7 @@ namespace Tests\Feature\Booking;
 use App\Contracts\PaymentGateway;
 use App\Models\Booking;
 use App\Models\Category;
-use App\Models\PawapayEvent;
+use App\Models\PaymentEvent;
 use App\Models\ProviderAvailability;
 use App\Models\ProviderProfile;
 use App\Models\ProviderVerification;
@@ -22,7 +22,7 @@ use Tests\TestCase;
 /**
  * Phase 2 — data-integrity & concurrency. Proves: no duplicate bookings on retry
  * (CON-1), a payout is disbursed at most once (TXN-1), a cancel refunds at most
- * once (TXN-3), and a redelivered deposit callback advances a booking once (TXN-5).
+ * once (TXN-3), and a redelivered collection webhook advances a booking once (TXN-5).
  */
 class ConcurrencyIntegrityTest extends TestCase
 {
@@ -40,8 +40,8 @@ class ConcurrencyIntegrityTest extends TestCase
     {
         parent::setUp();
         Queue::fake();
-        // Deterministic synchronous escrow (no async PawaPay HTTP) for the create path.
-        config()->set('pawapay.enabled', false);
+        // Deterministic synchronous escrow (no async Lipila HTTP) for the create path.
+        config()->set('lipila.enabled', false);
 
         $test = $this;
         $this->app->bind(PaymentGateway::class, fn () => new class($test) implements PaymentGateway {
@@ -51,9 +51,9 @@ class ConcurrencyIntegrityTest extends TestCase
                 $this->t->releases[] = ['amount' => $a, 'booking' => $b];
                 return 'PAY-' . Str::uuid();
             }
-            public function refund(string $h, string $p, float $a): bool {
+            public function refund(string $h, string $p, float $a): ?string {
                 $this->t->refunds[] = ['amount' => $a];
-                return true;
+                return 'REF-' . Str::uuid();
             }
             public function status(string $h): array { return ['status' => 'HELD', 'amount' => 0.0, 'created_at' => now()->toIso8601String()]; }
         });
@@ -122,18 +122,55 @@ class ConcurrencyIntegrityTest extends TestCase
         $this->assertNotNull($booking->fresh()->refunded_at);
     }
 
-    public function test_redelivered_deposit_callback_advances_once(): void
+    public function test_redelivered_collection_webhook_advances_once(): void
     {
+        // Lipila retries a callback until it sees a 2xx, so a duplicate delivery is
+        // routine, not exceptional.
+        $secret = base64_encode(str_repeat('k', 32));
+        config([
+            'lipila.webhook.secret'           => $secret,
+            'lipila.webhook.verify_signature' => true,
+            'lipila.webhook.tolerance'        => 300,
+        ]);
+
         $booking = app(BookingService::class)->create($this->buyer, $this->payload());
         Booking::whereKey($booking->id)->update(['status' => 'PENDING_PAYMENT', 'escrow_hold_ref' => 'dep-3', 'escrow_phase' => 'FULL']);
 
-        $payload = ['depositId' => 'dep-3', 'status' => 'COMPLETED', 'amount' => '500.00'];
-        $this->postJson('/api/pawapay/callback', $payload)->assertOk();
+        $body = json_encode([
+            'referenceId' => 'dep-3',
+            'type'        => 'Collection',
+            'status'      => 'Successful',
+            'amount'      => 500.00,
+        ]);
+
+        // Two DIFFERENT webhook ids for the same event. A real Lipila retry reuses
+        // the id and is short-circuited by the controller's de-dup cache, which
+        // would make this test pass without exercising anything. Distinct ids force
+        // both deliveries all the way through to the lifecycle, which is the
+        // idempotency actually under test.
+        $deliver = function (string $id) use ($body, $secret) {
+            $timestamp = (string) time();
+            $signature = 'v1,' . base64_encode(hash_hmac(
+                'sha256',
+                $id . '.' . $timestamp . '.' . $body,
+                base64_decode($secret),
+                true,
+            ));
+
+            return $this->call('POST', '/api/webhooks/lipila', [], [], [], [
+                'CONTENT_TYPE'           => 'application/json',
+                'HTTP_WEBHOOK_ID'        => $id,
+                'HTTP_WEBHOOK_TIMESTAMP' => $timestamp,
+                'HTTP_WEBHOOK_SIGNATURE' => $signature,
+            ], $body);
+        };
+
+        $deliver('msg_first')->assertOk();
         // Redelivery.
-        $this->postJson('/api/pawapay/callback', $payload)->assertOk();
+        $deliver('msg_second')->assertOk();
 
         $this->assertSame('FUNDS_HELD', $booking->fresh()->status);
         // The redelivered event row is de-duped by the unique (ref,status) index.
-        $this->assertSame(1, PawapayEvent::where('external_ref', 'dep-3')->where('pawapay_status', 'COMPLETED')->count());
+        $this->assertSame(1, PaymentEvent::where('external_ref', 'dep-3')->where('provider_status', 'COMPLETED')->count());
     }
 }

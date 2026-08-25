@@ -282,11 +282,14 @@ export default function IncomingRequestsScreen({ navigation }: any) {
 
   const {
     incomingRequests, incomingLoading, incomingError, fetchIncomingRequests, clearIncomingError,
-    accept, decline, quote, submitting,
+    accept, decline, quote,
   } = useBookingStore();
 
   const [tab, setTab] = useState<TabKey>('new');
   const [, setTick] = useState(0); // 30s ticker so reply timers stay current
+  // Which row's action is in flight. Must stay per-id: the store's `submitting`
+  // is a single global flag, so ORing it in here made every row look busy the
+  // moment any one of them was touched.
   const [actingId, setActingId] = useState<string | null>(null);
 
   // Broadcast leads (v3.2 §6)
@@ -422,7 +425,7 @@ export default function IncomingRequestsScreen({ navigation }: any) {
             entry={item as IncomingRequestEntry}
             scheduled={tab === 'scheduled'}
             c={c}
-            busy={actingId === (item as IncomingRequestEntry).booking_id || submitting}
+            busy={actingId === (item as IncomingRequestEntry).booking_id}
             onAccept={() => confirmAccept(item as IncomingRequestEntry)}
             onDecline={() => confirmDecline(item as IncomingRequestEntry)}
             onQuote={() => { const e = item as IncomingRequestEntry; setBookingQuote(e); setQuotePrice(e.gross_zmw > 0 ? String(e.gross_zmw.toFixed(0)) : ''); }}

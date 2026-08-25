@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useState } from 'react';
-import { Linking, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
+import { Linking, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { Text } from 'react-native-paper';
 import {
   Booking,
@@ -15,12 +16,15 @@ import { palette, radius as r, spacing, typography } from '../../theme';
  * Provider ↔ customer communication for an active, funded booking.
  *
  * DELIBERATELY NOT a chat. Three narrow channels, all backed by ONE backend:
- *   • Masked call  — routes through a proxy number; neither party sees the other's.
- *   • Status chips — tap-to-send presets ("On my way", "Arrived", …); no free typing.
- *   • WhatsApp     — free-form goes to the platform's WhatsApp channel (deep-link).
+ *   • Call        — the other party's real number, handed straight to the OS
+ *                   dialler. No proxy: a call from an unknown virtual number
+ *                   doesn't get answered, which defeated the point of masking.
+ *   • Status chips— tap-to-send presets ("On my way", "Arrived", …); no typing.
+ *   • WhatsApp    — free-form goes to the platform's WhatsApp channel (deep-link).
  *
  * The server decides what is available (booking.comms). When contact is closed
- * (before funding / after the dispute window) this renders nothing.
+ * (before funding / after the dispute window) `contact` is null and no number is
+ * rendered — the gate is server-side, this is just the surface.
  */
 export function BookingCommsSection({
   booking,
@@ -29,34 +33,31 @@ export function BookingCommsSection({
   booking: Booking;
   onChanged: () => void;
 }) {
-  const { showError, showSuccess, showSnackbar } = useSnackbar();
+  const { showError, showSuccess } = useSnackbar();
   const comms = booking.comms;
 
-  const [busy, setBusy]           = useState(false);
-  const [lateFor, setLateFor]     = useState<string | null>(null); // preset type awaiting a duration
-  const [noteFor, setNoteFor]     = useState<string | null>(null); // preset type awaiting a note
-  const [noteText, setNoteText]   = useState('');
-  const [reveal, setReveal]       = useState<{ number: string; expires: string | null } | null>(null);
+  const [busy, setBusy]       = useState(false);
+  const [lateFor, setLateFor] = useState<string | null>(null); // preset awaiting a duration
 
   if (!comms) return null;
 
+  const contact = comms.contact;
+
   const hasAnything =
-    comms.call_enabled ||
+    !!contact ||
     comms.status_update_options.length > 0 ||
     !!comms.agreement ||
     !!WHATSAPP_NUMBER;
 
   if (!hasAnything) return null;
 
-  async function send(type: string, extra?: { duration_mins?: number; note?: string }) {
+  async function send(type: string, extra?: { duration_mins?: number }) {
     if (busy) return; // double-submit guard
     setBusy(true);
     try {
       await bookingsApi.statusUpdate(booking.id, type, extra);
       showSuccess('Update sent.');
       setLateFor(null);
-      setNoteFor(null);
-      setNoteText('');
       onChanged();
     } catch (e) {
       showError(e instanceof ApiError ? e.message : 'Could not send the update.');
@@ -66,29 +67,45 @@ export function BookingCommsSection({
   }
 
   function onPreset(opt: BookingCommsOption) {
-    if (opt.requires === 'duration') { setNoteFor(null); setLateFor(lateFor === opt.type ? null : opt.type); return; }
-    if (opt.requires === 'note')     { setLateFor(null); setNoteFor(noteFor === opt.type ? null : opt.type); return; }
+    if (opt.requires === 'duration') {
+      setLateFor(lateFor === opt.type ? null : opt.type);
+      return;
+    }
     send(opt.type);
   }
 
-  async function startCall() {
-    if (busy) return;
-    setBusy(true);
-    setReveal(null);
-    try {
-      const res = await bookingsApi.call(booking.id);
-      if (res.mode === 'reveal' && res.revealed_number) {
-        // Flagged fallback: masking unavailable, a number is shared for a window.
-        setReveal({ number: res.revealed_number, expires: res.reveal_expires_at ?? null });
-        showSnackbar({ message: res.message, variant: 'info' });
-      } else {
-        showSnackbar({ message: res.message, variant: 'success' });
-      }
-    } catch (e) {
-      showError(e instanceof ApiError ? e.message : 'Could not start the call.');
-    } finally {
-      setBusy(false);
+  async function dial() {
+    if (!contact?.phone) {
+      showError('No number available for this booking yet.');
+      return;
     }
+
+    // Strip everything the dialler does not want. A stored number can carry
+    // spaces or punctuation, and `tel:` with a raw space silently fails to open
+    // on Android rather than throwing — which is exactly the "button does
+    // nothing" symptom. Keep a leading + (E.164) and digits only.
+    const dialable = contact.phone.trim().replace(/(?!^\+)[^\d]/g, '');
+    const url = `tel:${dialable}`;
+
+    try {
+      // canOpenURL is the honest check: an emulator or a device with no dialler
+      // app resolves nothing, and openURL would fail silently there.
+      const supported = await Linking.canOpenURL(url);
+      if (!supported) {
+        showError(`No dialler on this device. ${contact.name}: ${contact.phone}`);
+        return;
+      }
+      await Linking.openURL(url);
+    } catch {
+      showError(`Could not open the dialler. ${contact.name}: ${contact.phone}`);
+    }
+  }
+
+  function copyNumber() {
+    if (!contact?.phone) return;
+    Clipboard.setStringAsync(contact.phone)
+      .then(() => showSuccess('Number copied.'))
+      .catch(() => showError('Could not copy the number.'));
   }
 
   async function openAgreement() {
@@ -105,8 +122,8 @@ export function BookingCommsSection({
   }
 
   function openWhatsApp() {
-    // Free-form conversation → the platform's WhatsApp channel (never the other
-    // party's number — anti-circumvention). Pre-fills the booking reference.
+    // Free-form conversation → the platform's WhatsApp channel. Pre-fills the
+    // booking reference so support has context without the customer typing it.
     const ref = booking.id.slice(0, 8).toUpperCase();
     const text = encodeURIComponent(`Hi, I have a question about my booking (ref ${ref}).`);
     Linking.openURL(`https://wa.me/${WHATSAPP_NUMBER}?text=${text}`).catch(() =>
@@ -118,10 +135,10 @@ export function BookingCommsSection({
     <View style={styles.card}>
       <Text style={styles.title}>Communication</Text>
 
-      {/* Masked call + WhatsApp */}
+      {/* Call + WhatsApp */}
       <View style={styles.actionRow}>
-        {comms.call_enabled && (
-          <TouchableOpacity style={styles.action} onPress={startCall} disabled={busy} activeOpacity={0.7}>
+        {!!contact && (
+          <TouchableOpacity style={styles.action} onPress={dial} activeOpacity={0.7}>
             <Ionicons name="call" size={18} color={palette.primary} />
             <Text style={styles.actionText}>Call</Text>
           </TouchableOpacity>
@@ -134,16 +151,33 @@ export function BookingCommsSection({
         )}
       </View>
 
-      {comms.call_enabled && (
-        <Text style={styles.hint}>Calls connect through Sebenza — neither of you sees the other's number.</Text>
-      )}
-
-      {/* Reveal fallback (only when masking is unavailable) */}
-      {reveal && (
-        <TouchableOpacity style={styles.reveal} onPress={() => Linking.openURL(`tel:${reveal.number}`)}>
-          <Ionicons name="call-outline" size={16} color={palette.warning} />
-          <Text style={styles.revealText}>Tap to call {reveal.number}{reveal.expires ? ' (shared temporarily)' : ''}</Text>
-        </TouchableOpacity>
+      {/* The number itself — visible, not hidden behind the button, so the
+          customer recognises who is calling when the provider rings back.
+          Laid out as a row so the name/number column and the copy affordance
+          align, instead of two stacked lines drifting left. */}
+      {!!contact && (
+        <View style={styles.numberRow}>
+          <TouchableOpacity
+            style={styles.numberMain}
+            onPress={dial}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel={`Call ${contact.name} on ${contact.phone}`}
+          >
+            <Text style={styles.numberLabel} numberOfLines={1}>{contact.name}</Text>
+            <Text style={styles.numberValue} numberOfLines={1}>{contact.phone}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.copyBtn}
+            onPress={copyNumber}
+            activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel="Copy number"
+          >
+            <Ionicons name="copy-outline" size={16} color={palette.textSecondary} />
+          </TouchableOpacity>
+        </View>
       )}
 
       {/* Status update chips */}
@@ -154,7 +188,7 @@ export function BookingCommsSection({
             {comms.status_update_options.map((opt) => (
               <TouchableOpacity
                 key={opt.type}
-                style={[styles.chip, (lateFor === opt.type || noteFor === opt.type) && styles.chipActive]}
+                style={[styles.chip, lateFor === opt.type && styles.chipActive]}
                 onPress={() => onPreset(opt)}
                 disabled={busy}
                 activeOpacity={0.7}
@@ -173,28 +207,6 @@ export function BookingCommsSection({
                   <Text style={styles.durChipText}>{m} min</Text>
                 </TouchableOpacity>
               ))}
-            </View>
-          )}
-
-          {/* LOCATION_NOTE — short note */}
-          {noteFor && (
-            <View style={styles.noteRow}>
-              <TextInput
-                style={styles.noteInput}
-                value={noteText}
-                onChangeText={setNoteText}
-                placeholder="Add a short note…"
-                placeholderTextColor={palette.textDisabled}
-                maxLength={comms.status_update_options.find((o) => o.type === noteFor)?.max_length ?? 200}
-                multiline
-              />
-              <TouchableOpacity
-                style={[styles.noteSend, (!noteText.trim() || busy) && styles.noteSendDisabled]}
-                onPress={() => noteText.trim() && send(noteFor, { note: noteText.trim() })}
-                disabled={!noteText.trim() || busy}
-              >
-                <Ionicons name="send" size={16} color="#fff" />
-              </TouchableOpacity>
             </View>
           )}
         </>
@@ -222,24 +234,35 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: palette.border, borderRadius: r.md,
     padding: spacing.md, marginBottom: spacing.md, backgroundColor: palette.surface,
   },
-  title: { ...typography.label, color: palette.textPrimary, marginBottom: spacing.sm },
-  subhead: { ...typography.label, color: palette.textSecondary, marginTop: spacing.md, marginBottom: spacing.xs },
-  hint: { ...typography.bodySmall, color: palette.textSecondary, marginTop: spacing.xs },
+  title: { ...typography.label, color: palette.textPrimary, marginBottom: spacing.md },
+  subhead: {
+    ...typography.label, color: palette.textSecondary,
+    marginTop: spacing.lg, marginBottom: spacing.sm,
+  },
   actionRow: { flexDirection: 'row', gap: spacing.sm },
   action: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    borderWidth: 1, borderColor: palette.border, borderRadius: r.sm, paddingVertical: 10,
+    borderWidth: 1, borderColor: palette.border, borderRadius: r.sm,
+    paddingVertical: 12, minHeight: 44,
   },
   actionText: { ...typography.label, color: palette.textPrimary },
-  reveal: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: spacing.sm,
-    backgroundColor: palette.warningLight, borderRadius: r.sm, padding: spacing.sm,
+  // Row, not a stack: the name/number column grows and the copy button pins
+  // right, so the block lines up with the Call/WhatsApp row above it.
+  numberRow: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    marginTop: spacing.sm, borderWidth: 1, borderColor: palette.border,
+    borderRadius: r.sm, paddingVertical: 10, paddingHorizontal: spacing.md,
+    backgroundColor: palette.background,
   },
-  revealText: { ...typography.bodySmall, color: palette.warning, flex: 1 },
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, marginTop: spacing.xs },
+  numberMain: { flex: 1, minWidth: 0 },
+  copyBtn: { padding: 6 },
+  numberLabel: { ...typography.bodySmall, color: palette.textSecondary },
+  numberValue: { ...typography.label, color: palette.textPrimary, marginTop: 2 },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.xs },
   chip: {
     borderWidth: 1, borderColor: palette.border, borderRadius: 999,
-    paddingHorizontal: 14, paddingVertical: 8, backgroundColor: palette.background,
+    paddingHorizontal: 14, paddingVertical: 10, minHeight: 40,
+    justifyContent: 'center', backgroundColor: palette.background,
   },
   chipActive: { borderColor: palette.primary, backgroundColor: palette.primaryLight },
   chipText: { ...typography.label, color: palette.textPrimary },
@@ -248,20 +271,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14, paddingVertical: 8, backgroundColor: palette.primaryLight,
   },
   durChipText: { ...typography.label, color: palette.primary },
-  noteRow: { flexDirection: 'row', alignItems: 'flex-end', gap: spacing.sm, marginTop: spacing.sm },
-  noteInput: {
-    flex: 1, borderWidth: 1, borderColor: palette.border, borderRadius: r.sm,
-    padding: spacing.sm, color: palette.textPrimary, minHeight: 42, maxHeight: 96,
-    ...typography.body,
-  },
-  noteSend: {
-    width: 42, height: 42, borderRadius: r.sm, backgroundColor: palette.primary,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  noteSendDisabled: { backgroundColor: palette.textDisabled },
   agreement: {
-    flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.md,
-    borderWidth: 1, borderColor: palette.border, borderRadius: r.sm, padding: spacing.sm,
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.lg,
+    borderWidth: 1, borderColor: palette.border, borderRadius: r.sm,
+    paddingVertical: 12, paddingHorizontal: spacing.md,
   },
   agreementTitle: { ...typography.label, color: palette.textPrimary },
   agreementSub: { ...typography.bodySmall, color: palette.textSecondary },

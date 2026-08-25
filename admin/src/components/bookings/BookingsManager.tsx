@@ -228,7 +228,7 @@ function BookingDetailPanel({ detail }: { detail: BookingDetail }) {
 
       {detail.escrow_events.length > 0 && (
         <Card>
-          <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Escrow / PawaPay events</h3>
+          <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Escrow / gateway events</h3>
           <ul className="divide-y divide-slate-100 dark:divide-slate-800">
             {detail.escrow_events.map((e) => (
               <li key={e.id} className="flex items-center justify-between py-2 text-xs">
@@ -237,7 +237,7 @@ function BookingDetailPanel({ detail }: { detail: BookingDetail }) {
                   <span className="ml-1.5 text-slate-400">{e.mno ?? ''}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <StatusPill label={e.pawapay_status} autoVariant />
+                  <StatusPill label={e.provider_status} autoVariant />
                   <span className="text-slate-400">{fmtDatetime(e.created_at)}</span>
                 </div>
               </li>

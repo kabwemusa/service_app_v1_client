@@ -274,20 +274,14 @@ export default function BookingDetailScreen({ navigation, route }: any) {
 
   // Masked call — routes through the proxy so neither party sees a number.
   // Available only inside the funded/active window (server-gated via comms).
-  async function startMaskedCall() {
-    if (!booking || actionBusy) return;
-    setActionBusy(true);
-    try {
-      const res = await bookingsApi.call(booking.id);
-      showSuccess(res.message);
-      if (res.mode === 'reveal' && res.revealed_number) {
-        Linking.openURL(`tel:${res.revealed_number}`).catch(() => {});
-      }
-    } catch (e) {
-      showError(e instanceof ApiError ? e.message : 'Could not start the call.');
-    } finally {
-      setActionBusy(false);
-    }
+  // Direct dial. The number is released by the server only while the booking is
+  // funded + active, so if `contact` is null there is nothing to call.
+  function callProvider() {
+    const phone = booking?.comms?.contact?.phone;
+    if (!phone) return;
+    Linking.openURL(`tel:${phone}`).catch(() =>
+      showError('Could not open the dialler.'),
+    );
   }
 
   function openWhatsApp() {
@@ -449,7 +443,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
   const providerPaid   = !!booking.provider_marked_paid_at;
   const fullySettled   = customerPaid && providerPaid;
   const isCancellable  = CANCELLABLE.includes(booking.status);
-  const callEnabled    = !!booking.comms?.call_enabled;
+  const contact        = booking.comms?.contact ?? null;
   const isTerminal     = TERMINAL.includes(booking.status);
   const isQuoted       = booking.status === 'QUOTED';
   const isDelivered    = booking.status === 'DELIVERED';
@@ -559,17 +553,19 @@ export default function BookingDetailScreen({ navigation, route }: any) {
           </View>
         </View>
 
-        {/* Contact — masked call + WhatsApp. Phone numbers are never exposed. */}
+        {/* Contact — direct dial + WhatsApp. The number is shown, not hidden:
+            an unknown caller-ID doesn't get answered, and the customer should
+            recognise the provider when they ring back. */}
         <View style={styles.contactRow}>
           <Button
             mode="outlined"
             icon="phone-outline"
             style={styles.contactBtn}
             contentStyle={styles.contactBtnContent}
-            textColor={callEnabled ? palette.primary : palette.textDisabled}
-            disabled={!callEnabled || busy}
-            onPress={startMaskedCall}
-            accessibilityLabel="Call the provider through a private masked line"
+            textColor={contact ? palette.primary : palette.textDisabled}
+            disabled={!contact || busy}
+            onPress={callProvider}
+            accessibilityLabel={contact ? `Call ${contact.name} on ${contact.phone}` : 'Calling opens once the booking is funded'}
           >
             Call
           </Button>
@@ -585,7 +581,11 @@ export default function BookingDetailScreen({ navigation, route }: any) {
             Message
           </Button>
         </View>
-        <Text style={styles.privacyCaption}>Your number stays private.</Text>
+        <Text style={styles.privacyCaption}>
+          {contact
+            ? `${contact.name} · ${contact.phone}`
+            : 'Contact details open once the booking is funded.'}
+        </Text>
 
         {/* Gated momo number (DIRECT + active booking + provider has number set) */}
         {hasMomo && (
@@ -735,7 +735,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
             )}
             {/* ESCROW-only buyer protection fee (mode-driven, §8.3). */}
             {!isDirect && (booking.buyer_protection_fee ?? 0) > 0 && (
-              <LineItem label="Buyer protection (2%)" value={booking.buyer_protection_fee} />
+              <LineItem label="Buyer protection" value={booking.buyer_protection_fee} />
             )}
             {/* Growth & Promotions: the customer's saving. Sebenza absorbed it —
                 the provider is still paid in full (their earnings are unchanged). */}
@@ -1005,7 +1005,7 @@ export default function BookingDetailScreen({ navigation, route }: any) {
 
         </View>
 
-        {/* Communication layer — masked call + status updates + agreement download */}
+        {/* Communication layer — call + status updates + agreement download */}
         <View style={{ paddingHorizontal: spacing.md }}>
           <BookingCommsSection booking={booking} onChanged={loadBooking} />
         </View>
@@ -1718,7 +1718,7 @@ const styles = StyleSheet.create({
   },
   tierText: { ...typography.bodySmall, color: palette.primary, fontSize: 12 },
 
-  // Contact (masked call + WhatsApp)
+  // Contact (direct dial + WhatsApp)
   contactRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
   contactBtn: { flex: 1, borderRadius: r.sm, borderColor: palette.primary },
   contactBtnContent: { height: 44 },

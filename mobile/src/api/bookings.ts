@@ -233,15 +233,25 @@ export interface Booking {
 export interface BookingCommsOption {
   type:        string;
   label:       string;
-  requires?:   'duration' | 'note';
+  requires?:   'duration';
   durations?:  number[];    // RUNNING_LATE — offered delay times (minutes)
-  max_length?: number;      // LOCATION_NOTE — note character cap
   drives?:     'start' | 'finish'; // ties into the lifecycle (HOURLY_CAPPED timer)
 }
 
+/** The other party's real number, released only inside the contact window. */
+export interface BookingContact {
+  name:  string;
+  phone: string;
+  role:  'provider' | 'customer';
+}
+
 export interface BookingComms {
-  /** Masked calling available (funded + active, within the dispute window). */
-  call_enabled:           boolean;
+  /**
+   * Dialable counterparty. Non-null only while the booking is funded + active
+   * (or inside the dispute window). There is no masked/proxy layer: an unknown
+   * number doesn't get answered, so we hand over the real one under a gate.
+   */
+  contact:                BookingContact | null;
   status_update_options:  BookingCommsOption[];
   agreement: {
     version:      number;
@@ -252,20 +262,8 @@ export interface BookingComms {
   } | null;
 }
 
-/** Result of starting a masked call. Real numbers appear ONLY in reveal mode. */
-export interface CallSessionResult {
-  session_id:         string;
-  mode:               'bridge' | 'reveal';
-  status:             string;
-  masked_number:      string | null;
-  message:            string;
-  revealed_number?:   string;      // flagged reveal fallback only
-  reveal_expires_at?: string;
-}
-
 export type CommsTimelineEvent =
-  | { kind: 'status_update'; type: string; actor_role: 'provider' | 'customer'; body: string; at: string }
-  | { kind: 'call'; initiator_role: 'provider' | 'customer'; provider: string; status: string; duration_seconds: number | null; at: string; answered_at: string | null; ended_at: string | null };
+  { kind: 'status_update'; type: string; actor_role: 'provider' | 'customer'; body: string; at: string };
 
 export interface PaginatedBookings {
   data:         Booking[];
@@ -488,12 +486,8 @@ export const bookingsApi = {
   // ── Communication layer ───────────────────────────────────────────────────
 
   /** Send one preset status update ("On my way", etc.). Returns the fresh booking. */
-  statusUpdate: (id: string, type: string, extra?: { duration_mins?: number; note?: string }) =>
+  statusUpdate: (id: string, type: string, extra?: { duration_mins?: number }) =>
     api.post<Booking>(`/bookings/${id}/status-update`, { type, ...(extra ?? {}) }),
-
-  /** Start a masked voice call to the other party. Real numbers are never returned (bridge mode). */
-  call: (id: string) =>
-    api.post<CallSessionResult>(`/bookings/${id}/call`, {}),
 
   /** A short-lived signed URL to open/download the latest Booking Agreement PDF. */
   agreementLink: (id: string) =>

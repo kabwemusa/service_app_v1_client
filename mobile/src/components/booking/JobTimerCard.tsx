@@ -194,7 +194,7 @@ export function JobTimerCard({
             </View>
           )}
 
-          {/* Customer approves a higher hold (re-authorisation via PawaPay). */}
+          {/* Customer approves a higher hold (re-authorisation via Lipila). */}
           {extensionPending && role === 'customer' && onApproveExtension && (
             <View style={styles.extendBox}>
               <Text style={styles.extendTitle}>{firstName} needs more time</Text>

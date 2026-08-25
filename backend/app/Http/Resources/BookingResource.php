@@ -156,9 +156,9 @@ class BookingResource extends JsonResource
             'earnings'        => $this->earningsBlock($request),
 
             // ── Communication layer + Booking Agreement (drives the thin clients) ─
-            // Present only to a party of the booking. Real phone numbers are NEVER
-            // included: the client gets a Call action (which routes through the
-            // masked-call endpoint) and preset status-update options, nothing more.
+            // Present only to a party of the booking, and only inside the contact
+            // window. Since masked calling was removed this DOES release the
+            // counterparty's real number — see commsBlock for the exact gate.
             'comms'           => $this->commsBlock($request),
         ];
     }
@@ -190,8 +190,10 @@ class BookingResource extends JsonResource
             : $this->agreements()->first();
 
         return [
-            // Masked call available only inside the funded/active + dispute window.
-            'call_enabled' => $open,
+            // The counterparty's REAL number, for the client to hand to the OS
+            // dialler. Released only inside the funded/active + dispute window;
+            // null everywhere else, including to non-parties (guarded above).
+            'contact' => $open ? $this->contactBlock($role) : null,
             // Tap-to-send presets for THIS viewer + state (empty when closed).
             'status_update_options' => $open
                 ? \App\Support\StatusPresetCatalog::availableFor($this->resource, $role)
@@ -203,6 +205,41 @@ class BookingResource extends JsonResource
                 'title'        => config('agreements.brand.title'),
                 'download_url' => url("/api/bookings/{$this->id}/agreement"),
             ] : null,
+        ];
+    }
+
+    /**
+     * The counterparty's dialable number.
+     *
+     * This is a DELIBERATE, narrow exception to § SEC-5 ("counterparty phone is
+     * not exposed"), introduced when masked calling was removed: a call from an
+     * unfamiliar proxy number goes unanswered, so the number has to be real for
+     * the call to be answered at all. The exception is bounded three ways —
+     * caller must be a party (checked by commsBlock), the booking must be inside
+     * the contact window (funded + active, closed after the dispute window), and
+     * only the OTHER party's number is ever returned.
+     *
+     * Returns null unless the relation is already loaded: commsBlock runs on list
+     * rows too, and a lazy load here would be an N+1 across the whole list. Detail
+     * endpoints load buyer/provider, which is where the number is actually used.
+     */
+    private function contactBlock(string $role): ?array
+    {
+        $counterparty = $role === 'provider'
+            ? ($this->relationLoaded('buyer')    ? $this->buyer    : null)
+            : ($this->relationLoaded('provider') ? $this->provider : null);
+
+        $phone = $counterparty?->phone;
+        if (! $phone) {
+            return null;
+        }
+
+        return [
+            'name' => $role === 'provider'
+                ? ($this->buyer_label ?? 'Customer')
+                : ($counterparty->providerProfile?->display_name ?? 'Provider'),
+            'phone' => $phone,
+            'role'  => $role === 'provider' ? 'customer' : 'provider',
         ];
     }
 

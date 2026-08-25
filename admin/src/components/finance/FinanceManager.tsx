@@ -40,7 +40,7 @@ export function FinanceManager() {
           Finance
         </h1>
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          Live GMV, commission collection, escrow health, and PawaPay reconciliation.
+          Live GMV, commission collection, escrow health, and gateway reconciliation.
         </p>
       </div>
 

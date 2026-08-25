@@ -19,7 +19,16 @@ expo-env.d.ts
 *.mobileprovision
 
 # Firebase / Google services — contain API keys; use secret manager in CI
-google-services.json
+# google-services.json is NOT ignored on purpose.
+#
+# EAS builds from git and skips ignored files, so ignoring this produces an APK
+# with no FCM configuration — Android push registration then fails silently,
+# which is the exact thing the build exists to fix.
+#
+# It is safe to commit: the key inside is a CLIENT identifier, scoped by package
+# name + signing-certificate fingerprint, not a secret. (Firebase documents this.)
+# The thing that IS secret is the FCM V1 service-account key — still ignored below.
+# google-services.json
 GoogleService-Info.plist
 
 # Metro
@@ -46,3 +55,10 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# FCM V1 service account key — a SECRET that can send push as you. Upload it to
+# EAS (`eas credentials`) and keep it out of the repo. google-services.json
+# above is a client config and carries no secret, but is ignored too so a build
+# never picks up the wrong Firebase project.
+*service-account*.json
+fcm-*.json

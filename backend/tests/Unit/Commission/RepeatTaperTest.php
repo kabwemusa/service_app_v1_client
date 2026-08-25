@@ -13,6 +13,25 @@ use Tests\TestCase;
  */
 class RepeatTaperTest extends TestCase
 {
+    /**
+     * These exercise the fee MECHANISM (rate, cap, repeat taper, admin
+     * override) — not the price the platform happens to ship. The default is
+     * now 0 because the buyer-protection fee was removed on 2026-08-24, so a
+     * non-zero baseline has to be pinned here or there is nothing left to test.
+     *
+     * CommissionService reads both values in its CONSTRUCTOR, so this must run
+     * before the service is resolved.
+     */
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config([
+            'commission.buyer_protection_rate'    => 0.02,
+            'commission.buyer_protection_max_zmw' => 50.0,
+        ]);
+    }
+
     /** CommissionService with a pinned pair-booking number. */
     private function service(int $pairBookingNumber): CommissionService
     {

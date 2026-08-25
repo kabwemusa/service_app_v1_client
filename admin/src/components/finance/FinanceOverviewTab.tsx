@@ -71,7 +71,7 @@ export function FinanceOverviewTab() {
         <MetricCard
           title="Active escrow float"
           value={isLoading ? '—' : fmtZMW(data?.kpis.active_escrow_float ?? 0)}
-          subtitle="Held by PawaPay"
+          subtitle="Held by Lipila"
           icon={IoLockClosedOutline}
         />
         <MetricCard

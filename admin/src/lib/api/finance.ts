@@ -1,6 +1,6 @@
 // ─── Admin Finance & Commissions API module ────────────────────────────────
 //
-// Live GMV/commission/escrow health + PawaPay reconciliation. Not a payout
+// Live GMV/commission/escrow health + gateway reconciliation. Not a payout
 // initiation tool — an ops and revenue-health view. Commission band edits and
 // payout retries go through the audited-mutation wrapper.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -47,17 +47,19 @@ export interface CommissionBand {
   rates: Record<'1' | '2' | '3' | '4', number>
 }
 
-export type PawapayEventType = 'collection' | 'payout' | 'refund'
+export type PaymentEventType = 'collection' | 'payout' | 'refund'
 export type MatchStatus = 'MATCHED' | 'MISMATCH' | 'PENDING'
 
 export interface EscrowRow {
   id: string
   booking_id: string | null
   external_ref: string
-  type: PawapayEventType
+  type: PaymentEventType
   amount: number | null
   mno: string | null
-  pawapay_status: string
+  /** Which processor wrote the event — 'lipila' now, 'lenco'/'pawapay' for historical rows. */
+  provider: string | null
+  provider_status: string
   booking_status: string | null
   match: MatchStatus
   created_at: string
@@ -72,7 +74,7 @@ export interface PayoutRow {
   amount: number
   momo_masked: string | null
   status: PayoutStatus
-  pawapay_ref: string | null
+  provider_ref: string | null
   timestamp: string | null
 }
 
@@ -107,7 +109,7 @@ export const financeApi = {
   updateCommissionBand: (categoryId: number, payload: { rates: Record<string, number>; reason: string }) =>
     api.patch<{ data: CommissionBand[] }>(`/api/admin/finance/commission-bands/${categoryId}`, payload),
 
-  escrow: (params: { page?: number; type?: PawapayEventType | '' }) => {
+  escrow: (params: { page?: number; type?: PaymentEventType | '' }) => {
     const q = new URLSearchParams()
     q.set('page', String(params.page ?? 1))
     if (params.type) q.set('type', params.type)

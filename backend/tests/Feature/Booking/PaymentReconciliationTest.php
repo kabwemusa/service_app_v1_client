@@ -42,16 +42,16 @@ class PaymentReconciliationTest extends TestCase
     {
         parent::setUp();
         Queue::fake();
-        config()->set('pawapay.enabled', false);
+        config()->set('lipila.enabled', false);
 
         $test = $this;
         $this->app->bind(PaymentGateway::class, fn () => new class($test) implements PaymentGateway {
             public function __construct(private PaymentReconciliationTest $t) {}
             public function holdFunds(string $p, float $a, string $b, float $c, float $d): string { return 'HOLD-' . Str::uuid(); }
             public function releaseFunds(string $h, string $p, float $a, string $b): ?string { return 'PAY-' . Str::uuid(); }
-            public function refund(string $h, string $p, float $a): bool {
+            public function refund(string $h, string $p, float $a): ?string {
                 $this->t->refundCalls++;
-                return $this->t->refundWorks;
+                return $this->t->refundWorks ? 'REF-' . Str::uuid() : null;
             }
             public function status(string $h): array { return ['status' => 'HELD', 'amount' => 0.0, 'created_at' => now()->toIso8601String()]; }
         });

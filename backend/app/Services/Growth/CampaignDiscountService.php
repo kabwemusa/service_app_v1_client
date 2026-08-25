@@ -142,7 +142,7 @@ class CampaignDiscountService
 
     /**
      * Async settle path: the discount was decided and stamped on the booking at
-     * PawaPay initiation (the customer was already charged the reduced amount);
+     * gateway initiation (the customer was already charged the reduced amount);
      * this records the spend once funds settle. Idempotent + budget-guarded, but
      * best-effort — an in-flight booking that just crosses the cap is still
      * recorded (the customer was already charged reduced, provider paid in full).

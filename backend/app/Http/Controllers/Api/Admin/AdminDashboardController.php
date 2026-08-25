@@ -71,13 +71,13 @@ class AdminDashboardController extends Controller
                 ->whereIn('status', ['ACTIVE', 'ACKNOWLEDGED'])
                 ->count();
 
-        // Payouts needing attention — a COMPLETED booking whose latest PawaPay
+        // Payouts needing attention — a COMPLETED booking whose latest gateway
         // payout event FAILED (i.e. not yet DISBURSED). Mirrors the finance
         // payouts list's "failed" derivation.
-        $payoutsFailed = DB::table('pawapay_events as pe')
+        $payoutsFailed = DB::table('payment_events as pe')
             ->join('bookings as b', 'b.id', '=', 'pe.booking_id')
             ->where('pe.type', 'payout')
-            ->where('pe.pawapay_status', 'FAILED')
+            ->where('pe.provider_status', 'FAILED')
             ->where('b.status', 'COMPLETED')
             ->distinct('pe.booking_id')
             ->count('pe.booking_id');

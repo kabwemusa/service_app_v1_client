@@ -18,6 +18,7 @@ use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
@@ -42,7 +43,7 @@ class CampaignDiscountTest extends TestCase
     {
         parent::setUp();
         Queue::fake();
-        config(['pawapay.enabled' => false]); // synchronous stub gateway path
+        config(['lipila.enabled' => false]); // synchronous stub gateway path
 
         $this->app->instance(PaymentGateway::class, new class($this) implements PaymentGateway {
             public function __construct(private CampaignDiscountTest $test) {}
@@ -53,7 +54,7 @@ class CampaignDiscountTest extends TestCase
                 return $ref;
             }
             public function releaseFunds(string $holdRef, string $providerPhone, float $amount, string $bookingId): ?string { return 'TEST-PAYOUT'; }
-            public function refund(string $holdRef, string $payerPhone, float $amount): bool { return true; }
+            public function refund(string $holdRef, string $payerPhone, float $amount): ?string { return 'REF-' . Str::uuid(); }
             public function status(string $holdRef): array { return ['status' => 'HELD', 'amount' => 0.0, 'created_at' => now()->toIso8601String()]; }
         });
 
@@ -120,8 +121,9 @@ class CampaignDiscountTest extends TestCase
         $this->postJson("/api/bookings/{$booking->id}/pay", [], $this->asUser($this->buyer))->assertOk();
         $booking->refresh();
 
-        // Customer charged (500 - 50) + 10 protection = 460 (vs 510 undiscounted).
-        $this->assertEqualsWithDelta(460.0, $this->holds[0]['amount'], 0.01);
+        // Customer charged 500 - 50 = 450. No protection fee is added on top
+        // (removed 2026-08-24), so the discount is the ONLY adjustment.
+        $this->assertEqualsWithDelta(450.0, $this->holds[0]['amount'], 0.01);
         // Provider split byte-for-byte unchanged — paid in full.
         $this->assertEqualsWithDelta($providerSplitBefore, (float) $booking->provider_split_zmw, 0.01);
         $this->assertEqualsWithDelta($providerSplitBefore, $this->holds[0]['provider'], 0.01);

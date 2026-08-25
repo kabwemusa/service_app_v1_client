@@ -3,11 +3,11 @@
 namespace App\Support;
 
 /**
- * Resolves a Zambian mobile number to its network operator using the same
- * prefix map PawapayPaymentGateway uses to pick a MoMo correspondent
- * (config/pawapay.php). Used for admin-facing MNO grouping only (Finance
- * escrow reconciliation, WhatsApp Ops delivery health) — never for payment
- * routing, which stays inside the gateway.
+ * Resolves a Zambian mobile number to its network operator from the prefix map
+ * in config/lipila.php. Used for admin-facing MNO grouping only (Finance escrow
+ * reconciliation, WhatsApp Ops delivery health) — never for payment routing:
+ * Lipila derives the operator from the MSISDN itself and reports it back as
+ * `paymentType`, so the gateway never consults this.
  */
 final class MnoResolver
 {
@@ -28,15 +28,13 @@ final class MnoResolver
         $local  = substr($digits, -9);
         $prefix = '0' . substr($local, 0, 2);
 
-        $map = config('pawapay.prefix_map', []);
-        $correspondent = $map[$prefix] ?? null;
+        $operator = config('lipila.prefix_map', [])[$prefix] ?? null;
 
-        return match (true) {
-            $correspondent === null => 'UNKNOWN',
-            str_starts_with($correspondent, 'MTN')    => 'MTN',
-            str_starts_with($correspondent, 'AIRTEL') => 'AIRTEL',
-            str_starts_with($correspondent, 'ZAMTEL')  => 'ZAMTEL',
-            default => 'UNKNOWN',
+        return match (strtolower((string) $operator)) {
+            'mtn'    => 'MTN',
+            'airtel' => 'AIRTEL',
+            'zamtel' => 'ZAMTEL',
+            default  => 'UNKNOWN',
         };
     }
 }

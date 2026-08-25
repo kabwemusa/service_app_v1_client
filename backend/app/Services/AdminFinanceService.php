@@ -14,8 +14,8 @@ use Illuminate\Support\Facades\DB;
  * Backend for the admin Finance & Commissions module (UI: admin/src/components/finance).
  *
  * Ops and revenue-health view — NOT a payout initiation tool. Reads the
- * existing commissions ledger, bookings, and the passive pawapay_events log
- * (App\Models\PawapayEvent) for escrow reconciliation. The only mutations are
+ * existing commissions ledger, bookings, and the passive payment_events log
+ * (App\Models\PaymentEvent) for escrow reconciliation. The only mutations are
  * commission-band edits (Category.commission_rates) and retrying a failed
  * payout (delegates to BookingService::disbursePayout — no new disbursement
  * path). Both run through AuditedMutationService.
@@ -44,9 +44,9 @@ class AdminFinanceService
             ->where('status', 'FUNDS_HELD')
             ->sum(DB::raw('COALESCE(agreed_amount, amount, 0)'));
 
-        $refunds = DB::table('pawapay_events')
+        $refunds = DB::table('payment_events')
             ->where('type', 'refund')
-            ->where('pawapay_status', 'COMPLETED')
+            ->where('provider_status', 'COMPLETED')
             ->whereBetween('created_at', [$from, $to])
             ->selectRaw('COUNT(*) as count, COALESCE(SUM(amount), 0) as total')
             ->first();
@@ -195,10 +195,10 @@ class AdminFinanceService
 
     public function escrowList(array $filters): array
     {
-        $query = DB::table('pawapay_events as pe')
+        $query = DB::table('payment_events as pe')
             ->leftJoin('bookings as b', 'b.id', '=', 'pe.booking_id')
-            ->select(['pe.id', 'pe.booking_id', 'pe.external_ref', 'pe.type', 'pe.pawapay_status',
-                      'pe.mno', 'pe.amount', 'pe.created_at', 'b.status as booking_status']);
+            ->select(['pe.id', 'pe.booking_id', 'pe.external_ref', 'pe.type', 'pe.provider_status',
+                      'pe.provider', 'pe.mno', 'pe.amount', 'pe.created_at', 'b.status as booking_status']);
 
         if (!empty($filters['type'])) {
             $query->where('pe.type', $filters['type']);
@@ -212,7 +212,7 @@ class AdminFinanceService
         $page = $query->paginate(20, ['*'], 'page', (int) ($filters['page'] ?? 1));
 
         $rows = collect($page->items())->map(function ($r) {
-            $match = $this->matchStatus($r->type, $r->pawapay_status, $r->booking_status);
+            $match = $this->matchStatus($r->type, $r->provider_status, $r->booking_status);
             return [
                 'id'             => $r->id,
                 'booking_id'     => $r->booking_id,
@@ -220,7 +220,8 @@ class AdminFinanceService
                 'type'           => $r->type,
                 'amount'         => $r->amount !== null ? (float) $r->amount : null,
                 'mno'            => $r->mno,
-                'pawapay_status' => $r->pawapay_status,
+                'provider'       => $r->provider,
+                'provider_status' => $r->provider_status,
                 'booking_status' => $r->booking_status,
                 'match'          => $match,
                 'created_at'     => $this->iso($r->created_at),
@@ -233,13 +234,18 @@ class AdminFinanceService
         return ['data' => $sorted->all(), 'meta' => $this->pageMeta($page)];
     }
 
-    private function matchStatus(string $type, string $pawapayStatus, ?string $bookingStatus): string
+    private function matchStatus(string $type, string $providerStatus, ?string $bookingStatus): string
     {
-        $terminal = in_array($pawapayStatus, ['COMPLETED', 'FAILED', 'REJECTED'], true);
+        // SETTLED is a post-success treasury event (our wallet credited) written
+        // by earlier processors; the booking already advanced on the success
+        // event, so it reconciles exactly like COMPLETED rather than sitting
+        // forever as PENDING. Lipila has no equivalent event, but historical rows
+        // still carry the status.
+        $terminal = in_array($providerStatus, ['COMPLETED', 'SETTLED', 'FAILED', 'REJECTED'], true);
         if (!$terminal) {
             return 'PENDING';
         }
-        if (in_array($pawapayStatus, ['FAILED', 'REJECTED'], true)) {
+        if (in_array($providerStatus, ['FAILED', 'REJECTED'], true)) {
             // A failed collection/payout/refund that left the booking in an
             // "advanced" state would be a real mismatch worth a look.
             $advanced = in_array($bookingStatus, ['FUNDS_HELD', 'IN_PROGRESS', 'DELIVERED', 'COMPLETED', 'DISBURSED'], true);
@@ -282,7 +288,7 @@ class AdminFinanceService
         $page = $query->paginate(20, ['*'], 'page', (int) ($filters['page'] ?? 1));
         $bookingIds = collect($page->items())->pluck('booking_id')->all();
 
-        $latestPayoutEvents = DB::table('pawapay_events')
+        $latestPayoutEvents = DB::table('payment_events')
             ->where('type', 'payout')
             ->whereIn('booking_id', $bookingIds)
             ->orderByDesc('created_at')
@@ -294,7 +300,7 @@ class AdminFinanceService
             $event  = $latestPayoutEvents->get($r->booking_id);
             $status = $r->booking_status === 'DISBURSED'
                 ? 'success'
-                : ($event && $event->pawapay_status === 'FAILED' ? 'failed' : 'pending');
+                : ($event && $event->provider_status === 'FAILED' ? 'failed' : 'pending');
 
             return [
                 'booking_id'     => $r->booking_id,
@@ -303,7 +309,7 @@ class AdminFinanceService
                 'amount'         => (float) ($r->net_to_provider ?? $r->agreed_amount ?? $r->amount ?? 0),
                 'momo_masked'    => $this->maskMomo($r->momo_number),
                 'status'         => $status,
-                'pawapay_ref'    => $event?->external_ref,
+                'provider_ref'    => $event?->external_ref,
                 'timestamp'      => $this->iso($r->disbursed_at ?? $event?->created_at),
             ];
         });

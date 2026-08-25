@@ -11,7 +11,7 @@ namespace App\Support;
  *   +260 97 123 4567 / 0971234567 / 971234567 / 260971234567
  * all collapse to one canonical E.164 string and therefore one account.
  *
- * Mirrors the digit handling already used in MtnMomoClient / PawapayPaymentGateway,
+ * Mirrors the digit handling already used in MtnMomoClient / LipilaPaymentGateway,
  * but returns E.164 (+260XXXXXXXXX) which is what we store on users.phone.
  */
 final class PhoneNumber

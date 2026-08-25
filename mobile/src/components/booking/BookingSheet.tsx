@@ -280,8 +280,14 @@ export function BookingSheet({
     ? (capAmount ?? (hourlyRate && capHours ? hourlyRate * capHours : basePrice))
     : basePrice;
   const addonSum = addonList.filter((a) => selectedIds.has(a.id)).reduce((s, a) => s + a.price, 0);
-  // No buyer-protection fee in DIRECT mode — there is no escrow to back it.
-  const prot     = !isDirect && !isQuote ? Math.min((svcCost + addonSum) * 0.02, 50) : 0;
+  // Buyer-protection fee REMOVED. Kept as a zero so the fee row and the total
+  // still have one source of truth if it is ever reinstated — the row below is
+  // driven by `prot > 0`, so it disappears on its own.
+  //
+  // This used to hardcode `* 0.02, 50`, duplicating the server's rate. That is
+  // why the sheet kept quoting a fee after it was "removed": the client was
+  // computing its own. If it comes back, it must come from the server, not here.
+  const prot     = 0;
   const total    = svcCost + addonSum + prot;
 
   const briefComplete = !isQuote || briefAnswers.every((a) => a.trim().length > 0);
@@ -767,9 +773,9 @@ export function BookingSheet({
                         <Text style={styles.feeAmt}>ZMW {addon.price.toFixed(0)}</Text>
                       </View>
                     ))}
-                    {!isDirect && (
+                    {!isDirect && prot > 0 && (
                       <View style={styles.feeRow}>
-                        <Text style={styles.feeLbl}>Buyer protection (2%)</Text>
+                        <Text style={styles.feeLbl}>Buyer protection</Text>
                         <Text style={styles.feeAmt}>ZMW {prot.toFixed(0)}</Text>
                       </View>
                     )}

@@ -35,9 +35,10 @@ class StubPaymentGateway implements PaymentGateway
         string $holdRef,
         string $payerPhone,
         float  $amount,
-    ): bool {
-        Log::info('StubPaymentGateway::refund', compact('holdRef', 'payerPhone', 'amount'));
-        return true;
+    ): ?string {
+        $ref = 'STUB-REFUND-' . Str::uuid();
+        Log::info('StubPaymentGateway::refund', compact('holdRef', 'payerPhone', 'amount', 'ref'));
+        return $ref;
     }
 
     public function status(string $holdRef): array

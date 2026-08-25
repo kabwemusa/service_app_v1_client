@@ -8,7 +8,7 @@ import { DataTable } from '@/components/ui/DataTable'
 import { FilterBar } from '@/components/ui/FilterBar'
 import { StatusPill } from '@/components/ui/StatusPill'
 import { fmtZMW, fmtDatetime } from '@/lib/utils'
-import { financeApi, type EscrowRow, type PawapayEventType } from '@/lib/api/finance'
+import { financeApi, type EscrowRow, type PaymentEventType } from '@/lib/api/finance'
 import { useAdminChannel } from '@/lib/realtime/useAdminChannel'
 
 const TYPE_OPTIONS = [
@@ -25,7 +25,7 @@ const MATCH_VARIANT: Record<EscrowRow['match'], 'active' | 'danger' | 'pending'>
 
 export function FinanceEscrowTab() {
   const [page, setPage] = useState(1)
-  const [type, setType] = useState<PawapayEventType | ''>('')
+  const [type, setType] = useState<PaymentEventType | ''>('')
   const queryClient = useQueryClient()
 
   const { data, isLoading } = useQuery({
@@ -33,7 +33,7 @@ export function FinanceEscrowTab() {
     queryFn: () => financeApi.escrow({ page, type: type || undefined }),
   })
 
-  // Real-time: the same booking-lifecycle events PawaPay callbacks drive
+  // Real-time: the same booking-lifecycle events Lipila webhooks drive
   // (funds_held/disbursed/cancelled) — no polling.
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['finance-escrow'] })
   useAdminChannel('finance', {
@@ -53,13 +53,13 @@ export function FinanceEscrowTab() {
         ? <span className="font-mono text-xs text-slate-500">{row.original.booking_id.slice(0, 8)}…</span>
         : <span className="text-xs text-slate-400">Unlinked</span>
     ) },
-    { accessorKey: 'external_ref', header: 'PawaPay reference', cell: ({ row }) => (
+    { accessorKey: 'external_ref', header: 'Gateway reference', cell: ({ row }) => (
       <span className="font-mono text-xs text-slate-500">{row.original.external_ref}</span>
     ) },
     { accessorKey: 'type', header: 'Type', cell: ({ row }) => <span className="capitalize">{row.original.type}</span> },
     { accessorKey: 'amount', header: 'Amount', cell: ({ row }) => row.original.amount !== null ? fmtZMW(row.original.amount) : '—' },
     { accessorKey: 'mno', header: 'MNO', cell: ({ row }) => row.original.mno ?? '—' },
-    { accessorKey: 'pawapay_status', header: 'PawaPay status', cell: ({ row }) => <StatusPill label={row.original.pawapay_status} autoVariant /> },
+    { accessorKey: 'provider_status', header: 'Gateway status', cell: ({ row }) => <StatusPill label={row.original.provider_status} autoVariant /> },
     { accessorKey: 'booking_status', header: 'Booking status', cell: ({ row }) => row.original.booking_status ? <StatusPill label={row.original.booking_status} autoVariant /> : '—' },
     { accessorKey: 'created_at', header: 'Time', cell: ({ row }) => fmtDatetime(row.original.created_at) },
   ], [])
@@ -69,13 +69,13 @@ export function FinanceEscrowTab() {
       {mismatchCount > 0 && (
         <div className="flex items-center gap-2 rounded-sm border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
           <IoWarningOutline className="size-4 shrink-0" />
-          <span><strong>{mismatchCount}</strong> event{mismatchCount === 1 ? '' : 's'} on this page need manual resolution — PawaPay's status doesn't line up with the booking's state.</span>
+          <span><strong>{mismatchCount}</strong> event{mismatchCount === 1 ? '' : 's'} on this page need manual resolution — the gateway's status doesn't line up with the booking's state.</span>
         </div>
       )}
 
       <FilterBar
         filters={[
-          { key: 'type', label: 'All types', value: type, options: TYPE_OPTIONS, onChange: (v) => { setType(v as PawapayEventType | ''); setPage(1) } },
+          { key: 'type', label: 'All types', value: type, options: TYPE_OPTIONS, onChange: (v) => { setType(v as PaymentEventType | ''); setPage(1) } },
         ]}
         actions={
           <button
@@ -92,7 +92,7 @@ export function FinanceEscrowTab() {
         data={data?.data ?? []}
         columns={columns}
         isLoading={isLoading}
-        emptyMessage="No PawaPay events for this filter"
+        emptyMessage="No gateway events for this filter"
         totalRows={data?.meta.total}
         currentPage={page}
         pageSize={data?.meta.per_page ?? 20}

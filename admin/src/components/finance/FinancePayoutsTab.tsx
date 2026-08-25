@@ -34,7 +34,7 @@ export function FinancePayoutsTab() {
       action: 'finance.payout_retry',
       targetType: 'booking',
       targetId: '',
-      summary: 'Retry disbursing this payout to the provider via PawaPay.',
+      summary: 'Retry disbursing this payout to the provider via Lipila.',
     },
     mutationFn: (p) => financeApi.retryPayout(p.bookingId, { reason: p.reason }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['finance-payouts'] }),
@@ -50,8 +50,8 @@ export function FinancePayoutsTab() {
     { accessorKey: 'status', header: 'Status', cell: ({ row }) => (
       <StatusPill label={row.original.status} variant={row.original.status === 'success' ? 'active' : row.original.status === 'failed' ? 'danger' : 'pending'} autoVariant={false} />
     ) },
-    { accessorKey: 'pawapay_ref', header: 'PawaPay reference', cell: ({ row }) => (
-      <span className="font-mono text-xs text-slate-500">{row.original.pawapay_ref ?? '—'}</span>
+    { accessorKey: 'provider_ref', header: 'Gateway reference', cell: ({ row }) => (
+      <span className="font-mono text-xs text-slate-500">{row.original.provider_ref ?? '—'}</span>
     ) },
     { accessorKey: 'timestamp', header: 'Time', cell: ({ row }) => row.original.timestamp ? fmtDatetime(row.original.timestamp) : '—' },
     {

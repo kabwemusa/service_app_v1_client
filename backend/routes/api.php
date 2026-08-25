@@ -17,7 +17,7 @@ use App\Http\Controllers\Api\Admin\AdminWhatsAppController;
 use App\Http\Controllers\Api\Admin\AdminLegalController;
 use App\Http\Controllers\Api\Admin\AdminPromotionsController;
 use App\Http\Controllers\Api\AuthController;
-use App\Http\Controllers\Api\PawapayCallbackController;
+use App\Http\Controllers\Api\LipilaWebhookController;
 use App\Http\Controllers\Api\WhatsAppWebhookController;
 use App\Http\Controllers\Api\BookingController;
 use App\Http\Controllers\Api\BookingAgreementController;
@@ -310,12 +310,13 @@ Route::middleware('auth:admin')->prefix('admin')->group(function () {
 Route::get('/webhook',  [WhatsAppWebhookController::class, 'verify']);
 Route::post('/webhook', [WhatsAppWebhookController::class, 'receive'])->middleware('throttle:webhook');
 
-// ── PawaPay Payment Callbacks (public — PawaPay sends deposit/payout/refund status) ──
-Route::post('/pawapay/callback', [PawapayCallbackController::class, 'handle'])->middleware('throttle:webhook');
-
-// ── Africa's Talking voice callback (public — masked-call bridge + metadata) ──
-// Acts only on session refs we minted; moves no money, exposes no real number.
-Route::post('/webhooks/africastalking/voice', [CommunicationController::class, 'voiceWebhook'])->middleware('throttle:webhook');
+// ── Lipila payment webhooks (public — collection/disbursement outcomes) ───────
+// Authenticated by the Standard Webhooks HMAC-SHA256 signature, not by session;
+// every posted status is re-verified against Lipila's read API before any money
+// moves. Named so the gateway can resolve its own callbackUrl.
+Route::post('/webhooks/lipila', [LipilaWebhookController::class, 'handle'])
+    ->name('lipila.webhook')
+    ->middleware('throttle:webhook');
 
 // ── Signed Booking Agreement download (WhatsApp/Meta media fetch — no auth) ──
 // Short-lived signed URL; the 'signed' middleware rejects tampered/expired links.
@@ -405,11 +406,10 @@ Route::middleware(['auth:api', 'account.active'])->group(function () {
     Route::post('/bookings/{id}/cancel',   [BookingController::class, 'cancel']);
     Route::post('/bookings/{id}/review',   [BookingController::class, 'review']);
 
-    // ── Communication layer — masked calling + structured status updates ──
+    // ── Communication layer — structured status updates (no calling, no chat) ──
     // NO chat / VoIP: free-form conversation deep-links to WhatsApp on clients.
     // Both endpoints are gated server-side to funded, active bookings.
     Route::post('/bookings/{id}/status-update', [CommunicationController::class, 'statusUpdate'])->middleware('throttle:write');
-    Route::post('/bookings/{id}/call',          [CommunicationController::class, 'call'])->middleware('throttle:write');
     Route::get('/bookings/{id}/comms/timeline', [CommunicationController::class, 'timeline']);
 
     // ── Booking Agreement document (both parties, versioned, immutable) ────

@@ -49,8 +49,8 @@ class OutcomeBasedPricingTest extends TestCase
         Queue::fake();
 
         // Synchronous gateway path (the spy below confirms holds inline).
-        // The async PawaPay path is covered by PawapayCallbackLinkingTest.
-        config(['pawapay.enabled' => false]);
+        // The async Lipila path is covered by LipilaWebhookLinkingTest.
+        config(['lipila.enabled' => false]);
 
         $this->app->instance(PaymentGateway::class, new class($this) implements PaymentGateway {
             public function __construct(private OutcomeBasedPricingTest $test) {}
@@ -68,10 +68,10 @@ class OutcomeBasedPricingTest extends TestCase
                 return 'TEST-PAYOUT-' . $bookingId;
             }
 
-            public function refund(string $holdRef, string $payerPhone, float $amount): bool
+            public function refund(string $holdRef, string $payerPhone, float $amount): ?string
             {
                 $this->test->refunds[] = ['amount' => $amount, 'holdRef' => $holdRef];
-                return true;
+                return 'TEST-REFUND-' . $holdRef;
             }
 
             public function status(string $holdRef): array
@@ -167,8 +167,9 @@ class OutcomeBasedPricingTest extends TestCase
         $booking->refresh();
         $this->assertSame('FUNDS_HELD', $booking->status);
         $this->assertSame('FULL', $booking->escrow_phase);
-        // Held = amount + 2% protection fee.
-        $this->assertEqualsWithDelta(510.0, $this->holds[0]['amount'], 0.01);
+        // Held = exactly the quoted amount. The buyer-protection fee was removed
+        // (2026-08-24), so nothing is added on top of the price the customer saw.
+        $this->assertEqualsWithDelta(500.0, $this->holds[0]['amount'], 0.01);
 
         $this->postJson("/api/bookings/{$booking->id}/start", [], $this->asUser($this->provider))->assertOk();
         $this->postJson("/api/bookings/{$booking->id}/deliver", [], $this->asUser($this->provider))->assertOk();
@@ -211,7 +212,7 @@ class OutcomeBasedPricingTest extends TestCase
         $this->assertEquals(4 * 60, $booking->scheduled_start->diffInMinutes($booking->scheduled_end));
 
         $this->postJson("/api/bookings/{$booking->id}/pay", [], $this->asUser($this->buyer))->assertOk();
-        $this->assertEqualsWithDelta(408.0, $this->holds[0]['amount'], 0.01); // cap + 2%
+        $this->assertEqualsWithDelta(400.0, $this->holds[0]['amount'], 0.01); // the cap, nothing added
 
         // START: server records job_started_at. No hours are ever entered.
         $this->postJson("/api/bookings/{$booking->id}/start", [], $this->asUser($this->provider))->assertOk();
@@ -362,7 +363,8 @@ class OutcomeBasedPricingTest extends TestCase
         $this->assertSame(['All rooms', 'Windows'], $booking->provider_quote['inclusions']);
         // Split recomputed for the quoted gross — the payout must match it.
         $this->assertGreaterThan(0, (float) $booking->provider_split_zmw);
-        $this->assertGreaterThan(0, (float) $booking->buyer_protection_fee);
+        // Buyer-protection fee removed — a quote now carries no add-on.
+        $this->assertSame(0.0, (float) $booking->buyer_protection_fee);
 
         // Customer approves → escrow holds ONLY now.
         $this->postJson("/api/bookings/{$booking->id}/approve-quote", [], $this->asUser($this->buyer))->assertOk();

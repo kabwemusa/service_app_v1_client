@@ -6,7 +6,7 @@ use App\Models\Booking;
 
 /**
  * Escrow payout disbursed to the provider's Mobile Money.
- * Fired by BookingService::disbursePayout (and the PawaPay payout callback's
+ * Fired by BookingService::disbursePayout (and the payout webhook's
  * late-confirm branch) so the provider hears about money the moment it moves.
  */
 class PayoutReleased extends NotifiableEvent

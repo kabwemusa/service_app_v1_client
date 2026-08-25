@@ -35,9 +35,10 @@ class TestPaymentGateway implements PaymentGateway
         string $holdRef,
         string $payerPhone,
         float  $amount,
-    ): bool {
-        Log::info('TestPaymentGateway::refund — auto-refunded', compact('holdRef', 'payerPhone', 'amount'));
-        return true;
+    ): ?string {
+        $ref = 'TEST-REFUND-' . Str::uuid();
+        Log::info('TestPaymentGateway::refund — auto-refunded', compact('holdRef', 'payerPhone', 'amount', 'ref'));
+        return $ref;
     }
 
     public function status(string $holdRef): array

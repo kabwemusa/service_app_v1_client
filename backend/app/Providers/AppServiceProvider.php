@@ -24,7 +24,7 @@ use App\Observers\ReviewFlagObserver;
 use App\Observers\SafetyReportObserver;
 use App\Services\Dispatch\RealDispatchService;
 use App\Services\Dispatch\RealTrustEngine;
-use App\Services\Gateway\PawapayPaymentGateway;
+use App\Services\Gateway\LipilaPaymentGateway;
 use App\Services\Gateway\StubPaymentGateway;
 use App\Services\Gateway\StubWhatsAppGateway;
 use App\Services\IdentityVerification\MockIdentityVerificationProvider;
@@ -91,21 +91,9 @@ class AppServiceProvider extends ServiceProvider
             };
         });
 
-        // MaskedCallProvider — privacy-preserving voice. Africa's Talking is the
-        // only Zambia-native voice API; 'log' is the offline/test default; 'reveal'
-        // is the FLAGGED time-limited-reveal fallback used only when masking can't
-        // be provisioned (see config/communication.php + LEGAL_REVIEW.md).
-        $this->app->bind(\App\Contracts\MaskedCallProvider::class, function () {
-            return match (config('communication.calling.provider', 'log')) {
-                'africastalking' => new \App\Services\Communication\AfricasTalkingCallProvider(),
-                'reveal'         => new \App\Services\Communication\ConsentedRevealProvider(),
-                default          => new \App\Services\Communication\LogMaskedCallProvider(),
-            };
-        });
-
-        // PaymentGateway — PawaPay when enabled, test stub in test mode, otherwise stub
-        if (config('pawapay.enabled')) {
-            $this->app->bind(PaymentGateway::class, PawapayPaymentGateway::class);
+        // PaymentGateway — Lipila when enabled, test stub in test mode, otherwise stub
+        if (config('lipila.enabled')) {
+            $this->app->bind(PaymentGateway::class, LipilaPaymentGateway::class);
         } elseif (config('whatsapp.test_mode')) {
             $this->app->bind(PaymentGateway::class, TestPaymentGateway::class);
         } else {

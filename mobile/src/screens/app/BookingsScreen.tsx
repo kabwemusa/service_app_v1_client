@@ -502,6 +502,7 @@ interface CardProps {
   onAcceptQuote:  (id: string) => void;
   onEmergency:    (b: Booking) => void;
   onReport:       (b: Booking) => void;
+  /** True only while THIS booking's action is in flight — never a global flag. */
   submitting:     boolean;
 }
 
@@ -529,15 +530,23 @@ function BookingCard({
       onConfirm: () => { setDialog(null); onComplete(booking.id); },
     });
 
-  const confirmCancel = () =>
+  const confirmCancel = () => {
+    // Nothing has settled in these states, so don't warn about a refund or a
+    // rating hit that isn't going to happen.
+    const nothingPaid = status === 'REQUESTED' || status === 'QUOTED'
+      || status === 'PENDING_PAYMENT' || status === 'PAYMENT_FAILED';
+
     setDialog({
       title: 'Cancel booking',
-      message: 'Are you sure? Cancellation may affect your account rating.',
+      message: nothingPaid
+        ? 'No payment has been taken, so nothing will be charged.'
+        : 'Are you sure? Cancellation may affect your account rating.',
       destructive: true,
       confirmLabel: 'Cancel booking',
       cancelLabel: 'Keep booking',
       onConfirm: () => { setDialog(null); onCancel(booking.id); },
     });
+  };
 
   const confirmAcceptQuote = () => {
     const quoted = booking.agreed_amount;
@@ -738,23 +747,39 @@ function BookingCard({
             </TouchableOpacity>
           )}
 
-          {/* ── PENDING_PAYMENT (ESCROW) ── */}
-          {status === 'PENDING_PAYMENT' && (
-            <TouchableRipple
-              style={[styles.actionPrimary, { flex: 1 }, submitting && styles.actionDisabled]}
-              onPress={() => onPay(booking.id)}
-              disabled={submitting}
-              rippleColor="rgba(255,255,255,0.2)"
-              accessibilityLabel="Pay now"
-              accessibilityRole="button"
-            >
-              <View style={styles.actionPrimaryInner}>
-                {submitting
-                  ? <ActivityIndicator size={14} color="#FFFFFF" />
-                  : <Text style={styles.actionPrimaryText}>Pay now</Text>
-                }
-              </View>
-            </TouchableRipple>
+          {/* ── PENDING_PAYMENT / PAYMENT_FAILED (ESCROW) ──
+              Both are buyer-action states with no money settled and no work
+              started, so both offer Pay and Cancel. Leaving Cancel off here
+              stranded customers whose prompt went unanswered. */}
+          {(status === 'PENDING_PAYMENT' || status === 'PAYMENT_FAILED') && (
+            <>
+              <TouchableOpacity
+                style={styles.actionDestructive}
+                onPress={confirmCancel}
+                disabled={submitting}
+                accessibilityLabel="Cancel booking"
+                accessibilityRole="button"
+              >
+                <Text style={styles.actionDestructiveText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableRipple
+                style={[styles.actionPrimary, { flex: 1 }, submitting && styles.actionDisabled]}
+                onPress={() => onPay(booking.id)}
+                disabled={submitting}
+                rippleColor="rgba(255,255,255,0.2)"
+                accessibilityLabel={status === 'PAYMENT_FAILED' ? 'Retry payment' : 'Pay now'}
+                accessibilityRole="button"
+              >
+                <View style={styles.actionPrimaryInner}>
+                  {submitting
+                    ? <ActivityIndicator size={14} color="#FFFFFF" />
+                    : <Text style={styles.actionPrimaryText}>
+                        {status === 'PAYMENT_FAILED' ? 'Retry payment' : 'Pay now'}
+                      </Text>
+                  }
+                </View>
+              </TouchableRipple>
+            </>
           )}
 
           {/* ── COMPLETED / DISBURSED ── */}
@@ -813,7 +838,7 @@ export default function BookingsScreen({ navigation }: any) {
   const { showError } = useSnackbar();
   const {
     bookings, loading, error, page, lastPage,
-    fetchBookings, loadMore, complete, cancel, pay, acceptQuote, clearError, submitting,
+    fetchBookings, loadMore, complete, cancel, pay, acceptQuote, clearError, submittingId,
   } = useBookingStore();
 
   const [segment,          setSegment]         = useState<Segment>('active');
@@ -900,9 +925,9 @@ export default function BookingsScreen({ navigation }: any) {
       onAcceptQuote={handleAcceptQuote}
       onEmergency={setEmergencyBooking}
       onReport={setReportBooking}
-      submitting={submitting}
+      submitting={submittingId === item.id}
     />
-  ), [navigation, handleComplete, handleCancel, handlePay, handleAcceptQuote, submitting]);
+  ), [navigation, handleComplete, handleCancel, handlePay, handleAcceptQuote, submittingId]);
 
   const isFirstLoad = loading && bookings.length === 0;
 

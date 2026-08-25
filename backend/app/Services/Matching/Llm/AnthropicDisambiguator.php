@@ -18,7 +18,7 @@ use Illuminate\Support\Facades\Log;
  * set again regardless (defence in depth: the LLM never invents a service).
  *
  * Talks to the API through Laravel's Http client (the codebase convention for
- * third-party HTTP — Typesense, WhatsApp Cloud API, PawaPay). Any failure
+ * third-party HTTP — Typesense, WhatsApp Cloud API, Lipila). Any failure
  * returns [] so the matcher falls back to a clarify rather than erroring.
  */
 class AnthropicDisambiguator implements ServiceDisambiguator

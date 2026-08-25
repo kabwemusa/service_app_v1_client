@@ -32,6 +32,15 @@ class PaymentExpiryWorker extends Command
         }
 
         foreach ($expired as $booking) {
+            // Never cancel a booking the customer actually paid for. The lifecycle
+            // normally advances on the gateway callback, but a callback can be
+            // missed (unreachable URL, exhausted retries) — and cancelling then
+            // would strand real money at the processor with nothing left to
+            // reconcile it against. Ask the gateway before writing CANCELLED.
+            if ($this->wasActuallyPaid($booking)) {
+                continue;
+            }
+
             $booking->update(["status" => "CANCELLED"]);
             Log::info("PaymentExpiryWorker: expired booking cancelled", [
                 "booking_id" => $booking->id,
@@ -64,5 +73,69 @@ class PaymentExpiryWorker extends Command
         $this->info("Expired {$expired->count()} payment(s).");
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Did the money actually arrive while we weren't listening?
+     *
+     * Returns true only when the gateway positively confirms the collection
+     * COMPLETED — in which case the booking is handed to the same processor the
+     * callback would have used, and expiry is skipped.
+     *
+     * Everything else (PENDING — the ordinary case, the customer never answered;
+     * FAILED; UNKNOWN; no gateway that can verify) falls through to the existing
+     * cancel behaviour. UNKNOWN is logged loudly because it is the one case where
+     * we cancel without being able to tell.
+     */
+    private function wasActuallyPaid(Booking $booking): bool
+    {
+        $reference = $booking->escrow_hold_ref;
+
+        if (! $reference) {
+            return false;
+        }
+
+        $gateway = app(\App\Contracts\PaymentGateway::class);
+
+        if (! $gateway instanceof \App\Contracts\PaymentStatusVerifier) {
+            return false;
+        }
+
+        try {
+            $status = $gateway->verifyStatus("deposit", $reference);
+        } catch (\Throwable $e) {
+            Log::error("PaymentExpiryWorker: could not verify before expiring — cancelling blind", [
+                "booking_id" => $booking->id,
+                "reference"  => $reference,
+                "error"      => $e->getMessage(),
+            ]);
+            return false;
+        }
+
+        if ($status === "COMPLETED") {
+            Log::warning("PaymentExpiryWorker: booking was PAID but its callback never arrived — "
+                . "advancing instead of cancelling", [
+                    "booking_id" => $booking->id,
+                    "reference"  => $reference,
+                ]);
+
+            app(\App\Services\Payments\PaymentEventProcessor::class)->record(
+                $reference, "collection", $status, ["provider" => "lipila", "source" => "expiry-guard"],
+            );
+            app(\App\Services\Payments\PaymentEventProcessor::class)->collection(
+                $reference, $status, ["provider" => "lipila", "source" => "expiry-guard"],
+            );
+
+            return true;
+        }
+
+        if ($status === "UNKNOWN") {
+            Log::warning("PaymentExpiryWorker: gateway could not confirm the collection; cancelling anyway", [
+                "booking_id" => $booking->id,
+                "reference"  => $reference,
+            ]);
+        }
+
+        return false;
     }
 }

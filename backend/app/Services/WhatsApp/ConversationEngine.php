@@ -1384,7 +1384,7 @@ class ConversationEngine
 
             $prompt = $this->paymentPromptFor($booking->fresh(['service']));
 
-            if (config('pawapay.enabled', false)) {
+            if (config('lipila.enabled', false)) {
                 // Async: MoMo prompt sent to customer's phone, waiting for PIN confirmation.
                 $this->templates->sendMessage($c->whatsapp_id, $prompt, $c);
                 $this->templates->sendMessage(
@@ -1398,10 +1398,24 @@ class ConversationEngine
                 $this->onFundsHeld($c);
             }
         } catch (\Throwable $e) {
+            // CONFLICT is not a failure: a prompt from the previous attempt is
+            // still outstanding, so holdFunds declined to raise a second charge.
+            // The conversation must STAY in FUNDING — dropping it to
+            // PAYMENT_FAILED here would tell the customer their payment broke
+            // while a perfectly good prompt sits on their handset.
+            if ($e instanceof \App\Exceptions\Api\ApiException
+                && $e->getErrorCode() === \App\Enums\ErrorCode::CONFLICT) {
+                Log::info('ConversationEngine: payment prompt already outstanding', [
+                    'booking_id' => $booking->id,
+                ]);
+                $this->templates->sendMessage($c->whatsapp_id, $e->getMessage(), $c);
+                return;
+            }
+
             // A failure here is at payment *initiation* (bad request, auth, operator
             // not enabled) — a system-side issue, NOT the customer's balance. Genuine
             // payer-side failures (e.g. insufficient funds) arrive later via the
-            // PawaPay callback, which reports the real reason to the customer.
+            // Lipila webhook, which reports the real reason to the customer.
             Log::error('ConversationEngine: holdFunds failed', ['error' => $e->getMessage()]);
             $this->transitionTo($c, 'PAYMENT_FAILED');
             $this->templates->sendInteractive(
@@ -1460,7 +1474,7 @@ class ConversationEngine
     }
 
     /**
-     * Called by PawapayCallbackController when a deposit completes asynchronously.
+     * Called by PaymentEventProcessor when a collection completes asynchronously.
      */
     public function onFundsHeldFromCallback(ConversationState $c): void
     {

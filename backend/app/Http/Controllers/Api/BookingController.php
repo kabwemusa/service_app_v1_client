@@ -128,8 +128,8 @@ class BookingController extends Controller
     /**
      * POST /bookings/{id}/pay — ESCROW: hold funds via the PaymentGateway.
      *
-     * Buyer funds the booking: REQUESTED/QUOTED → PENDING_PAYMENT (PawaPay deposit
-     * initiated, MoMo USSD push sent; the PawaPay callback advances to FUNDS_HELD)
+     * Buyer funds the booking: REQUESTED/QUOTED → PENDING_PAYMENT (Lipila collection
+     * initiated, MoMo prompt pushed to the handset; the Lipila webhook advances to FUNDS_HELD)
      * or → FUNDS_HELD directly when the gateway is synchronous (stub/test).
      *
      * `momo_number` is optional — lets the buyer send the collection request to a

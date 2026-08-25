@@ -470,7 +470,7 @@ export default function ProviderBookingDetailScreen({
   }
 
   // "Need more time" — asks the customer to authorise a higher hold. The cap is
-  // never silently exceeded; the customer re-authorises via PawaPay.
+  // never silently exceeded; the customer re-authorises via Lipila.
   function handleNeedMoreTime() {
     confirmAction(
       "Ask for more time",
@@ -481,21 +481,15 @@ export default function ProviderBookingDetailScreen({
 
   // Masked call — routes through the proxy; neither party sees the other's
   // number. Available only inside the funded/active window (server-gated).
-  const callEnabled = !!booking.comms?.call_enabled;
-  async function startMaskedCall() {
-    if (busy) return;
-    setActionBusy(true);
-    try {
-      const res = await bookingsApi.call(booking!.id);
-      showSuccess(res.message);
-      if (res.mode === "reveal" && res.revealed_number) {
-        Linking.openURL(`tel:${res.revealed_number}`).catch(() => {});
-      }
-    } catch (e) {
-      showError(e instanceof ApiError ? e.message : "Could not start the call.");
-    } finally {
-      setActionBusy(false);
-    }
+  const contact     = booking.comms?.contact ?? null;
+  // Direct dial. The server releases the customer's number only while the
+  // booking is funded + active, so a null `contact` means calling is closed.
+  function callCustomer() {
+    const phone = booking?.comms?.contact?.phone;
+    if (!phone) return;
+    Linking.openURL(`tel:${phone}`).catch(() =>
+      showError("Could not open the dialler."),
+    );
   }
 
   // "On my way" nudge — one tap sends the structured update to the customer and
@@ -623,17 +617,17 @@ export default function ProviderBookingDetailScreen({
             icon="phone-outline"
             style={styles.contactBtn}
             contentStyle={styles.contactBtnContent}
-            textColor={callEnabled ? palette.primary : palette.textDisabled}
-            disabled={!callEnabled || busy}
-            onPress={startMaskedCall}
-            accessibilityLabel="Call customer through a private masked line"
+            textColor={contact ? palette.primary : palette.textDisabled}
+            disabled={!contact || busy}
+            onPress={callCustomer}
+            accessibilityLabel={contact ? `Call ${contact.name} on ${contact.phone}` : "Calling opens once the booking is funded"}
           >
             Call
           </Button>
         </View>
-        {callEnabled && (
+        {contact && (
           <Text style={styles.contactHint}>
-            Calls connect through a private line — your number stays hidden.
+            {contact.name} · {contact.phone}
           </Text>
         )}
 
@@ -960,7 +954,7 @@ export default function ProviderBookingDetailScreen({
           </View>
         )}
 
-        {/* Communication layer — masked call + status updates + agreement download */}
+        {/* Communication layer — call + status updates + agreement download */}
         <View style={{ paddingHorizontal: spacing.md }}>
           <BookingCommsSection booking={booking} onChanged={loadBooking} />
         </View>

@@ -99,17 +99,17 @@ class AdminBookingService
     {
         $booking = Booking::with([
             'buyer', 'provider.providerProfile', 'service.category', 'commission', 'dispute', 'review',
-            'statusUpdates', 'callSessions', 'agreements',
+            'statusUpdates', 'agreements',
         ])->find($bookingId);
 
         if (!$booking) {
             throw new NotFoundException('Booking');
         }
 
-        $pawapayEvents = DB::table('pawapay_events')
+        $paymentEvents = DB::table('payment_events')
             ->where('booking_id', $booking->id)
             ->orderByDesc('created_at')
-            ->get(['id', 'external_ref', 'type', 'pawapay_status', 'mno', 'amount', 'created_at']);
+            ->get(['id', 'external_ref', 'type', 'provider_status', 'mno', 'amount', 'created_at']);
 
         return [
             'id'             => $booking->id,
@@ -198,16 +198,7 @@ class AdminBookingService
                 'actor_role' => $u->actor_role,
                 'body'       => $u->body,
                 'at'         => $this->iso($u->created_at),
-            ])->concat($booking->callSessions->map(fn ($c) => [
-                'kind'             => 'call',
-                'initiator_role'   => $c->initiator_role,
-                'provider'         => $c->provider,
-                'status'           => $c->status,
-                'duration_seconds' => $c->duration_seconds,
-                'at'               => $this->iso($c->created_at),
-                'answered_at'      => $this->iso($c->answered_at),
-                'ended_at'         => $this->iso($c->ended_at),
-            ]))->sortBy('at')->values()->all(),
+            ])->sortBy('at')->values()->all(),
 
             // Booking Agreement versions (metadata only — the document itself is
             // party-only, downloaded via the authenticated booking routes).
@@ -219,11 +210,11 @@ class AdminBookingService
                 'terms_version' => $a->terms_version,
             ])->values()->all(),
 
-            'escrow_events' => $pawapayEvents->map(fn ($e) => [
+            'escrow_events' => $paymentEvents->map(fn ($e) => [
                 'id'             => $e->id,
                 'external_ref'   => $e->external_ref,
                 'type'           => $e->type,
-                'pawapay_status' => $e->pawapay_status,
+                'provider_status' => $e->provider_status,
                 'mno'            => $e->mno,
                 'amount'         => $e->amount !== null ? (float) $e->amount : null,
                 'created_at'     => $this->iso($e->created_at),

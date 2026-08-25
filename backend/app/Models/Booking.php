@@ -35,6 +35,7 @@ class Booking extends Model
         'provider_split_zmw',
         'escrow_hold_ref',
         'payout_ref',
+        'refund_ref',
         'legacy_payment_mode',
         'channel',
         'payment_status',
@@ -163,11 +164,6 @@ class Booking extends Model
     public function statusUpdates()
     {
         return $this->hasMany(BookingStatusUpdate::class)->orderBy('created_at');
-    }
-
-    public function callSessions()
-    {
-        return $this->hasMany(BookingCallSession::class)->latest();
     }
 
     public function agreements()

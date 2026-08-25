@@ -45,6 +45,31 @@ use Illuminate\Support\Facades\Log;
  */
 class BookingService
 {
+    /**
+     * Escrow states a BUYER may cancel from — i.e. every state before the
+     * provider starts work.
+     *
+     * PENDING_PAYMENT and PAYMENT_FAILED are in here because a payment that was
+     * never answered, or that failed, has moved no money and started no work;
+     * omitting them (as this guard originally did) trapped customers in a
+     * booking they could not get out of.
+     *
+     * Cancelling from PENDING_PAYMENT issues no refund — nothing has settled. If
+     * the customer approves the prompt seconds later, the collection lands on an
+     * already-CANCELLED booking and PaymentEventProcessor::refundLateCollection
+     * reverses it, so their money is never kept.
+     */
+    private const BUYER_CANCELLABLE = [
+        'REQUESTED',
+        'QUOTED',
+        'SCOPE_PENDING',
+        'QUOTE_SENT',
+        'PENDING_PAYMENT',
+        'PAYMENT_FAILED',
+        'FUNDS_HELD',
+        'DEPOSIT_HELD',
+    ];
+
     public function __construct(
         private readonly BookingConflictService   $conflict,
         private readonly PaymentService           $payment,
@@ -673,7 +698,7 @@ class BookingService
         $serviceHold = $isDeposit ? (float) $booking->deposit_amount : $amount;
         $heldState   = $isDeposit ? 'DEPOSIT_HELD' : 'FUNDS_HELD';
 
-        $isAsync = config('pawapay.enabled', false);
+        $isAsync = config('lipila.enabled', false);
 
         if ($isAsync) {
             // "Resend payment prompt" calls holdFunds again while the booking is
@@ -699,10 +724,39 @@ class BookingService
                 }
 
                 if (\in_array($existing, ['ACCEPTED', 'SUBMITTED', 'PENDING', 'PROCESSING', 'UNKNOWN'], true)) {
-                    // A prompt is still outstanding (or status is unconfirmable) —
-                    // don't create a competing charge. The client shows "a prompt
-                    // is already on your phone".
-                    return $this->findOrFail($id, $buyer);
+                    // A prompt is still outstanding (or its status is
+                    // unconfirmable) — never create a competing charge.
+                    //
+                    // This used to return the booking unchanged, which is safe but
+                    // SILENT: no log, and a client that cannot tell "prompt
+                    // resent" from "nothing happened". Customers concluded the
+                    // app was broken and kept tapping. Say what is going on.
+                    //
+                    // We deliberately do NOT auto-reissue after a timeout. The old
+                    // reference stays on the booking, so if that stale collection
+                    // ever completes, PaymentEventProcessor can still find it and
+                    // refund it. Minting a second hold would move
+                    // escrow_hold_ref to the new reference and orphan the old one
+                    // — a completed orphan is money we would silently keep. The
+                    // safe way out of a wedged prompt is to cancel and rebook.
+                    $waitingMinutes = (int) $booking->updated_at?->diffInMinutes(now());
+
+                    Log::info('BookingService::holdFunds — retry suppressed, a collection is still outstanding', [
+                        'booking_id'      => $booking->id,
+                        'escrow_hold_ref' => $booking->escrow_hold_ref,
+                        'gateway_status'  => $existing,
+                        'waiting_minutes' => $waitingMinutes,
+                    ]);
+
+                    throw new ApiException(
+                        ErrorCode::CONFLICT,
+                        $existing === 'UNKNOWN'
+                            ? "We can't confirm your last payment attempt right now, so we won't charge you again. "
+                                . 'Please wait a moment and check back — or cancel this booking and start again.'
+                            : 'A payment prompt is already waiting on your phone. Approve it to continue '
+                                . "(check your Mobile Money menu — on MTN dial *115#). If you've dismissed it, "
+                                . 'cancel this booking and start again so you are not charged twice.',
+                    );
                 }
                 // else: FAILED / REJECTED — fall through and issue a fresh hold.
             }
@@ -749,13 +803,13 @@ class BookingService
             });
 
             // Confirmed (funds custodied) → generate the Booking Agreement. The
-            // async path does this from the PawaPay callback once funds settle.
+            // async path does this from the Lipila webhook once funds settle.
             $this->issueAgreement($booking->fresh()->load(['service.category', 'service.inclusions', 'buyer', 'provider.providerProfile']), BookingAgreementService::REASON_CONFIRMATION);
 
             return $this->findOrFail($id, $buyer);
         }
 
-        // Async (PawaPay) path — the discount is fixed now so the MoMo prompt
+        // Async (Lipila) path — the discount is fixed now so the MoMo prompt
         // charges the reduced amount; the spend is recorded when the deposit
         // settles (CampaignDiscountService::recordReserved in the callback).
         $preview    = $isDeposit ? null : $this->campaignDiscount->preview($booking, $promoCode, $buyer);
@@ -1109,7 +1163,7 @@ class BookingService
             ?? $booking->buyer->phone
             ?? throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Your account has no phone number on file.');
 
-        // Re-authorise the extra hold via the gateway (PawaPay MoMo prompt).
+        // Re-authorise the extra hold via the gateway (Lipila MoMo prompt).
         $extRef = $this->gateway->holdFunds($buyerPhone, $extraZmw, $booking->id, 0.0, $extraZmw);
 
         $booking->update([
@@ -1243,7 +1297,7 @@ class BookingService
      * money flow as a customer confirmation — commission, payout timer, hourly
      * refund, balance collection — so auto-completed bookings actually pay out.
      * (Previously the worker only flipped the status and called the legacy
-     * transaction-based payout, which stranded every PawaPay booking.)
+     * transaction-based payout, which stranded every gateway-funded booking.)
      */
     public function autoComplete(string $bookingId): void
     {
@@ -1341,16 +1395,17 @@ class BookingService
         // never blocks the completion itself.
         if ($refundAmount >= 0.01 && $booking->escrow_hold_ref) {
             try {
-                $ok = $this->gateway->refund(
+                $refundRef = $this->gateway->refund(
                     $booking->escrow_hold_ref,
                     $booking->buyer?->phone ?? '',
                     $refundAmount,
                 );
-                if (! $ok) {
+                if (! $refundRef) {
                     throw new \RuntimeException('Gateway refund returned failure.');
                 }
+                $booking->update(['refund_ref' => $refundRef]);
                 Log::info('BookingService: hourly-capped unused-cap refund initiated', [
-                    'booking_id' => $booking->id, 'refund_zmw' => $refundAmount,
+                    'booking_id' => $booking->id, 'refund_zmw' => $refundAmount, 'refund_ref' => $refundRef,
                 ]);
             } catch (\Throwable $e) {
                 Log::error('BookingService: hourly-capped refund failed — queued for reconciliation', [
@@ -1381,7 +1436,7 @@ class BookingService
     /**
      * QUOTE_DEPOSIT phase 2 — collect the balance via a second gateway deposit
      * against the same booking reference. Async gateways confirm through the
-     * PawaPay callback (balance_hold_ref → escrow_phase FULL); the stub confirms
+     * Lipila webhook (balance_hold_ref → escrow_phase FULL); the stub confirms
      * inline. A failure leaves escrow_phase = DEPOSIT so it can be retried.
      */
     public function collectBalance(Booking $booking): void
@@ -1415,7 +1470,7 @@ class BookingService
 
         $booking->update([
             'balance_hold_ref' => $balanceRef,
-            'escrow_phase'     => config('pawapay.enabled', false) ? 'BALANCE' : 'FULL',
+            'escrow_phase'     => config('lipila.enabled', false) ? 'BALANCE' : 'FULL',
         ]);
 
         Log::info('BookingService: balance collection initiated', [
@@ -1505,7 +1560,7 @@ class BookingService
 
         if ($payoutRef !== null) {
             // Persist the payout reference BEFORE the async callback can arrive —
-            // PawapayCallbackController::handlePayoutCallback looks the booking
+            // PaymentEventProcessor::payout looks the booking
             // up by this column, the same reliable pattern escrow_hold_ref uses
             // for deposits.
             $booking->update(['status' => 'DISBURSED', 'disbursed_at' => now(), 'payout_ref' => $payoutRef]);
@@ -1609,10 +1664,18 @@ class BookingService
             return $this->findOrFail($id, $buyer);
         }
 
-        // Escrow cancellation — quote-first states (SCOPE_PENDING / QUOTE_SENT)
-        // carry no funds; DEPOSIT_HELD refunds the deposit.
-        if (! \in_array($booking->status, ['REQUESTED', 'QUOTED', 'SCOPE_PENDING', 'QUOTE_SENT', 'FUNDS_HELD', 'DEPOSIT_HELD'], true)) {
-            throw new ApiException(ErrorCode::VALIDATION_ERROR, 'Booking can only be cancelled before it starts.');
+        // Escrow cancellation.
+        //
+        // This list is deliberately NARROWER than what the state machine permits:
+        // the machine also allows DISPUTED → CANCELLED, but that belongs to an
+        // admin resolving a dispute, not to the buyer walking away from one (and
+        // it would cancel without refunding, since DISPUTED is not a funds-held
+        // state). Buyer authority ends the moment the provider starts work.
+        if (! \in_array($booking->status, self::BUYER_CANCELLABLE, true)) {
+            throw new ApiException(
+                ErrorCode::VALIDATION_ERROR,
+                'Booking can only be cancelled before the provider starts work.',
+            );
         }
 
         // TXN-3: never call the gateway inside a DB transaction. We first move the
@@ -1649,10 +1712,11 @@ class BookingService
         // reconciliation and never rolls the cancellation back onto held funds).
         if ($needsRefund) {
             try {
-                $ok = $this->gateway->refund($holdRef, $buyerPhone, $refundAmount);
-                if (! $ok) {
+                $refundRef = $this->gateway->refund($holdRef, $buyerPhone, $refundAmount);
+                if (! $refundRef) {
                     throw new \RuntimeException('Gateway refund returned failure.');
                 }
+                $booking->update(['refund_ref' => $refundRef]);
             } catch (\Throwable $e) {
                 Log::error('BookingService::cancel — refund failed, queued for reconciliation', [
                     'booking_id' => $booking->id, 'refund_zmw' => $refundAmount, 'error' => $e->getMessage(),
