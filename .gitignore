@@ -34,3 +34,4 @@ infra/photon/*.jar
 infra/photon/*.tar.bz2
 infra/photon/*.bz2
 infra/photon/photon_data/
+"./mobile/google-services.json" 
